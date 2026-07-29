@@ -388,7 +388,11 @@ export async function createWordPressDraft(input: WordPressDraftInput, scope: Wo
   const contentSchema = schemaForContent(input.schema, seoPlugin);
   const safeSchema = contentSchema.replace(/<\/script/gi, "<\\/script");
   const stylesheetReady = await sharedArticleCssReady(baseUrl, scope);
-  const styledHtml = stylesheetReady ? input.html : `${await inlineStyleFallback(scope)}\n${input.html}`;
+  // WordPress themes and visual builders do not consistently execute a plugin
+  // stylesheet in every preview/render context. Keep the shared file as the
+  // canonical source, but embed its scoped contents so the draft is portable
+  // and the final cascade is applied after the theme styles.
+  const styledHtml = `${await inlineStyleFallback(scope)}\n${input.html}`;
   const marker = input.jobId ? jobMarker(input.jobId) : "";
   const contentBody = marker ? `${styledHtml}\n${marker}` : styledHtml;
   const content = safeSchema ? `${contentBody}\n\n<script type="application/ld+json">\n${safeSchema}\n</script>` : contentBody;
@@ -521,8 +525,10 @@ export async function createWordPressDraft(input: WordPressDraftInput, scope: Wo
     },
     design: {
       sharedStylesheetReady: stylesheetReady,
-      inlineFallbackEmbedded: !stylesheetReady,
-      warning: stylesheetReady ? undefined : "The shared WordPress stylesheet was unavailable, so scoped fallback CSS was embedded in this draft.",
+      inlineFallbackEmbedded: true,
+      warning: stylesheetReady
+        ? undefined
+        : "The shared WordPress stylesheet was unavailable; the same scoped CSS was embedded in this draft.",
     },
   };
 }

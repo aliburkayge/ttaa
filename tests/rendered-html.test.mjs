@@ -340,7 +340,9 @@ test("separates SEO head data, shared CSS and AIOSEO-owned schema", async () => 
   assert.match(wordpress, /item\["@type"\]\s*===\s*"FAQPage"/);
   assert.match(wordpress, /sharedArticleCssReady/);
   assert.match(wordpress, /ttaa-content-studio-inline-fallback/);
-  assert.match(wordpress, /inlineFallbackEmbedded:\s*!stylesheetReady/);
+  assert.doesNotMatch(wordpress, /ttaa-content-studio-loader/);
+  assert.doesNotMatch(wordpress, /@import url/);
+  assert.match(wordpress, /inlineFallbackEmbedded:\s*true/);
 
   assert.match(stylesheet, /\.ttaa-article/);
   assert.ok(Buffer.byteLength(stylesheet, "utf8") < 12_000, "shared article CSS should remain compact");
