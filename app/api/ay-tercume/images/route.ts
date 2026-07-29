@@ -58,6 +58,7 @@ export async function POST(request: Request) {
       slug,
       primaryPrompt: body.primaryPrompt?.trim() || title,
       suggestions: body.suggestions?.slice(0, 2),
+      assetOrigin: new URL(request.url).origin,
     });
     return NextResponse.json({ images: { featured: serializeImage(images.featured), inline: serializeImage(images.inline) } });
   } catch (error) {

@@ -155,6 +155,7 @@ export async function POST(request: Request) {
       slug: body.package.slug,
       primaryPrompt: body.package.imagePrompt || "",
       suggestions: body.package.imageSuggestions,
+      assetOrigin: new URL(request.url).origin,
     });
     const backupPromise = backUpImages(generatedImages, body.package.slug);
     phase = "wordpress-media";

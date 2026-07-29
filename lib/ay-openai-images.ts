@@ -42,6 +42,7 @@ type GenerateAyImagesInput = {
   slug: string;
   primaryPrompt: string;
   suggestions?: AyImageSuggestionInput[];
+  assetOrigin?: string;
 };
 
 type OpenAIImageResponse = {
@@ -95,10 +96,51 @@ function wait(milliseconds: number) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-function logoFile() {
-  const separator = ayLogoDataUrl.indexOf(",");
-  if (separator < 0) throw new Error("Ay Tercüme logo dosyası okunamadı.");
-  return new File([decodeBase64(ayLogoDataUrl.slice(separator + 1))], "ay-tercume-logo.jpg", { type: "image/jpeg" });
+type LogoAsset = {
+  bytes: Uint8Array;
+  fileName: string;
+  contentType: string;
+};
+
+function importedAssetValue(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return null;
+  const record = value as { src?: unknown; default?: unknown };
+  if (typeof record.src === "string") return record.src;
+  return record.default === value ? null : importedAssetValue(record.default);
+}
+
+function embeddedLogoAsset(value: unknown): LogoAsset | null {
+  const source = importedAssetValue(value);
+  if (!source?.startsWith("data:")) return null;
+  const match = /^data:([^;,]+);base64,([\s\S]+)$/.exec(source);
+  if (!match) throw new Error("Ay Tercüme logo dosyası okunamadı.");
+  return {
+    bytes: decodeBase64(match[2]),
+    fileName: "ay-tercume-logo.jpg",
+    contentType: match[1] || "image/jpeg",
+  };
+}
+
+async function resolveLogoAsset(assetOrigin?: string): Promise<LogoAsset> {
+  const embedded = embeddedLogoAsset(ayLogoDataUrl as unknown);
+  if (embedded) return embedded;
+  if (!assetOrigin) throw new Error("Ay Tercüme logo adresi bulunamadı.");
+
+  const logoUrl = new URL("/ay-tercume-logo.jpg", assetOrigin);
+  const response = await fetch(logoUrl, { cache: "force-cache", signal: AbortSignal.timeout(15_000) });
+  if (!response.ok) throw new Error(`Ay Tercüme logo dosyası yüklenemedi (${response.status}).`);
+  return {
+    bytes: new Uint8Array(await response.arrayBuffer()),
+    fileName: "ay-tercume-logo.jpg",
+    contentType: response.headers.get("content-type")?.split(";")[0] || "image/jpeg",
+  };
+}
+
+function logoFile(asset: LogoAsset) {
+  const buffer = new ArrayBuffer(asset.bytes.byteLength);
+  new Uint8Array(buffer).set(asset.bytes);
+  return new File([buffer], asset.fileName, { type: asset.contentType });
 }
 
 function topicVisualDirection(topic: string) {
@@ -119,14 +161,14 @@ function protectedPrompt(topic: string, role: AyImageRole, sourcePrompt: string,
   return `Kullanım alanı: profesyonel tercüme ve belge hizmetleri\nMarka: Ay Tercüme\nAna konu: ${topic}\n${composition}\nGirdi görseli, kullanıcı tarafından sağlanan gerçek Ay Tercüme logosudur. Logodaki AY TERCÜME yazısını, dairesel okları, konuşan profil simgesini, şirket alt satırını, oranları ve siyah-mavi renkleri değiştirmeden koru. Logoyu sol üst köşeye, güvenli boşluk içinde, küçük fakat net ve okunaklı yerleştir. Logoyu yeniden çizme, kısaltma veya başka bir işaretle değiştirme.\nGörsel üzerindeki ana başlık (harfiyen): "${requestedHeadline}". Bu kısa başlığı logonun altında/sol orta alanda büyük, koyu, yüksek kontrastlı ve kolay okunur biçimde göster. Başka başlık, paragraf veya rastgele yazı ekleme.\nKonuya özel brief: ${sourcePrompt}\n${topicVisualDirection(topic)}\nAy Tercüme görsel dili: beyaz ana arka plan (#ffffff), ana turkuaz/mint (#43cc9b), vurgu mavisi (#009fe4), siyaha yakın koyu yazı (#0f0b08). Yumuşak mint-mavi geçişler, hafif dünya/iletişim motifleri, temiz katmanlar ve ölçülü gölgeler kullan. Tasarım ferah, güvenilir, çağdaş ve kurumsal olsun.\nKompozisyon: jenerik stok fotoğraf, kalabalık insan grubu, ilgisiz ofis/laptop sahnesi ve koyu ağır arka plan kullanma. Sağdaki nesneler doğrudan konuya hizmet etsin. Metin ve logo çevresinde geniş negatif alan bırak.\nGüvenlik: okunabilir kişisel bilgi, gerçek kimlik belgesi, sahte devlet mührü, kurum arması, resmî damga, gerçek imza, yanıltıcı logo veya garanti vaadi üretme. Belge yüzeylerinde yalnızca soyut çizgi ve şekiller kullan. Ek logo, watermark, küçük anlamsız metin veya fiyat etiketi ekleme. 16:9 yatay, modern ve yüksek kaliteli web bannerı.`;
 }
 
-async function requestImage(prompt: string) {
+async function requestImage(prompt: string, logo: LogoAsset) {
   const config = imageConfig();
   let lastError = "OpenAI görsel üretimi başarısız oldu.";
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const form = new FormData();
     form.append("model", config.model);
     form.append("prompt", prompt);
-    form.append("image[]", logoFile());
+    form.append("image[]", logoFile(logo));
     form.append("n", "1");
     form.append("size", config.size);
     form.append("quality", config.quality);
@@ -161,13 +203,13 @@ async function requestImage(prompt: string) {
   throw new Error(lastError);
 }
 
-async function generateOne(input: GenerateAyImagesInput, role: AyImageRole, suggestion?: AyImageSuggestionInput): Promise<AyGeneratedImageBinary> {
+async function generateOne(input: GenerateAyImagesInput, logo: LogoAsset, role: AyImageRole, suggestion?: AyImageSuggestionInput): Promise<AyGeneratedImageBinary> {
   const titleText = shortHeadline(suggestion?.titleText?.trim() || input.title);
   const sourcePrompt = suggestion?.imagePrompt?.trim() || (role === "featured"
     ? input.primaryPrompt
     : `${input.title} konusu için belge hazırlama, terminoloji kontrolü ve güvenli teslim adımlarını gösteren kurumsal süreç görseli.`);
   const prompt = protectedPrompt(input.title, role, sourcePrompt, titleText);
-  const { config, item } = await requestImage(prompt);
+  const { config, item } = await requestImage(prompt, logo);
   const extension = config.format === "jpeg" ? "jpg" : config.format;
   const contentType = config.format === "jpeg" ? "image/jpeg" : config.format === "png" ? "image/png" : "image/webp";
   const defaultAlt = role === "featured" ? `${input.title} için Ay Tercüme hizmet görseli` : `${input.title} belge hazırlama ve kontrol süreci`;
@@ -193,9 +235,10 @@ async function generateOne(input: GenerateAyImagesInput, role: AyImageRole, sugg
 }
 
 export async function generateAyBlogImages(input: GenerateAyImagesInput) {
+  const logo = await resolveLogoAsset(input.assetOrigin);
   const [featured, inline] = await Promise.all([
-    generateOne(input, "featured", input.suggestions?.[0]),
-    generateOne(input, "inline", input.suggestions?.[1]),
+    generateOne(input, logo, "featured", input.suggestions?.[0]),
+    generateOne(input, logo, "inline", input.suggestions?.[1]),
   ]);
   return { featured, inline };
 }

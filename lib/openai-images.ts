@@ -30,6 +30,7 @@ type GenerateImagesInput = {
   slug: string;
   primaryPrompt: string;
   suggestions?: ImageSuggestionInput[];
+  assetOrigin?: string;
 };
 
 type OpenAIImageResponse = {
@@ -72,20 +73,61 @@ function wait(milliseconds: number) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-function logoFile() {
-  const separator = ttaaLogoDataUrl.indexOf(",");
-  if (separator < 0) throw new Error("The embedded TTAA logo asset is invalid.");
-  return new File([decodeBase64(ttaaLogoDataUrl.slice(separator + 1))], "ttaa-brand-logo.png", { type: "image/png" });
+type LogoAsset = {
+  bytes: Uint8Array;
+  fileName: string;
+  contentType: string;
+};
+
+function importedAssetValue(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return null;
+  const record = value as { src?: unknown; default?: unknown };
+  if (typeof record.src === "string") return record.src;
+  return record.default === value ? null : importedAssetValue(record.default);
 }
 
-async function requestImage(prompt: string) {
+function embeddedLogoAsset(value: unknown): LogoAsset | null {
+  const source = importedAssetValue(value);
+  if (!source?.startsWith("data:")) return null;
+  const match = /^data:([^;,]+);base64,([\s\S]+)$/.exec(source);
+  if (!match) throw new Error("The embedded TTAA logo asset is invalid.");
+  return {
+    bytes: decodeBase64(match[2]),
+    fileName: "ttaa-brand-logo.png",
+    contentType: match[1] || "image/png",
+  };
+}
+
+async function resolveLogoAsset(assetOrigin?: string): Promise<LogoAsset> {
+  const embedded = embeddedLogoAsset(ttaaLogoDataUrl as unknown);
+  if (embedded) return embedded;
+  if (!assetOrigin) throw new Error("The TTAA logo asset origin is missing.");
+
+  const logoUrl = new URL("/ttaa-brand-logo.png", assetOrigin);
+  const response = await fetch(logoUrl, { cache: "force-cache", signal: AbortSignal.timeout(15_000) });
+  if (!response.ok) throw new Error(`The TTAA logo asset could not be loaded (${response.status}).`);
+  return {
+    bytes: new Uint8Array(await response.arrayBuffer()),
+    fileName: "ttaa-brand-logo.png",
+    contentType: response.headers.get("content-type")?.split(";")[0] || "image/png",
+  };
+}
+
+function logoFile(asset: LogoAsset) {
+  const buffer = new ArrayBuffer(asset.bytes.byteLength);
+  new Uint8Array(buffer).set(asset.bytes);
+  return new File([buffer], asset.fileName, { type: asset.contentType });
+}
+
+async function requestImage(prompt: string, logo: LogoAsset) {
   const config = imageConfig();
   let lastError = "OpenAI image generation failed.";
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const form = new FormData();
     form.append("model", config.model);
     form.append("prompt", prompt);
-    form.append("image[]", logoFile());
+    form.append("image[]", logoFile(logo));
     form.append("n", "1");
     form.append("size", config.size);
     form.append("quality", config.quality);
@@ -134,12 +176,12 @@ function protectedPrompt(topic: string, role: ImageRole, sourcePrompt: string) {
   return `Use case: ads-marketing\nAsset type: TTAA professional website and blog banner\nPrimary topic: ${topic}\n${composition}\nInput image: the supplied image is the exact TTAA brand logo. Preserve its spelling, proportions, globe symbol, arrows and blue/navy colors. Place it unchanged in the top-left with clear padding and no distortion.\nText (verbatim): "${topic}". Place this exact headline as large, bold, highly legible navy typography on the left below the logo. Do not misspell, paraphrase or add another headline.\nTopic-specific creative direction: ${sourcePrompt}\n${topicVisualDirection(topic)}\nBrand style: clean modern corporate white background, TTAA blue and navy gradients, soft light-grey details, trustworthy premium document-service aesthetic. Add a subtle dotted world map and restrained flowing blue gradient ribbons or wave curves for an international feel. Use realistic depth and soft shadows while keeping the arrangement uncluttered.\nComposition rules: no people, no generic office scene, no unrelated business meeting, no random laptop hero shot. Keep the left headline clear and the right document cluster specific to the named service.\nSafety constraints: no readable personal information, no copied identity document, no fake government seal or emblem, no fabricated official stamp, no claim of guaranteed approval, no imitation of a government website. Abstract document surfaces may use lines and shapes only. No additional logo, watermark, paragraph or tiny unreadable text. 16:9 landscape, modern premium website-banner quality.`;
 }
 
-async function generateOne(input: GenerateImagesInput, role: ImageRole, suggestion?: ImageSuggestionInput): Promise<GeneratedImageBinary> {
+async function generateOne(input: GenerateImagesInput, logo: LogoAsset, role: ImageRole, suggestion?: ImageSuggestionInput): Promise<GeneratedImageBinary> {
   const sourcePrompt = suggestion?.imagePrompt?.trim() || (role === "featured"
     ? input.primaryPrompt
     : `A professional close-up workflow scene showing careful multilingual document review, terminology checking and secure digital delivery for ${input.title}.`);
   const prompt = protectedPrompt(input.title, role, sourcePrompt);
-  const { config, item } = await requestImage(prompt);
+  const { config, item } = await requestImage(prompt, logo);
   const extension = config.format === "jpeg" ? "jpg" : config.format;
   const contentType = config.format === "jpeg" ? "image/jpeg" : config.format === "png" ? "image/png" : "image/webp";
   const defaultAlt = role === "featured" ? `${input.title} professional document service` : `${input.title} document review workflow`;
@@ -161,11 +203,12 @@ async function generateOne(input: GenerateImagesInput, role: ImageRole, suggesti
 }
 
 export async function generateBlogImages(input: GenerateImagesInput) {
+  const logo = await resolveLogoAsset(input.assetOrigin);
   const featuredSuggestion = input.suggestions?.[0];
   const inlineSuggestion = input.suggestions?.[1];
   const [featured, inline] = await Promise.all([
-    generateOne(input, "featured", featuredSuggestion),
-    generateOne(input, "inline", inlineSuggestion),
+    generateOne(input, logo, "featured", featuredSuggestion),
+    generateOne(input, logo, "inline", inlineSuggestion),
   ]);
   return { featured, inline };
 }

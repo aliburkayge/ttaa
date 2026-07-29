@@ -197,6 +197,10 @@ test("keeps TTAA and Ay Tercume in isolated company workspaces", async () => {
   assert.match(ayFinalizeRoute, /deleteWordPressMedia\(media\.featured\.id, "ay-tercume"\)/);
   assert.match(ayImages, /Promise\.all\(\[/);
   assert.match(ayImages, /ay-tercume-logo\.jpg/);
+  assert.match(ayImages, /function importedAssetValue/);
+  assert.match(ayImages, /new URL\("\/ay-tercume-logo\.jpg", assetOrigin\)/);
+  assert.doesNotMatch(ayImages, /ayLogoDataUrl\.indexOf/);
+  assert.match(ayImageRoute, /assetOrigin:\s*new URL\(request\.url\)\.origin/);
   assert.match(ayImages, /sol üst köşeye/);
   assert.match(ayImages, /#43cc9b/);
   assert.match(ayImages, /#009fe4/);
@@ -343,6 +347,9 @@ test("generates two protected TTAA-branded OpenAI image edits", async () => {
   assert.match(images, /subtle dotted world map/);
   assert.match(images, /image\[\]/);
   assert.match(images, /ttaa-brand-logo\.png/);
+  assert.match(images, /function importedAssetValue/);
+  assert.match(images, /new URL\("\/ttaa-brand-logo\.png", assetOrigin\)/);
+  assert.doesNotMatch(images, /ttaaLogoDataUrl\.indexOf/);
   assert.match(images, /Preserve its spelling, proportions, globe symbol, arrows and blue\/navy colors/);
   assert.match(images, /Place it unchanged in the top-left/);
   assert.match(images, /Text \(verbatim\)/);
@@ -354,6 +361,7 @@ test("generates two protected TTAA-branded OpenAI image edits", async () => {
   assert.match(resilientJson, /returned malformed JSON that could not be repaired/);
   assert.doesNotMatch(page, /process\.env\.OPENAI_API_KEY|sk-proj-/);
   assert.match(finalizeRoute, /generateBlogImages/);
+  assert.match(finalizeRoute, /assetOrigin:\s*new URL\(request\.url\)\.origin/);
   assert.match(finalizeRoute, /uploadWordPressMedia/);
   assert.match(finalizeRoute, /featuredMedia:\s*media\.featured\.id/);
   assert.match(finalizeRoute, /injectInlineImage/);
