@@ -2,6 +2,7 @@ import { parseResilientJson } from "./json";
 import { auditKeywordPolicy } from "./keyword-policy";
 import type { ResearchedLink } from "./link-catalog";
 import type { GeneratedArticle } from "./openai";
+import { requestOpenAIResponse, type OpenAIResponseOptions } from "./openai-background";
 
 export type AyGenerationBrief = {
   topic: string;
@@ -195,7 +196,9 @@ function outputText(response: OpenAIResponse) {
   throw new Error(`OpenAI eksik yanıt verdi: ${response.error?.message || response.incomplete_details?.reason || response.status || "boş yanıt"}`);
 }
 
-async function createResponse(payload: Record<string, unknown>) {
+// Kept for one release as a synchronous diagnostic fallback.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+async function createResponseLegacy(payload: Record<string, unknown>) {
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) throw new Error("OPENAI_API_KEY .env.local dosyasında bulunamadı.");
   const response = await fetch("https://api.openai.com/v1/responses", {
@@ -208,6 +211,10 @@ async function createResponse(payload: Record<string, unknown>) {
   const body = parseResilientJson<OpenAIResponse>(await response.text(), "AY Tercüme OpenAI yanıtı");
   if (!response.ok) throw new Error(`OpenAI içerik üretimi durdu: ${body.error?.message || `HTTP ${response.status}`}`);
   return body;
+}
+
+async function createDurableResponse(payload: Record<string, unknown>, options: OpenAIResponseOptions) {
+  return await requestOpenAIResponse(payload, options) as OpenAIResponse;
 }
 
 function sourceInventory(links: ResearchedLink[]) {
@@ -325,14 +332,20 @@ AY TERCÜME KONU KİLİDİ VE YAYIN KURALLARI
 19. Sonucu sessizce denetle: konu uyumu ≥90, ana konu kapsamı ≥70, drift ≤15, arama niyeti ≥90, tekrar ≤10, resmî iddia güvenliği ≥95. Eksikse dönmeden önce düzelt.
 20. Başlık eski içerik güncellemesi ise ana arama niyetini ve yararlı özgün bilgiyi koru; zayıf, yinelenen ve güncelliği doğrulanamayan iddiaları yeniden yaz.`;
 
-export async function generateAyArticle(brief: AyGenerationBrief, links: ResearchedLink[]) {
+export type AyGenerationRunOptions = {
+  jobId?: string;
+  responseIds?: Record<string, string>;
+  onResponseId?: OpenAIResponseOptions["onResponseId"];
+};
+
+export async function generateAyArticle(brief: AyGenerationBrief, links: ResearchedLink[], run: AyGenerationRunOptions = {}) {
   const model = modelName();
   const domains = officialDomains(links);
   const webTool: Record<string, unknown> = { type: "web_search", search_context_size: "high" };
   if (domains.length) webTool.filters = { allowed_domains: domains };
   const inventory = sourceInventory(links);
 
-  const writer = await createResponse({
+  const writer = await createDurableResponse({
     model,
     reasoning: { effort: "medium" },
     tools: [webTool],
@@ -344,10 +357,10 @@ export async function generateAyArticle(brief: AyGenerationBrief, links: Researc
     ],
     text: { format: { type: "json_schema", name: "ay_tercume_topic_locked_article", strict: true, schema: AY_ARTICLE_SCHEMA } },
     max_output_tokens: 22_000,
-  });
+  }, { stage: "writer", idempotencyKey: run.jobId ? `${run.jobId}:writer` : undefined, resumeResponseId: run.responseIds?.writer, onResponseId: run.onResponseId });
   parsePackage(writer, links, brief);
 
-  const editor = await createResponse({
+  const editor = await createDurableResponse({
     model,
     reasoning: { effort: "high" },
     input: [
@@ -356,14 +369,15 @@ export async function generateAyArticle(brief: AyGenerationBrief, links: Researc
     ],
     text: { format: { type: "json_schema", name: "ay_tercume_edited_article", strict: true, schema: AY_ARTICLE_SCHEMA } },
     max_output_tokens: 22_000,
-  });
+  }, { stage: "editor", idempotencyKey: run.jobId ? `${run.jobId}:editor` : undefined, resumeResponseId: run.responseIds?.editor, onResponseId: run.onResponseId });
 
   let final = parsePackage(editor, links, brief);
   let gate = deterministicGate(final, brief);
   let repair: OpenAIResponse | undefined;
   let repairSource = outputText(editor);
   for (let attempt = 0; !gate.passes && attempt < 2; attempt += 1) {
-    repair = await createResponse({
+    const repairStage = `repair-${attempt + 1}`;
+    repair = await createDurableResponse({
       model,
       reasoning: { effort: "high" },
       input: [
@@ -372,7 +386,7 @@ export async function generateAyArticle(brief: AyGenerationBrief, links: Researc
       ],
       text: { format: { type: "json_schema", name: "ay_tercume_repaired_article", strict: true, schema: AY_ARTICLE_SCHEMA } },
       max_output_tokens: 22_000,
-    });
+    }, { stage: repairStage, idempotencyKey: run.jobId ? `${run.jobId}:${repairStage}` : undefined, resumeResponseId: run.responseIds?.[repairStage], onResponseId: run.onResponseId });
     repairSource = outputText(repair);
     final = parsePackage(repair, links, brief);
     gate = deterministicGate(final, brief);

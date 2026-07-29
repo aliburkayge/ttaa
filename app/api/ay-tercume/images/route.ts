@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import { requireAdminSession } from "../../../../lib/auth";
 import { generateAyBlogImages, type AyGeneratedImageBinary, type AyImageSuggestionInput } from "../../../../lib/ay-openai-images";
+import { classifyJobError } from "../../../../lib/job-errors";
+import { newRequestId } from "../../../../lib/observability";
+import { withDeadline } from "../../../../lib/deadline";
+
+export const runtime = "nodejs";
+export const maxDuration = 840;
 
 type ImageRequest = {
   title?: string;
@@ -39,6 +45,7 @@ function serializeImage(image: AyGeneratedImageBinary) {
 }
 
 export async function POST(request: Request) {
+  const requestId = newRequestId(request);
   try {
     await requireAdminSession();
   } catch {
@@ -46,6 +53,7 @@ export async function POST(request: Request) {
   }
 
   try {
+    return await withDeadline(async () => {
     const body = (await request.json()) as ImageRequest;
     const title = body.title?.trim();
     const slug = body.slug?.trim();
@@ -61,8 +69,9 @@ export async function POST(request: Request) {
       assetOrigin: new URL(request.url).origin,
     });
     return NextResponse.json({ images: { featured: serializeImage(images.featured), inline: serializeImage(images.inline) } });
+    });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Ay Tercüme görselleri üretilemedi.";
-    return NextResponse.json({ error: `OpenAI görsel üretimi durdu: ${message}` }, { status: 502 });
+    const safe = classifyJobError(error, "legacy-ay-images", requestId);
+    return NextResponse.json({ error: `OpenAI görsel üretimi durdu: ${safe.message}`, code: safe.code, retryable: safe.retryable, requestId }, { status: safe.httpStatus });
   }
 }

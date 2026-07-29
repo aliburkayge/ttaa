@@ -96,9 +96,10 @@ test("server-renders the secured TTAA studio shell", async () => {
 });
 
 test("keeps AI generation server-side and WordPress draft-only", async () => {
-  const [page, openai, generateRoute, finalizeRoute, wordpress, gitignore] = await Promise.all([
+  const [page, openai, openaiBackground, generateRoute, finalizeRoute, wordpress, gitignore] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../lib/openai.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/openai-background.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/generate/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/projects/finalize/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/wordpress.ts", import.meta.url), "utf8"),
@@ -108,7 +109,9 @@ test("keeps AI generation server-side and WordPress draft-only", async () => {
   assert.match(page, /fetch\("\/api\/generate"/);
   assert.doesNotMatch(page, /process\.env\.OPENAI_API_KEY|sk-proj-/);
   assert.match(openai, /process\.env\.OPENAI_API_KEY/);
-  assert.match(openai, /https:\/\/api\.openai\.com\/v1\/responses/);
+  assert.match(openaiBackground, /https:\/\/api\.openai\.com\/v1\/responses/);
+  assert.match(openaiBackground, /background:\s*true/);
+  assert.match(openaiBackground, /resumeResponseId/);
   assert.match(openai, /type:\s*"json_schema"/);
   assert.match(openai, /type:\s*"web_search"/);
   assert.match(openai, /TOPIC-LOCK OPERATING RULES/);
@@ -119,11 +122,55 @@ test("keeps AI generation server-side and WordPress draft-only", async () => {
   assert.match(openai, /secondaryKeywords/);
   assert.match(openai, /auditKeywordPolicy/);
   assert.match(generateRoute, /requireAdminSession/);
+  assert.match(generateRoute, /maxDuration = 840/);
+  assert.match(generateRoute, /withDeadline/);
   assert.match(finalizeRoute, /createWordPressDraft/);
+  assert.match(finalizeRoute, /maxDuration = 840/);
   assert.match(finalizeRoute, /focusKeyword: body\.package\.focusKeyword/);
   assert.match(finalizeRoute, /secondaryKeywords: body\.package\.secondaryKeywords/);
   assert.match(wordpress, /status:\s*"draft"/);
   assert.match(gitignore, /^\.env\*/m);
+});
+
+test("runs long production work through the durable Supabase worker queue", async () => {
+  const [migration, jobs, pipeline, worker, jobsRoute, statusRoute, healthRoute, jobHook, page, ayStudio, envExample, wordpress] = await Promise.all([
+    readFile(new URL("../supabase/migrations/202607290001_content_jobs.sql", import.meta.url), "utf8"),
+    readFile(new URL("../lib/jobs.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/job-pipeline.ts", import.meta.url), "utf8"),
+    readFile(new URL("../scripts/content-worker.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/jobs/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/jobs/[id]/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/health/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/use-content-job.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/ay-tercume/studio.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../.env.example", import.meta.url), "utf8"),
+    readFile(new URL("../lib/wordpress.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(migration, /create table if not exists public\.content_jobs/);
+  assert.match(migration, /for update skip locked/i);
+  assert.match(migration, /renew_content_job_lease/);
+  assert.match(migration, /content_worker_heartbeats/);
+  assert.match(jobs, /idempotency_key/);
+  assert.match(jobs, /claim_content_job/);
+  assert.match(pipeline, /generateBlogImage/);
+  assert.match(pipeline, /generateAyBlogImage/);
+  assert.match(pipeline, /storeGeneratedImage/);
+  assert.match(pipeline, /jobId:\s*job\.id/);
+  assert.match(worker, /renewContentJobLease/);
+  assert.match(worker, /concurrency:\s*1/);
+  assert.match(jobsRoute, /status:\s*job\.status === "queued" \? 202/);
+  assert.match(statusRoute, /elapsedMs/);
+  assert.match(healthRoute, /getLatestWorkerHeartbeat/);
+  assert.match(jobHook, /startInFlight/);
+  assert.match(jobHook, /window\.localStorage\.setItem\(storageKey/);
+  assert.match(page, /useContentJob<DurableJobResult>\("ttaa"\)/);
+  assert.match(ayStudio, /useContentJob<AyDurableJobResult>\("ay-tercume"\)/);
+  assert.match(envExample, /JOB_MAX_RUNTIME_MS=2700000/);
+  assert.match(envExample, /OPENAI_RESPONSE_TIMEOUT_MS=480000/);
+  assert.match(wordpress, /TTAA_CONTENT_JOB:/);
+  assert.match(wordpress, /findDraftByJobMarker/);
 });
 
 test("presents a beginner-friendly minimal content workflow", async () => {

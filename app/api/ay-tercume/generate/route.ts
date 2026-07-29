@@ -4,6 +4,12 @@ import { dedupeAyLinks, getAyCuratedLinks, type AyLinkBrief } from "../../../../
 import { generateAyArticle, type AyGenerationBrief } from "../../../../lib/ay-openai";
 import { buildAyContentPackage, type AyRenderOptions } from "../../../../lib/ay-render";
 import { canonicalLinkHost, type ResearchedLink } from "../../../../lib/link-catalog";
+import { classifyJobError } from "../../../../lib/job-errors";
+import { newRequestId } from "../../../../lib/observability";
+import { withDeadline } from "../../../../lib/deadline";
+
+export const runtime = "nodejs";
+export const maxDuration = 840;
 
 type GenerateRequest = AyLinkBrief & AyGenerationBrief & AyRenderOptions;
 
@@ -35,6 +41,7 @@ async function liveAyLinks(brief: GenerateRequest): Promise<ResearchedLink[]> {
 }
 
 export async function POST(request: Request) {
+  const requestId = newRequestId(request);
   try {
     await requireAdminSession();
   } catch {
@@ -42,6 +49,7 @@ export async function POST(request: Request) {
   }
 
   try {
+    return await withDeadline(async () => {
     const brief = (await request.json()) as GenerateRequest;
     validateBrief(brief);
     const normalized: GenerateRequest = {
@@ -75,8 +83,9 @@ export async function POST(request: Request) {
     const research = { mode: process.env.AY_WP_URL ? "live-ay-wordpress-plus-official-web-search" : "curated-ay-links-plus-official-web-search", researchedAt };
     const contentPackage = buildAyContentPackage(generated.article, links, normalized, generated.trace, research);
     return NextResponse.json({ package: contentPackage });
+    });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "AY Tercüme içerik üretimi başarısız oldu.";
-    return NextResponse.json({ error: message }, { status: 502 });
+    const safe = classifyJobError(error, "legacy-ay-content-generation", requestId);
+    return NextResponse.json({ error: safe.message, code: safe.code, retryable: safe.retryable, requestId }, { status: safe.httpStatus });
   }
 }

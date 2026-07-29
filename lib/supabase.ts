@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { fetchWithRetry, integerEnv } from "./upstream";
 
 export const CONTENT_BUCKET = "ttaa-content-packages";
 export const IMAGE_BUCKET = "ttaa-blog-images";
@@ -9,7 +10,15 @@ export function getSupabaseAdmin() {
   if (!url || !serviceRoleKey) throw new Error("Supabase server credentials are not configured.");
   return createClient(url, serviceRoleKey, {
     auth: { autoRefreshToken: false, persistSession: false },
-    global: { headers: { "X-Client-Info": "ttaa-content-studio" } },
+    global: {
+      headers: { "X-Client-Info": "ttaa-content-studio" },
+      fetch: (input, init) => fetchWithRetry(input, init, {
+        upstream: "Supabase",
+        timeoutMs: integerEnv("SUPABASE_REQUEST_TIMEOUT_MS", 30_000),
+        maxAttempts: 3,
+        retryUnsafe: true,
+      }),
+    },
   });
 }
 
@@ -68,4 +77,10 @@ export async function storeContentPackage(payload: Record<string, unknown>, slug
   const { error } = await supabase.storage.from(CONTENT_BUCKET).upload(path, file, { contentType: "application/json", upsert: false });
   if (error) throw new Error(error.message);
   return { bucket: CONTENT_BUCKET, path };
+}
+
+export async function loadGeneratedImage(path: string) {
+  const { data, error } = await getSupabaseAdmin().storage.from(IMAGE_BUCKET).download(path);
+  if (error || !data) throw new Error(`Supabase image download failed: ${error?.message || "empty object"}`);
+  return new Uint8Array(await data.arrayBuffer());
 }

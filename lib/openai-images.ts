@@ -1,5 +1,5 @@
-import ttaaLogoDataUrl from "../public/ttaa-brand-logo.png?inline";
 import { parseResilientJson } from "./json";
+import { integerEnv } from "./upstream";
 
 export type ImageRole = "featured" | "inline";
 
@@ -25,7 +25,7 @@ export type GeneratedImageBinary = {
   branding: { logoReferenceApplied: true; logoPlacement: "top-left"; headlineRequested: true; method: "gpt-image-2-edit" };
 };
 
-type GenerateImagesInput = {
+export type GenerateImagesInput = {
   title: string;
   slug: string;
   primaryPrompt: string;
@@ -100,18 +100,20 @@ function embeddedLogoAsset(value: unknown): LogoAsset | null {
 }
 
 async function resolveLogoAsset(assetOrigin?: string): Promise<LogoAsset> {
-  const embedded = embeddedLogoAsset(ttaaLogoDataUrl as unknown);
+  if (assetOrigin) {
+    const logoUrl = new URL("/ttaa-brand-logo.png", assetOrigin);
+    const response = await fetch(logoUrl, { cache: "force-cache", signal: AbortSignal.timeout(15_000) });
+    if (!response.ok) throw new Error(`The TTAA logo asset could not be loaded (${response.status}).`);
+    return {
+      bytes: new Uint8Array(await response.arrayBuffer()),
+      fileName: "ttaa-brand-logo.png",
+      contentType: response.headers.get("content-type")?.split(";")[0] || "image/png",
+    };
+  }
+  const assetModule = await import("../public/ttaa-brand-logo.png?inline");
+  const embedded = embeddedLogoAsset(assetModule as unknown);
   if (embedded) return embedded;
-  if (!assetOrigin) throw new Error("The TTAA logo asset origin is missing.");
-
-  const logoUrl = new URL("/ttaa-brand-logo.png", assetOrigin);
-  const response = await fetch(logoUrl, { cache: "force-cache", signal: AbortSignal.timeout(15_000) });
-  if (!response.ok) throw new Error(`The TTAA logo asset could not be loaded (${response.status}).`);
-  return {
-    bytes: new Uint8Array(await response.arrayBuffer()),
-    fileName: "ttaa-brand-logo.png",
-    contentType: response.headers.get("content-type")?.split(";")[0] || "image/png",
-  };
+  throw new Error("The TTAA logo asset origin is missing.");
 }
 
 function logoFile(asset: LogoAsset) {
@@ -140,7 +142,7 @@ async function requestImage(prompt: string, logo: LogoAsset) {
       headers: { Authorization: `Bearer ${config.apiKey}`, Accept: "application/json" },
       body: form,
       cache: "no-store",
-      signal: AbortSignal.timeout(180_000),
+      signal: AbortSignal.timeout(integerEnv("OPENAI_IMAGE_TIMEOUT_MS", 240_000)),
     });
     const rawPayload = await response.text();
     let payload: OpenAIImageResponse;
@@ -211,6 +213,11 @@ export async function generateBlogImages(input: GenerateImagesInput) {
     generateOne(input, logo, "inline", inlineSuggestion),
   ]);
   return { featured, inline };
+}
+
+export async function generateBlogImage(input: GenerateImagesInput, role: ImageRole) {
+  const logo = await resolveLogoAsset(input.assetOrigin);
+  return generateOne(input, logo, role, input.suggestions?.[role === "featured" ? 0 : 1]);
 }
 
 export async function verifyOpenAIImageConnection() {

@@ -5,10 +5,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { AyContentPackage } from "../../lib/ay-render";
+import { JobApiError, useContentJob } from "../../lib/use-content-job";
 import CompanySwitcher from "../company-switcher";
 
 type AyView = "create" | "library" | "brand" | "integrations";
 type AyTab = "preview" | "seo" | "html" | "head" | "schema";
+type AyDurableJobResult = { package: AyContentPackage; warning?: string };
 
 type AyBrief = {
   topic: string;
@@ -76,6 +78,7 @@ function ArticleRenderer({ content }: { content?: AyContentPackage }) {
 }
 
 export default function AyTercumeStudio({ email }: { email: string }) {
+  const asyncJob = useContentJob<AyDurableJobResult>("ay-tercume");
   const [activeView, setActiveView] = useState<AyView>("create");
   const [activeTab, setActiveTab] = useState<AyTab>("preview");
   const [brief, setBrief] = useState<AyBrief>(EMPTY_BRIEF);
@@ -89,6 +92,37 @@ export default function AyTercumeStudio({ email }: { email: string }) {
   const [warning, setWarning] = useState("");
   const [copied, setCopied] = useState(false);
   const [savedAt, setSavedAt] = useState("");
+
+  useEffect(() => {
+    const current = asyncJob.job;
+    if (!current) return;
+    const timer = window.setTimeout(() => {
+      const stages: Record<string, number> = {
+        queued: 1, research: 1, writer: 2, writing: 2, editor: 2,
+        "quality-control": 3, images: 4, "wordpress-media": 5,
+        "wordpress-draft": 5, persistence: 5, completed: 6,
+      };
+      setStage(stages[current.stage] || 1);
+      if (current.status === "queued" || current.status === "running") {
+        setIsGenerating(true);
+        setResult(null);
+        setError("");
+        return;
+      }
+      setIsGenerating(false);
+      if (current.status === "succeeded" && current.result?.package) {
+        setWarning(current.result.warning || "");
+        completePackage(current.result.package);
+      } else if (current.status === "failed" || current.status === "cancelled") {
+        setError(current.error?.message || (current.status === "cancelled" ? "Çalışma güvenli şekilde iptal edildi." : "İçerik işi tamamlanamadı."));
+        setCanRetryImages(Boolean(current.canRetry));
+        setCanRetryFinalize(false);
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+    // completePackage intentionally uses the current form snapshot for local cache only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [asyncJob.job]);
 
   useEffect(() => {
     const saved = window.localStorage.getItem("ay-tercume-studio-state");
@@ -183,7 +217,7 @@ export default function AyTercumeStudio({ email }: { email: string }) {
     setStage(6);
   }
 
-  async function generate() {
+  async function generateLegacy() {
     if (!brief.topic.trim()) return;
     setIsGenerating(true);
     setResult(null);
@@ -215,6 +249,28 @@ export default function AyTercumeStudio({ email }: { email: string }) {
       setCanRetryFinalize(generationError instanceof AyPipelineError && generationError.step === "wordpress" && generationError.retryable);
     } finally {
       setIsGenerating(false);
+    }
+  }
+
+  async function generate() {
+    if (!brief.topic.trim()) return;
+    setIsGenerating(true);
+    setResult(null);
+    setPendingPackage(null);
+    setError("");
+    setCanRetryImages(false);
+    setCanRetryFinalize(false);
+    setWarning("");
+    setStage(1);
+    try {
+      await asyncJob.start(brief as unknown as Record<string, unknown>);
+    } catch (error) {
+      if (error instanceof JobApiError && error.code === "ASYNC_JOBS_DISABLED") {
+        await generateLegacy();
+        return;
+      }
+      setIsGenerating(false);
+      setError(error instanceof Error ? error.message : "Dayanıklı içerik işi başlatılamadı.");
     }
   }
 
@@ -318,12 +374,12 @@ export default function AyTercumeStudio({ email }: { email: string }) {
 
             <section className="output-panel">
               <div className="workflow-strip">{AY_STAGES.map(([label, note], index) => <div key={label} className={stage > index ? "done" : stage === index ? "current" : ""}><span>{stage > index ? "✓" : index + 1}</span><div><strong>{label}</strong><small>{note}</small></div></div>)}</div>
-              {error ? <div className="publish-banner error"><span>!</span><div><strong>{canRetryImages ? "Görsel paketi tamamlanamadı" : canRetryFinalize ? "WordPress aktarımı tamamlanamadı" : "İçerik tamamlanamadı"}</strong><small>{error}</small></div>{canRetryImages || canRetryFinalize ? <button onClick={() => void (canRetryFinalize ? retryFinalize() : retryImages())}>{canRetryFinalize ? "Taslak aktarımını yeniden dene" : "Görselleri yeniden dene"}</button> : null}</div> : null}
+              {error ? <div className="publish-banner error"><span>!</span><div><strong>{asyncJob.job?.canRetry ? "Eksik aşama yeniden denenebilir" : canRetryImages ? "Görsel paketi tamamlanamadı" : canRetryFinalize ? "WordPress aktarımı tamamlanamadı" : "İçerik tamamlanamadı"}</strong><small>{error}</small>{asyncJob.job?.error?.requestId ? <small>Takip kodu: {asyncJob.job.error.requestId}</small> : null}</div>{asyncJob.job?.canRetry ? <button onClick={() => void asyncJob.retry()}>Kaldığı yerden yeniden dene</button> : canRetryImages || canRetryFinalize ? <button onClick={() => void (canRetryFinalize ? retryFinalize() : retryImages())}>{canRetryFinalize ? "Taslak aktarımını yeniden dene" : "Görselleri yeniden dene"}</button> : null}</div> : null}
               {result && !isGenerating && !error && result.images && result.wordpress ? <div className="publish-banner success"><span>✓</span><div><strong>Ay Tercüme WordPress taslağı hazır</strong><small>Yazı #{result.wordpress.id} · 2 görsel yüklendi · {result.wordpress.seo.applied ? `${result.wordpress.seo.plugin.toUpperCase()} SEO alanları doğrulandı` : result.wordpress.seo.focusKeywordApplied ? "Focus keyword doğrulandı; diğer SEO alanlarını kontrol edin" : "SEO alanları kontrol edilmeli"}</small>{warning ? <small>{warning}</small> : null}</div><a href={result.wordpress.editUrl} target="_blank" rel="noreferrer">WordPress&apos;te aç</a></div> : null}
               {result && !isGenerating && !error && !result.images ? <div className="publish-banner attention"><span>IMG</span><div><strong>Yerel metin paketi yüklendi</strong><small>Büyük görsel dosyaları tarayıcı hafızasına kaydedilmez. Metni yeniden üretmeden iki görseli tekrar hazırlayabilirsiniz.</small></div><button onClick={() => void retryImages()}>2 görseli üret</button></div> : null}
               <div className="output-toolbar"><div className="tab-list" role="tablist">{([ ["preview", "Önizleme"], ["seo", "SEO özeti"], ["html", "HTML"], ["head", "SEO Head"], ["schema", "Schema"] ] as [AyTab, string][]).map(([tab, label]) => <button role="tab" aria-selected={activeTab === tab} key={tab} className={activeTab === tab ? "active" : ""} onClick={() => setActiveTab(tab)}>{label}</button>)}</div><div className="tool-actions"><button onClick={downloadHtml} disabled={!result}>HTML indir</button><button className="copy-button" onClick={() => void copyCurrent()} disabled={!result}>{copied ? "Kopyalandı ✓" : activeTab === "preview" ? "Paketi kopyala" : "Kopyala"}</button></div></div>
               <div className="output-canvas">
-                {isGenerating ? <div className="private-progress"><span className="pulse-ring" /><small>AY TERCÜME PAKETİ HAZIRLANIYOR</small><h2>{stage === 1 ? "Resmî kaynaklar araştırılıyor" : stage === 3 ? "İki marka görseli paralel üretiliyor" : stage === 4 ? "Görseller ve taslak WordPress'e aktarılıyor" : "Yazı, FAQ ve SEO paketi denetleniyor"}</h2><p>{stage === 3 ? "Gerçek Ay Tercüme logosu referans alınarak featured ve içerik görseli hazırlanıyor. İkisi tamamlanmadan sonuç gösterilmez." : stage === 4 ? "Featured image, içerik görseli, AIOSEO alanları ve responsive Ay tasarımı yalnızca taslak durumunda hazırlanıyor." : "Bu işlem birkaç dakika sürebilir. Konu kilidi ve tekrar kontrolleri geçmeden sonuç gösterilmez."}</p><div className="progress-track"><span style={{ width: `${Math.max(16, Math.min(94, stage * 18))}%` }} /></div></div> :
+                {isGenerating ? <div className="private-progress"><span className="pulse-ring" /><small>AY TERCÜME PAKETİ HAZIRLANIYOR</small><h2>{asyncJob.job?.stage === "research" ? "Resmî kaynaklar araştırılıyor" : asyncJob.job?.stage === "writer" || asyncJob.job?.stage === "writing" ? "Türkçe yazı hazırlanıyor" : asyncJob.job?.stage === "editor" ? "Editör kontrolü yapılıyor" : asyncJob.job?.stage === "quality-control" ? "Konu kilidi ve kalite kapıları denetleniyor" : asyncJob.job?.stage === "images" ? "İki marka görseli hazırlanıyor" : asyncJob.job?.stage?.startsWith("wordpress") ? "Görseller ve taslak WordPress'e aktarılıyor" : "Çalışma kuyruğa alındı"}</h2><p>Bu çalışma Railway worker üzerinde devam eder. Sayfayı kapatabilir veya yenileyebilirsiniz; tekrar girişte kaldığı yerden görünür.</p>{asyncJob.job?.canCancel ? <button className="ghost-button" onClick={() => void asyncJob.cancel()}>Çalışmayı iptal et</button> : null}<div className="progress-track"><span style={{ width: `${asyncJob.job?.progress ?? Math.max(16, Math.min(94, stage * 18))}%` }} /></div></div> :
                 !result ? <div className="empty-result ay-empty-result"><span>AY</span><h2>Yeni içeriğiniz burada görünecek</h2><p>Başlığı girip “İçeriği ve 2 görseli oluştur” düğmesine basın. WordPress bağlantısı olmadan da eksiksiz yayın paketi hazırlanır.</p><ul><li>Türkçe konu kilidi</li><li>Resmî kaynak araştırması</li><li>SEO ve AEO paketi</li><li>Featured + içerik görseli</li></ul></div> :
                 activeTab === "preview" ? <ArticleRenderer content={result} /> :
                 activeTab === "html" || activeTab === "head" || activeTab === "schema" ? <div className="code-view"><div className="code-bar"><span>{activeTab === "html" ? "ay-article-body.html" : activeTab === "head" ? "ay-seo-head.html" : "ay-structured-data.json"}</span><small>{activeTab === "html" ? "Semantik HTML · bağımsız AY CSS" : activeTab === "head" ? "AIOSEO aktarımına hazır" : "Article + görünür FAQ eşleşmesi"}</small></div><pre><code>{codeOutput}</code></pre></div> :

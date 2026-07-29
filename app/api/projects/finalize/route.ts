@@ -3,6 +3,12 @@ import { requireAdminSession } from "../../../../lib/auth";
 import { generateBlogImages, type GeneratedImageBinary, type ImageSuggestionInput } from "../../../../lib/openai-images";
 import { storeContentPackage, storeGeneratedImage } from "../../../../lib/supabase";
 import { attachWordPressMedia, createWordPressDraft, deleteWordPressMedia, uploadWordPressMedia, type WordPressMedia } from "../../../../lib/wordpress";
+import { classifyJobError } from "../../../../lib/job-errors";
+import { newRequestId } from "../../../../lib/observability";
+import { withDeadline } from "../../../../lib/deadline";
+
+export const runtime = "nodejs";
+export const maxDuration = 840;
 
 type FinalImageAsset = {
   role: "featured" | "inline";
@@ -51,6 +57,10 @@ function validatePayload(body: FinalizeRequest) {
   if (body.package.html.length > 1_500_000 || body.package.schema.length > 250_000 || body.package.imagePrompt.length > 8_000) {
     throw new Error("The content package is too large.");
   }
+}
+
+function isRetryablePhase(phase: string) {
+  return phase === "image-generation" || phase === "wordpress-media";
 }
 
 function escapeHtml(value: string) {
@@ -136,6 +146,7 @@ function finalImageAsset(image: GeneratedImageBinary, media: WordPressMedia, bac
 }
 
 export async function POST(request: Request) {
+  const requestId = newRequestId(request);
   let phase: "request" | "image-generation" | "wordpress-media" | "wordpress-draft" | "persistence" = "request";
   let admin;
   try {
@@ -145,6 +156,7 @@ export async function POST(request: Request) {
   }
 
   try {
+    return await withDeadline(async () => {
     const body = (await request.json()) as FinalizeRequest;
     validatePayload(body);
     const postTitle = typeof body.package.preview?.title === "string" ? body.package.preview.title : body.package.title;
@@ -223,9 +235,9 @@ export async function POST(request: Request) {
       },
       { status: 201 },
     );
+    });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Finalization failed.";
-    const retryable = phase === "image-generation" || phase === "wordpress-media";
+    const retryable = isRetryablePhase(phase);
     const phaseLabel = {
       request: "request validation",
       "image-generation": "OpenAI image generation",
@@ -233,6 +245,7 @@ export async function POST(request: Request) {
       "wordpress-draft": "WordPress draft creation",
       persistence: "package persistence",
     }[phase];
-    return NextResponse.json({ error: `${phaseLabel} stopped: ${message}`, phase, retryable }, { status: 502 });
+    const safe = classifyJobError(error, phase, requestId);
+    return NextResponse.json({ error: `${phaseLabel} stopped: ${safe.message}`, code: safe.code, phase, retryable: retryable && safe.retryable, requestId }, { status: safe.httpStatus });
   }
 }

@@ -46,6 +46,22 @@ npm run dev
 
 Open `http://localhost:3000`. Copy `.env.example` to `.env.local` and add the required server credentials before signing in.
 
+## Durable Railway jobs
+
+Production generation is designed to run outside the browser request lifecycle:
+
+1. Apply `supabase/migrations/202607290001_content_jobs.sql` once in the Supabase SQL editor.
+2. Keep the existing Railway service as the web service with `npm run start:railway`.
+3. Create a second service from the same repository named `ttaa-worker`.
+4. Set its Railway config-file path to `/railway.worker.json` (or manually set the start command to `npm run worker:railway`), do not assign a public domain, and disable sleeping.
+5. Share the same OpenAI, Supabase and both WordPress variable groups with web and worker.
+6. Set `PUBLIC_APP_URL` to the public HTTPS URL of the web service so the worker can load the protected brand-logo assets.
+7. Deploy web and worker, verify `/api/health`, then set `ASYNC_JOBS_ENABLED=true` on the web service.
+
+The browser now creates a short `202 Accepted` job request and polls its status. The worker claims one job atomically through `FOR UPDATE SKIP LOCKED`, renews a lease, checkpoints every stage, records OpenAI background response IDs, stores each completed image separately, and reconciles WordPress with a hidden job marker. Closing or refreshing the page does not cancel the work. `ASYNC_JOBS_ENABLED=false` keeps the old synchronous routes available for one compatibility release.
+
+Do not run a paid production smoke test during deployment. After both services and the worker heartbeat are healthy, start one controlled article from the panel.
+
 The local studio runs a real two-pass OpenAI content pipeline. The first pass searches topic-matched official domains and writes the long-form article. The second pass performs editorial, factual-risk, link-anchor and SEO review. Only the edited structured result is assembled into WordPress-safe HTML, JSON-LD and the final draft package.
 
 The Topic Lock keeps language-pair, document-specific and formal-process pages focused on the exact title. Speed-related words affect one relevant section instead of turning the article into a generic urgent-document checklist. Articles that report a failed topic-match, coverage, drift, intent, repetition or legal-safety audit receive up to two targeted hidden repair passes before the package can continue.

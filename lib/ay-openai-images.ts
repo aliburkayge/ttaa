@@ -1,5 +1,7 @@
-import ayLogoDataUrl from "../public/ay-tercume-logo.jpg?inline";
 import { parseResilientJson } from "./json";
+import { integerEnv } from "./upstream";
+
+const ayLogoDataUrl: unknown = null;
 
 export type AyImageRole = "featured" | "inline";
 
@@ -37,7 +39,7 @@ export type AyGeneratedImageBinary = {
   };
 };
 
-type GenerateAyImagesInput = {
+export type GenerateAyImagesInput = {
   title: string;
   slug: string;
   primaryPrompt: string;
@@ -181,7 +183,7 @@ async function requestImage(prompt: string, logo: LogoAsset) {
       headers: { Authorization: `Bearer ${config.apiKey}`, Accept: "application/json" },
       body: form,
       cache: "no-store",
-      signal: AbortSignal.timeout(180_000),
+      signal: AbortSignal.timeout(integerEnv("OPENAI_IMAGE_TIMEOUT_MS", 240_000)),
     });
     const rawPayload = await response.text();
     let payload: OpenAIImageResponse;
@@ -241,6 +243,11 @@ export async function generateAyBlogImages(input: GenerateAyImagesInput) {
     generateOne(input, logo, "inline", input.suggestions?.[1]),
   ]);
   return { featured, inline };
+}
+
+export async function generateAyBlogImage(input: GenerateAyImagesInput, role: AyImageRole) {
+  const logo = await resolveLogoAsset(input.assetOrigin);
+  return generateOne(input, logo, role, input.suggestions?.[role === "featured" ? 0 : 1]);
 }
 
 export async function verifyAyOpenAIImageConnection() {

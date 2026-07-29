@@ -2,6 +2,12 @@ import { NextResponse } from "next/server";
 import { requireAdminSession } from "../../../../lib/auth";
 import type { AyContentPackage, AyGeneratedImageAsset } from "../../../../lib/ay-render";
 import { attachWordPressMedia, createWordPressDraft, deleteWordPressMedia, uploadWordPressMedia, type WordPressMedia } from "../../../../lib/wordpress";
+import { classifyJobError } from "../../../../lib/job-errors";
+import { newRequestId } from "../../../../lib/observability";
+import { withDeadline } from "../../../../lib/deadline";
+
+export const runtime = "nodejs";
+export const maxDuration = 840;
 
 type FinalizeRequest = { brief?: Record<string, unknown>; package?: AyContentPackage };
 
@@ -68,6 +74,7 @@ function addFeaturedImageToSchema(schema: string, media: WordPressMedia, image: 
 }
 
 export async function POST(request: Request) {
+  const requestId = newRequestId(request);
   let phase: "request" | "wordpress-media" | "wordpress-draft" | "media-attach" = "request";
   try {
     await requireAdminSession();
@@ -76,6 +83,7 @@ export async function POST(request: Request) {
   }
 
   try {
+    return await withDeadline(async () => {
     const body = (await request.json()) as FinalizeRequest;
     const contentPackage = body.package;
     if (!contentPackage?.html || !contentPackage.schema || !contentPackage.slug || !contentPackage.focusKeyword || !contentPackage.images) {
@@ -125,9 +133,10 @@ export async function POST(request: Request) {
     };
     const warnings = [attachment.warning, wordpress.seo.warning, wordpress.design.warning].filter(Boolean);
     return NextResponse.json({ success: true, package: completedPackage, wordpress: completedPackage.wordpress, warning: warnings.join(" ") || undefined }, { status: 201 });
+    });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Ay Tercüme WordPress taslağı oluşturulamadı.";
-    const retryable = phase === "wordpress-media";
-    return NextResponse.json({ error: message, phase, retryable }, { status: 502 });
+    const retryable = ["wordpress-media"].includes(phase as string);
+    const safe = classifyJobError(error, phase, requestId);
+    return NextResponse.json({ error: safe.message, code: safe.code, phase, retryable: retryable && safe.retryable, requestId }, { status: safe.httpStatus });
   }
 }

@@ -1,6 +1,7 @@
 import type { ResearchedLink } from "./link-catalog";
 import { parseResilientJson } from "./json";
 import { auditKeywordPolicy } from "./keyword-policy";
+import { requestOpenAIResponse, type OpenAIResponseOptions } from "./openai-background";
 
 export type GenerationBrief = {
   topic: string;
@@ -377,36 +378,8 @@ function parsePackage(response: OpenAIResponse, approvedLinks: ResearchedLink[],
   return { article, topicLock: parsed.topicLock, audit: parsed.audit };
 }
 
-async function createResponse(payload: Record<string, unknown>) {
-  const apiKey = process.env.OPENAI_API_KEY?.trim();
-  if (!apiKey) throw new Error("OPENAI_API_KEY is missing from .env.local.");
-  let response: Response;
-  try {
-    response = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      cache: "no-store",
-      signal: AbortSignal.timeout(180_000),
-    });
-  } catch (error) {
-    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
-      throw new Error("OpenAI content generation exceeded the safe three-minute step limit. Please retry the request.");
-    }
-    throw error;
-  }
-  const raw = await response.text();
-  if (!response.ok) {
-    let detail = `HTTP ${response.status}`;
-    try {
-      detail = parseResilientJson<OpenAIResponse>(raw, "OpenAI response service").error?.message || detail;
-    } catch {
-      if (/upstream error/i.test(raw)) detail = "temporary upstream service error";
-    }
-    throw new Error(`OpenAI generation failed: ${detail}`);
-  }
-  const body = parseResilientJson<OpenAIResponse>(raw, "OpenAI response service");
-  return body;
+async function createResponse(payload: Record<string, unknown>, options: OpenAIResponseOptions) {
+  return await requestOpenAIResponse(payload, options) as OpenAIResponse;
 }
 
 function sourceInventory(links: ResearchedLink[]) {
@@ -460,7 +433,13 @@ TOPIC-LOCK OPERATING RULES
 22. Select only 3-6 approved internal anchor phrases and exactly two topic-specific TTAA banner concepts: one featured and one inline. Follow the TTAA visual system: corporate white/blue palette, clean modern premium layout, subtle world map and blue wave curves, quiet left side reserved for deterministic logo/headline compositing, and a service-specific document cluster on the right. For translation use bilingual documents and review cues; for apostille/attestation use certificates and abstract authentication steps; for visa/QVP use abstract travel documents and verification workflow. Never suggest people, generic office scenes, random laptops, government seals, copied official documents, readable personal data, fake passports, misleading official stamps, travel clichés, developer notes or pipeline messages.
 23. Silently audit the final result. Required thresholds: topic match ≥90, primary-topic coverage ≥70, topic drift ≤15, search-intent match ≥90, repetition ≤10 and legal-claim safety ≥95. Revise before returning if any threshold or deterministic focus-keyword rule fails. Scores and research notes must never appear in the visible article.`;
 
-export async function generateAndEditArticle(brief: GenerationBrief, links: ResearchedLink[]) {
+export type GenerationRunOptions = {
+  jobId?: string;
+  responseIds?: Record<string, string>;
+  onResponseId?: OpenAIResponseOptions["onResponseId"];
+};
+
+export async function generateAndEditArticle(brief: GenerationBrief, links: ResearchedLink[], run: GenerationRunOptions = {}) {
   const model = modelName();
   const sources = sourceInventory(links);
   const domains = officialDomains(links);
@@ -495,7 +474,7 @@ Use web search to verify time-sensitive or jurisdiction-specific facts within th
     input: [{ role: "system", content: writerSystem }, { role: "user", content: writerUser }],
     text: { format: { type: "json_schema", name: "ttaa_topic_locked_article", strict: true, schema: ARTICLE_SCHEMA } },
     max_output_tokens: 22_000,
-  });
+  }, { stage: "writer", idempotencyKey: run.jobId ? `${run.jobId}:writer` : undefined, resumeResponseId: run.responseIds?.writer, onResponseId: run.onResponseId });
   parsePackage(writer, links, brief);
 
   const editorSystem = `You are TTAA's final topic-lock editor and factual-risk reviewer. Preserve useful depth but remove drift, repetition, generic filler and irrelevant services. Verify the exact title remains dominant, the primary modifier does not take over, language-pair/document/formal-process rules are followed, legal claims are cautious, approved link anchors are natural, and all silent-audit thresholds pass. Do not expose topicLock or audit values in visible prose. Return only the same structured object.\n${TOPIC_LOCK_RULES}`;
@@ -506,7 +485,7 @@ Use web search to verify time-sensitive or jurisdiction-specific facts within th
     input: [{ role: "system", content: editorSystem }, { role: "user", content: editorUser }],
     text: { format: { type: "json_schema", name: "ttaa_topic_locked_edited_article", strict: true, schema: ARTICLE_SCHEMA } },
     max_output_tokens: 22_000,
-  });
+  }, { stage: "editor", idempotencyKey: run.jobId ? `${run.jobId}:editor` : undefined, resumeResponseId: run.responseIds?.editor, onResponseId: run.onResponseId });
   let finalPackage = parsePackage(editor, links, brief);
   let repair: OpenAIResponse | undefined;
   let repetition = repetitionGate(finalPackage, brief);
@@ -516,6 +495,7 @@ Use web search to verify time-sensitive or jurisdiction-specific facts within th
   if (!auditPasses(finalPackage.audit) || !repetition.passes || !faqAudit.passes || !keywordAudit.passes) {
     let articleToRepair = extractOutputText(editor);
     for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const repairStage = `repair-${attempt}`;
       repair = await createResponse({
         model,
         reasoning: { effort: "high" },
@@ -525,7 +505,7 @@ Use web search to verify time-sensitive or jurisdiction-specific facts within th
         ],
         text: { format: { type: "json_schema", name: "ttaa_topic_locked_repaired_article", strict: true, schema: ARTICLE_SCHEMA } },
         max_output_tokens: 22_000,
-      });
+      }, { stage: repairStage, idempotencyKey: run.jobId ? `${run.jobId}:${repairStage}` : undefined, resumeResponseId: run.responseIds?.[repairStage], onResponseId: run.onResponseId });
       articleToRepair = extractOutputText(repair);
       finalPackage = parsePackage(repair, links, brief);
       repetition = repetitionGate(finalPackage, brief);

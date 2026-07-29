@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import CompanySwitcher from "./company-switcher";
 import { buildTtaaWhatsAppUrl, getCuratedLinks, type ResearchedLink } from "../lib/link-catalog";
 import type { GeneratedArticle, GenerationTrace, ImageSuggestion } from "../lib/openai";
+import { JobApiError, useContentJob } from "../lib/use-content-job";
 
 type OutputTab = "preview" | "html" | "head" | "schema" | "seo";
 type WorkspaceView = "create" | "library" | "brand" | "integrations";
@@ -20,6 +21,19 @@ type IntegrationHealth = {
   wordpress?: { connected: boolean; user?: { name: string; seoPlugin?: string; articleCss?: { ready: boolean; url: string } }; error?: string };
   supabase?: { connected: boolean; storageReady: boolean; bucket?: string; imageBucket?: string; error?: string };
   openai?: { connected: boolean; model?: string; image?: { connected: boolean; model: string; size: string; quality: string; format: string }; error?: string };
+};
+
+type DurableJobResult = {
+  package: Package;
+  wordpress: {
+    id: number;
+    editUrl: string;
+    canonical: string;
+    seo?: { plugin: string; applied: boolean; focusKeywordApplied?: boolean; secondaryKeywordsApplied?: boolean; warning?: string };
+    design?: { sharedStylesheetReady: boolean; inlineFallbackEmbedded: boolean; warning?: string };
+  };
+  images?: { featured: FinalImageAsset; inline: FinalImageAsset };
+  warning?: string;
 };
 
 type FinalImageAsset = {
@@ -547,6 +561,7 @@ function LoginScreen({ onAuthenticated }: { onAuthenticated: (email: string) => 
 }
 
 export default function Home() {
+  const asyncJob = useContentJob<DurableJobResult>("ttaa");
   const [brief, setBrief] = useState<Brief>(DEFAULT_BRIEF);
   const [activeView, setActiveView] = useState<WorkspaceView>("create");
   const [activeTab, setActiveTab] = useState<OutputTab>("preview");
@@ -563,6 +578,57 @@ export default function Home() {
   const [hasCompletedResult, setHasCompletedResult] = useState(false);
   const [integrationHealth, setIntegrationHealth] = useState<IntegrationHealth | null>(null);
   const [healthLoading, setHealthLoading] = useState(false);
+
+  useEffect(() => {
+    const current = asyncJob.job;
+    if (!current) return;
+    const timer = window.setTimeout(() => {
+      const stages: Record<string, number> = {
+        queued: 1, research: 1, writer: 2, writing: 2, editor: 2,
+        "quality-control": 3, images: 3, "wordpress-media": 4,
+        "wordpress-draft": 4, persistence: 4, completed: 4,
+      };
+      setStage(stages[current.stage] || 1);
+      if (current.status === "queued" || current.status === "running") {
+        setIsGenerating(true);
+        setResultIsCurrent(false);
+        setPublishState(current.stage.startsWith("wordpress") ? { status: "publishing" } : { status: "idle" });
+        return;
+      }
+      setIsGenerating(false);
+      if (current.status === "succeeded" && current.result?.package && current.result.wordpress) {
+        const completed = current.result.package;
+        const wordpress = current.result.wordpress;
+        setResult(completed);
+        setResultIsCurrent(true);
+        setHasCompletedResult(true);
+        setPendingPackage(null);
+        setActiveTab("preview");
+        setPublishState({
+          status: "created",
+          postId: wordpress.id,
+          editUrl: wordpress.editUrl,
+          persistenceSaved: true,
+          seoApplied: Boolean(wordpress.seo?.applied),
+          focusKeywordApplied: Boolean(wordpress.seo?.focusKeywordApplied),
+          secondaryKeywordsApplied: Boolean(wordpress.seo?.secondaryKeywordsApplied),
+          seoPlugin: wordpress.seo?.plugin || "none",
+          canonical: wordpress.canonical,
+          imagesReady: Boolean(current.result.images?.featured && current.result.images?.inline),
+          warning: current.result.warning || wordpress.seo?.warning || wordpress.design?.warning,
+        });
+        window.localStorage.setItem("ttaa-studio-state", JSON.stringify({ result: completed }));
+        setSavedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+      } else if (current.status === "failed" || current.status === "cancelled") {
+        setPublishState({
+          status: "error",
+          message: current.error?.message || (current.status === "cancelled" ? "Çalışma güvenli şekilde iptal edildi." : "İçerik işi tamamlanamadı."),
+          canRetryFinalize: Boolean(current.canRetry),
+        });
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [asyncJob.job]);
 
   useEffect(() => {
     const saved = window.localStorage.getItem("ttaa-studio-state");
@@ -664,7 +730,7 @@ export default function Home() {
     }
   }
 
-  async function generate() {
+  async function generateLegacy() {
     setIsGenerating(true);
     setResultIsCurrent(false);
     setPublishState({ status: "idle" });
@@ -708,6 +774,25 @@ export default function Home() {
       setPublishState({ status: "error", message: error.message, canRetryFinalize: Boolean((error as Error & { canRetryFinalize?: boolean }).canRetryFinalize) });
     } finally {
       setIsGenerating(false);
+    }
+  }
+
+  async function generate() {
+    if (!brief.topic.trim()) return;
+    setIsGenerating(true);
+    setResultIsCurrent(false);
+    setPublishState({ status: "idle" });
+    setStage(1);
+    try {
+      await asyncJob.start(brief as unknown as Record<string, unknown>);
+    } catch (error) {
+      if (error instanceof JobApiError && error.code === "ASYNC_JOBS_DISABLED") {
+        await generateLegacy();
+        return;
+      }
+      const message = error instanceof Error ? error.message : "Dayanıklı içerik işi başlatılamadı.";
+      setIsGenerating(false);
+      setPublishState({ status: "error", message, canRetryFinalize: false });
     }
   }
 
@@ -812,7 +897,7 @@ export default function Home() {
               </div>
 
               {publishState.status === "created" && <div className="publish-banner success"><span>✓</span><div><strong>WordPress taslağı hazır</strong><small>Yazı #{publishState.postId} · {publishState.imagesReady ? "2 görsel yüklendi" : "Görseller kontrol edilmeli"} · {publishState.seoApplied ? `${publishState.seoPlugin.toUpperCase()} SEO alanları doğrulandı` : publishState.focusKeywordApplied ? "Anahtar kelimeler doğrulandı; diğer SEO alanlarını kontrol edin" : "AIOSEO focus keyword kontrol edilmeli"}{publishState.persistenceSaved ? " · Yedek alındı" : " · Yedekleme kontrol edilmeli"}</small>{publishState.warning ? <small>{publishState.warning}</small> : null}</div><a href={publishState.editUrl} target="_blank" rel="noreferrer">WordPress&apos;te aç</a></div>}
-              {publishState.status === "error" && <div className="publish-banner error"><span>!</span><div><strong>{publishState.canRetryFinalize ? "Son adım tamamlanamadı" : "İçerik oluşturulamadı"}</strong><small>{publishState.message}</small>{publishState.canRetryFinalize && pendingPackage ? <small>Hazırlanan yazı korunuyor. Sorunu giderdikten sonra yalnızca son adımı yeniden deneyebilirsiniz.</small> : null}</div>{publishState.canRetryFinalize && pendingPackage ? <button onClick={() => void finalizeProject(pendingPackage).then((finalized) => { setResult(finalized); setPendingPackage(null); setResultIsCurrent(true); setHasCompletedResult(true); }).catch(() => undefined)}>Görselleri ve taslağı yeniden dene</button> : null}</div>}
+              {publishState.status === "error" && <div className="publish-banner error"><span>!</span><div><strong>{publishState.canRetryFinalize ? "Eksik aşama yeniden denenebilir" : "İçerik oluşturulamadı"}</strong><small>{publishState.message}</small>{asyncJob.job?.error?.requestId ? <small>Takip kodu: {asyncJob.job.error.requestId}</small> : null}</div>{asyncJob.job?.canRetry ? <button onClick={() => void asyncJob.retry()}>Kaldığı yerden yeniden dene</button> : publishState.canRetryFinalize && pendingPackage ? <button onClick={() => void finalizeProject(pendingPackage).then((finalized) => { setResult(finalized); setPendingPackage(null); setResultIsCurrent(true); setHasCompletedResult(true); }).catch(() => undefined)}>Görselleri ve taslağı yeniden dene</button> : null}</div>}
 
               <div className="output-toolbar">
                 <div className="tab-list" role="tablist">
@@ -823,7 +908,7 @@ export default function Home() {
               </div>
 
               <div className="output-canvas">
-                {isGenerating ? <div className="private-progress"><span className="pulse-ring" /><small>İÇERİK HAZIRLANIYOR</small><h2>{stage === 1 ? "Kaynaklar araştırılıyor" : stage === 2 ? "Yazı ve bağlantılar hazırlanıyor" : publishState.status === "publishing" ? "Görseller hazırlanıyor ve WordPress taslağı oluşturuluyor" : "SEO ve sayfa yapısı tamamlanıyor"}</h2><p>Bu işlem birkaç dakika sürebilir. Sayfayı kapatmayın; tamamlandığında sonuç otomatik görünecek.</p><div className="progress-track"><span style={{ width: `${publishState.status === "publishing" ? 94 : Math.max(18, stage * 28)}%` }} /></div></div> :
+                {isGenerating ? <div className="private-progress"><span className="pulse-ring" /><small>İÇERİK HAZIRLANIYOR</small><h2>{asyncJob.job?.stage === "research" ? "Kaynaklar araştırılıyor" : asyncJob.job?.stage === "writer" || asyncJob.job?.stage === "writing" ? "Yazı hazırlanıyor" : asyncJob.job?.stage === "editor" ? "Editör kontrolü yapılıyor" : asyncJob.job?.stage === "quality-control" ? "Kalite kapıları kontrol ediliyor" : asyncJob.job?.stage === "images" ? "İki görsel hazırlanıyor" : asyncJob.job?.stage?.startsWith("wordpress") ? "WordPress taslağı hazırlanıyor" : stage === 1 ? "Çalışma kuyruğa alındı" : "Paket güvenli şekilde tamamlanıyor"}</h2><p>Bu çalışma Railway worker üzerinde devam eder. Sayfayı kapatabilir veya yenileyebilirsiniz; tekrar girişte kaldığı yerden görünür.</p>{asyncJob.job?.canCancel ? <button className="ghost-button" onClick={() => void asyncJob.cancel()}>Çalışmayı iptal et</button> : null}<div className="progress-track"><span style={{ width: `${asyncJob.job?.progress ?? (publishState.status === "publishing" ? 94 : Math.max(18, stage * 28))}%` }} /></div></div> :
                   !resultIsCurrent && publishState.status === "error" ? <div className="stale-result-guard"><span>!</span><small>YENİ ÇALIŞMA TAMAMLANAMADI</small><h2>Sonuç güvenli şekilde bekletiliyor</h2><p>{publishState.canRetryFinalize && pendingPackage ? "Hazırlanan yazı korunuyor. Yukarıdaki yeniden dene düğmesiyle görsel ve WordPress adımına devam edebilirsiniz." : "Önceki çalışma yeni sonuçla karışmaması için gizlendi. Yukarıdaki hata bilgisini kontrol edip tekrar deneyin."}</p></div> :
                   !hasCompletedResult ? <div className="empty-result"><span>01</span><h2>Yeni içeriğiniz burada görünecek</h2><p>Soldaki alana yazı başlığını girin ve “İçeriği oluştur ve taslak gönder” düğmesine basın.</p><ul><li>Resmî kaynak araştırması</li><li>SEO ve AIOSEO alanları</li><li>İki özgün görsel</li><li>WordPress taslağı</li></ul></div> :
                   activeTab === "preview" ? <div className="complete-preview">{result.images ? <figure className="featured-image-preview"><div><small>{result.images.featured.origin === "recovered-wordpress-draft" ? "PREVIOUS WORDPRESS FEATURED IMAGE · NOT FROM A NEW RUN" : "NEW TTAA WORDPRESS FEATURED IMAGE"}</small><span>Media #{result.images.featured.wordpress.id}</span></div><img src={result.images.featured.wordpress.url} alt={result.images.featured.alt} /></figure> : null}<ArticleRenderer html={result.html} /></div> :

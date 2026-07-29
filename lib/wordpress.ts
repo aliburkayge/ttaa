@@ -1,10 +1,15 @@
 import { parseResilientJson } from "./json";
-import articleCss from "../public/translation-article.css?raw";
-import ayArticleCss from "../public/ay-tercume-article.css?raw";
+import { fetchWithRetry, integerEnv } from "./upstream";
+
+const fetch = (input: string | URL | Request, init?: RequestInit) => fetchWithRetry(input, init, {
+  upstream: "WordPress",
+  timeoutMs: integerEnv("WORDPRESS_TIMEOUT_MS", 60_000),
+  maxAttempts: 3,
+});
 
 export type WordPressScope = "ttaa" | "ay-tercume";
 
-type WordPressDraftInput = {
+export type WordPressDraftInput = {
   postTitle: string;
   seoTitle: string;
   html: string;
@@ -14,6 +19,7 @@ type WordPressDraftInput = {
   focusKeyword: string;
   secondaryKeywords: string[];
   featuredMedia?: number;
+  jobId?: string;
 };
 
 export type WordPressMedia = { id: number; url: string; fileName: string; alt: string };
@@ -36,6 +42,11 @@ type WordPressDraft = {
   slug: string;
   title: { rendered: string };
   message?: string;
+};
+
+type WordPressDraftLookup = WordPressDraft & {
+  content?: { raw?: string };
+  featured_media?: number;
 };
 
 type AioseoKeyphrase = {
@@ -135,8 +146,21 @@ async function sharedArticleCssReady(baseUrl: string, scope: WordPressScope) {
   }
 }
 
-function inlineStyleFallback(scope: WordPressScope) {
-  const css = scope === "ay-tercume" ? ayArticleCss : articleCss;
+async function articleCssText(scope: WordPressScope) {
+  if (process.env.CONTENT_WORKER === "true") {
+    const { readFile } = await import("node:fs/promises");
+    const { resolve } = await import("node:path");
+    const file = scope === "ay-tercume" ? "ay-tercume-article.css" : "translation-article.css";
+    return readFile(resolve(process.cwd(), "public", file), "utf8");
+  }
+  const cssModule = scope === "ay-tercume"
+    ? await import("../public/ay-tercume-article.css?raw")
+    : await import("../public/translation-article.css?raw");
+  return cssModule.default;
+}
+
+async function inlineStyleFallback(scope: WordPressScope) {
+  const css = await articleCssText(scope);
   const safeCss = css.replace(/<\/style/gi, "<\\/style");
   const id = scope === "ay-tercume" ? "ay-tercume-content-studio-inline-fallback" : "ttaa-content-studio-inline-fallback";
   return `<style id="${id}">\n${safeCss}\n</style>`;
@@ -313,6 +337,32 @@ function canonicalFromDraft(baseUrl: string, slug: string, link: string) {
   return `${baseUrl}/${cleanSlug}/`;
 }
 
+function jobMarker(jobId: string) {
+  return `<!-- TTAA_CONTENT_JOB:${jobId.replace(/[^a-zA-Z0-9-]/g, "")} -->`;
+}
+
+async function findDraftByJobMarker(
+  baseUrl: string,
+  authorization: string,
+  requestedSlug: string,
+  postTitle: string,
+  marker: string,
+) {
+  const fields = "id,status,link,slug,title,content,featured_media";
+  const endpoints = [
+    `${baseUrl}/wp-json/wp/v2/posts?status=draft&context=edit&slug=${encodeURIComponent(requestedSlug)}&per_page=20&_fields=${fields}`,
+    `${baseUrl}/wp-json/wp/v2/posts?status=draft&context=edit&search=${encodeURIComponent(postTitle)}&orderby=modified&order=desc&per_page=20&_fields=${fields}`,
+  ];
+  for (const endpoint of endpoints) {
+    const response = await fetch(endpoint, { headers: { Authorization: authorization, Accept: "application/json" }, cache: "no-store" });
+    if (!response.ok) continue;
+    const posts = await readWordPressJson<WordPressDraftLookup[]>(response, "idempotency lookup");
+    const match = posts.find((post) => post.content?.raw?.includes(marker));
+    if (match) return match;
+  }
+  return null;
+}
+
 export async function verifyWordPressConnection(scope: WordPressScope = "ttaa") {
   const { baseUrl, username, applicationPassword } = wordpressConfig(scope);
   const response = await fetch(`${baseUrl}/wp-json/wp/v2/users/me?context=edit`, {
@@ -338,11 +388,17 @@ export async function createWordPressDraft(input: WordPressDraftInput, scope: Wo
   const contentSchema = schemaForContent(input.schema, seoPlugin);
   const safeSchema = contentSchema.replace(/<\/script/gi, "<\\/script");
   const stylesheetReady = await sharedArticleCssReady(baseUrl, scope);
-  const styledHtml = stylesheetReady ? input.html : `${inlineStyleFallback(scope)}\n${input.html}`;
-  const content = safeSchema ? `${styledHtml}\n\n<script type="application/ld+json">\n${safeSchema}\n</script>` : styledHtml;
+  const styledHtml = stylesheetReady ? input.html : `${await inlineStyleFallback(scope)}\n${input.html}`;
+  const marker = input.jobId ? jobMarker(input.jobId) : "";
+  const contentBody = marker ? `${styledHtml}\n${marker}` : styledHtml;
+  const content = safeSchema ? `${contentBody}\n\n<script type="application/ld+json">\n${safeSchema}\n</script>` : contentBody;
   const requestedSlug = input.slug.replace(/^\/+|\/+$/g, "");
 
-  const response = await fetch(`${baseUrl}/wp-json/wp/v2/posts`, {
+  const existing = marker ? await findDraftByJobMarker(baseUrl, authorization, requestedSlug, input.postTitle, marker) : null;
+  const endpoint = existing
+    ? `${baseUrl}/wp-json/wp/v2/posts/${existing.id}`
+    : `${baseUrl}/wp-json/wp/v2/posts`;
+  const response = await fetch(endpoint, {
     method: "POST",
     headers: { Authorization: authorization, "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({
@@ -351,10 +407,10 @@ export async function createWordPressDraft(input: WordPressDraftInput, scope: Wo
       excerpt: input.metaDescription,
       slug: requestedSlug,
       status: "draft",
-      featured_media: input.featuredMedia || 0,
+      featured_media: input.featuredMedia || existing?.featured_media || 0,
     }),
   });
-  const payload = await readWordPressJson<WordPressDraft>(response, "draft creation");
+  const payload = await readWordPressJson<WordPressDraft>(response, existing ? "idempotent draft reconciliation" : "draft creation");
   if (!response.ok) throw new Error(payload.message || `WordPress draft creation failed (${response.status}).`);
   if (payload.status !== "draft") throw new Error("WordPress returned a non-draft status; the operation was stopped.");
 

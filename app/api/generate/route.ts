@@ -3,6 +3,12 @@ import { requireAdminSession } from "../../../lib/auth";
 import { canonicalLinkHost, dedupeLinks, type LinkBrief } from "../../../lib/link-catalog";
 import { generateAndEditArticle, type GenerationBrief } from "../../../lib/openai";
 import { researchBrief } from "../../../lib/research";
+import { classifyJobError } from "../../../lib/job-errors";
+import { newRequestId } from "../../../lib/observability";
+import { withDeadline } from "../../../lib/deadline";
+
+export const runtime = "nodejs";
+export const maxDuration = 840;
 
 type GenerateRequest = LinkBrief & GenerationBrief;
 
@@ -20,6 +26,7 @@ function validateBrief(brief: GenerateRequest) {
 }
 
 export async function POST(request: Request) {
+  const requestId = newRequestId(request);
   try {
     await requireAdminSession();
   } catch {
@@ -27,6 +34,7 @@ export async function POST(request: Request) {
   }
 
   try {
+    return await withDeadline(async () => {
     const brief = (await request.json()) as GenerateRequest;
     validateBrief(brief);
     const normalizedBrief: GenerateRequest = {
@@ -57,8 +65,9 @@ export async function POST(request: Request) {
       research: { mode: research.mode, researchedAt: research.researchedAt },
       generation: generated.trace,
     });
+    });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "AI generation failed.";
-    return NextResponse.json({ error: message }, { status: 502 });
+    const safe = classifyJobError(error, "legacy-content-generation", requestId);
+    return NextResponse.json({ error: safe.message, code: safe.code, retryable: safe.retryable, requestId }, { status: safe.httpStatus });
   }
 }
