@@ -1,4 +1,5 @@
 import { parseResilientJson } from "./json";
+import { normalizeTtaaArticleHtml } from "./ttaa-html";
 import { fetchWithRetry, integerEnv } from "./upstream";
 
 const fetch = (input: string | URL | Request, init?: RequestInit) => fetchWithRetry(input, init, {
@@ -392,7 +393,8 @@ export async function createWordPressDraft(input: WordPressDraftInput, scope: Wo
   // stylesheet in every preview/render context. Keep the shared file as the
   // canonical source, but embed its scoped contents so the draft is portable
   // and the final cascade is applied after the theme styles.
-  const styledHtml = `${await inlineStyleFallback(scope)}\n${input.html}`;
+  const articleHtml = scope === "ttaa" ? normalizeTtaaArticleHtml(input.html) : input.html;
+  const styledHtml = `${await inlineStyleFallback(scope)}\n${articleHtml}`;
   const marker = input.jobId ? jobMarker(input.jobId) : "";
   const contentBody = marker ? `${styledHtml}\n${marker}` : styledHtml;
   const content = safeSchema ? `${contentBody}\n\n<script type="application/ld+json">\n${safeSchema}\n</script>` : contentBody;

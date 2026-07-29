@@ -351,6 +351,33 @@ test("separates SEO head data, shared CSS and AIOSEO-owned schema", async () => 
   assert.match(plugin, /translation-article\.css/);
 });
 
+test("keeps the Railway TTAA renderer aligned with the WordPress stylesheet", async () => {
+  const [renderer, normalizer, wordpress, page, stylesheet] = await Promise.all([
+    readFile(new URL("../lib/ttaa-render.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/ttaa-html.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/wordpress.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../public/translation-article.css", import.meta.url), "utf8"),
+  ]);
+  const requiredClasses = [
+    "ttaa-article", "ttaa-hero", "ttaa-title", "ttaa-eyebrow", "ttaa-lead",
+    "ttaa-tldr", "ttaa-tldr-mark", "ttaa-section", "ttaa-section-heading",
+    "ttaa-section-line", "ttaa-section-label", "ttaa-content-card", "ttaa-list",
+    "ttaa-check", "ttaa-resources", "ttaa-resources-intro", "ttaa-resource-grid",
+    "ttaa-resource-column", "ttaa-resource-link", "ttaa-faq-list",
+    "ttaa-faq-item", "ttaa-cta",
+  ];
+  for (const className of requiredClasses) {
+    assert.ok(renderer.includes(className), `worker renderer must emit ${className}`);
+    assert.ok(stylesheet.includes(`.${className}`), `stylesheet must define ${className}`);
+  }
+  assert.doesNotMatch(renderer, /class="(?:article-|section-|content-card|check-list|check-icon|faq-|resource-|resources-intro|tldr\b|tldr-mark|eyebrow\b|lead\b)/);
+  assert.match(normalizer, /"article-hero":\s*"ttaa-hero"/);
+  assert.match(normalizer, /"content-card":\s*"ttaa-content-card"/);
+  assert.match(wordpress, /normalizeTtaaArticleHtml\(input\.html\)/);
+  assert.match(page, /normalizePackageHtml\(parsed\.result\)/);
+});
+
 test("enforces natural language-pair headings and deterministic repetition limits", async () => {
   const openai = await readFile(new URL("../lib/openai.ts", import.meta.url), "utf8");
   assert.match(openai, /make the H1 explicitly bidirectional/);

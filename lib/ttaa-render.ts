@@ -43,7 +43,7 @@ function linkedText(value: string, links: ResearchedLink[], used: Set<string>) {
     const pattern = new RegExp(escapeRegExp(escapeHtml(link.anchor)), "i");
     if (!pattern.test(html)) continue;
     const external = link.source === "official" || /^https:\/\/(?:api\.)?whatsapp\.com/.test(link.url);
-    html = html.replace(pattern, (match) => `<a class="context-link link-${link.source}" href="${escapeHtml(link.url)}"${external ? ' target="_blank" rel="noopener noreferrer"' : ""}>${match}</a>`);
+    html = html.replace(pattern, (match) => `<a class="ttaa-context-link ttaa-link-${link.source}" href="${escapeHtml(link.url)}"${external ? ' target="_blank" rel="noopener noreferrer"' : ""}>${match}</a>`);
     used.add(link.url);
   }
   return html;
@@ -65,27 +65,27 @@ function buildHtml(article: GeneratedArticle, links: ResearchedLink[], options: 
     .map((item) => `<p>${linkedText(item, links, used)}</p>`)
     .join("");
   const heading = options.includeH1 === false
-    ? `<div class="article-title" role="heading" aria-level="2">${escapeHtml(article.title)}</div>`
-    : `<h1 class="article-title">${escapeHtml(article.title)}</h1>`;
+    ? `<div class="ttaa-title" role="heading" aria-level="2">${escapeHtml(article.title)}</div>`
+    : `<h1 class="ttaa-title">${escapeHtml(article.title)}</h1>`;
   const breadcrumb = options.visibleBreadcrumb === false ? "" : `<nav class="ttaa-breadcrumb" aria-label="Breadcrumb"><a href="/">Home</a><span aria-hidden="true">›</span><a href="/services/translation/">Translation Services</a><span aria-hidden="true">›</span><span aria-current="page">${escapeHtml(article.title)}</span></nav>`;
-  const sections = article.sections.map((section, index) => `<section class="article-section" aria-labelledby="ttaa-section-${index + 1}">
-  <div class="section-heading"><span class="section-line" aria-hidden="true"></span><div><span class="section-label">SECTION ${String(index + 1).padStart(2, "0")}</span><h2 id="ttaa-section-${index + 1}">${escapeHtml(section.title)}</h2></div></div>
-  <div class="content-card">${paragraphs(section.body)}${section.items.length ? `<ul class="check-list">${section.items.map((item) => `<li><span class="check-icon" aria-hidden="true">✓</span><span>${linkedText(item, links, used)}</span></li>`).join("")}</ul>` : ""}</div>
+  const sections = article.sections.map((section, index) => `<section class="ttaa-section" aria-labelledby="ttaa-section-${index + 1}">
+  <div class="ttaa-section-heading"><span class="ttaa-section-line" aria-hidden="true"></span><div><span class="ttaa-section-label">SECTION ${String(index + 1).padStart(2, "0")}</span><h2 id="ttaa-section-${index + 1}">${escapeHtml(section.title)}</h2></div></div>
+  <div class="ttaa-content-card">${paragraphs(section.body)}${section.items.length ? `<ul class="ttaa-list">${section.items.map((item) => `<li><span class="ttaa-check" aria-hidden="true">✓</span><span>${linkedText(item, links, used)}</span></li>`).join("")}</ul>` : ""}</div>
 </section>${index === 1 ? "\n<!-- TTAA_INLINE_IMAGE -->" : ""}`).join("\n");
-  const faqs = article.faqs.map((faq) => `<article class="faq-item"><h3>${escapeHtml(faq.question)}</h3><p>${linkedText(faq.answer, links, used)}</p></article>`).join("");
+  const faqs = article.faqs.map((faq) => `<article class="ttaa-faq-item"><h3>${escapeHtml(faq.question)}</h3><p>${linkedText(faq.answer, links, used)}</p></article>`).join("");
   const internal = links.filter((link) => link.source === "internal").slice(0, 6);
   const official = links.filter((link) => link.source === "official").slice(0, 5);
-  const resources = (title: string, items: ResearchedLink[], badge: string) => items.length ? `<div class="resource-column"><span class="resource-title">${title}</span><ul>${items.map((link) => `<li><a class="resource-link" href="${escapeHtml(link.url)}"${link.source === "official" ? ' target="_blank" rel="noopener noreferrer"' : ""}><span class="resource-badge">${badge}</span><span class="resource-copy"><strong>${escapeHtml(link.anchor)}</strong><small>${escapeHtml(link.reason)}</small></span><span class="resource-arrow">→</span></a></li>`).join("")}</ul></div>` : "";
+  const resources = (title: string, items: ResearchedLink[], badge: string) => items.length ? `<div class="ttaa-resource-column"><span class="ttaa-resource-title">${title}</span><ul>${items.map((link) => `<li><a class="ttaa-resource-link" href="${escapeHtml(link.url)}"${link.source === "official" ? ' target="_blank" rel="noopener noreferrer"' : ""}><span class="ttaa-resource-badge">${badge}</span><span class="ttaa-resource-copy"><strong>${escapeHtml(link.anchor)}</strong><small>${escapeHtml(link.reason)}</small></span><span class="ttaa-resource-arrow">→</span></a></li>`).join("")}</ul></div>` : "";
   const whatsappUrl = buildTtaaWhatsAppUrl(article.title);
 
   return `<article id="ttaa-article" class="ttaa-article">
 ${breadcrumb}
-<header class="article-hero"><span class="eyebrow">${escapeHtml(article.eyebrow)}</span>${heading}<p class="lead">${linkedText(article.intro, links, used)}</p></header>
-<section class="tldr" aria-labelledby="ttaa-tldr-title"><div class="tldr-mark" aria-hidden="true">TL</div><div><span class="section-label">QUICK ANSWER</span><h2 id="ttaa-tldr-title">TL;DR</h2><ul>${article.tldr.map((item) => `<li>${linkedText(item, links, used)}</li>`).join("")}</ul></div></section>
+<header class="ttaa-hero"><span class="ttaa-eyebrow">${escapeHtml(article.eyebrow)}</span>${heading}<p class="ttaa-lead">${linkedText(article.intro, links, used)}</p></header>
+<section class="ttaa-tldr" aria-labelledby="ttaa-tldr-title"><div class="ttaa-tldr-mark" aria-hidden="true">TL</div><div><span class="ttaa-section-label">QUICK ANSWER</span><h2 id="ttaa-tldr-title">TL;DR</h2><ul>${article.tldr.map((item) => `<li>${linkedText(item, links, used)}</li>`).join("")}</ul></div></section>
 ${sections}
-<aside class="ttaa-resources" aria-labelledby="ttaa-resources-title"><div class="resources-intro"><span class="section-label">RELATED RESOURCES</span><h2 id="ttaa-resources-title">TTAA Services and Official References</h2><p>Relevant TTAA services and primary institutional sources for this topic.</p></div><div class="resource-grid">${resources("TTAA INTERNAL GUIDANCE", internal, "TT")}${resources("OFFICIAL REFERENCES", official, "REF")}</div></aside>
-<section class="article-section" aria-labelledby="ttaa-faq-title"><div class="section-heading"><span class="section-line" aria-hidden="true"></span><div><span class="section-label">FREQUENTLY ASKED QUESTIONS</span><h2 id="ttaa-faq-title">Frequently Asked Questions</h2></div></div><div class="faq-list">${faqs}</div></section>
-<section class="article-cta"><span class="section-label">NEXT STEP</span><h2>${escapeHtml(article.cta.title)}</h2><p>${linkedText(article.cta.body, links, used)}</p><a href="${escapeHtml(whatsappUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(article.cta.buttonLabel)}</a></section>
+<aside class="ttaa-resources" aria-labelledby="ttaa-resources-title"><div class="ttaa-resources-intro"><span class="ttaa-section-label">RELATED RESOURCES</span><h2 id="ttaa-resources-title">TTAA Services and Official References</h2><p>Relevant TTAA services and primary institutional sources for this topic.</p></div><div class="ttaa-resource-grid">${resources("TTAA INTERNAL GUIDANCE", internal, "TT")}${resources("OFFICIAL REFERENCES", official, "REF")}</div></aside>
+<section class="ttaa-section" aria-labelledby="ttaa-faq-title"><div class="ttaa-section-heading"><span class="ttaa-section-line" aria-hidden="true"></span><div><span class="ttaa-section-label">FREQUENTLY ASKED QUESTIONS</span><h2 id="ttaa-faq-title">Frequently Asked Questions</h2></div></div><div class="ttaa-faq-list">${faqs}</div></section>
+<section class="ttaa-cta"><span class="ttaa-section-label">NEXT STEP</span><h2>${escapeHtml(article.cta.title)}</h2><p>${linkedText(article.cta.body, links, used)}</p><a href="${escapeHtml(whatsappUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(article.cta.buttonLabel)}</a></section>
 </article>`;
 }
 
@@ -144,4 +144,3 @@ export function buildTtaaContentPackage(
     research,
   };
 }
-

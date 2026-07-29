@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import CompanySwitcher from "./company-switcher";
 import { buildTtaaWhatsAppUrl, getCuratedLinks, type ResearchedLink } from "../lib/link-catalog";
 import type { GeneratedArticle, GenerationTrace, ImageSuggestion } from "../lib/openai";
+import { normalizeTtaaArticleHtml } from "../lib/ttaa-html";
 import { JobApiError, useContentJob } from "../lib/use-content-job";
 
 type OutputTab = "preview" | "html" | "head" | "schema" | "seo";
@@ -99,6 +100,11 @@ type ArticlePreview = {
   faqs: { question: string; answer: string }[];
   cta?: { title: string; body: string; buttonLabel: string };
 };
+
+function normalizePackageHtml(contentPackage: Package): Package {
+  const html = normalizeTtaaArticleHtml(contentPackage.html);
+  return html === contentPackage.html ? contentPackage : { ...contentPackage, html };
+}
 
 const DEFAULT_BRIEF: Brief = {
   topic: "QVP Verification for KSA Work Visa",
@@ -597,7 +603,7 @@ export default function Home() {
       }
       setIsGenerating(false);
       if (current.status === "succeeded" && current.result?.package && current.result.wordpress) {
-        const completed = current.result.package;
+        const completed = normalizePackageHtml(current.result.package);
         const wordpress = current.result.wordpress;
         setResult(completed);
         setResultIsCurrent(true);
@@ -641,7 +647,7 @@ export default function Home() {
           setBrief(restoredBrief);
         }
         if (parsed.result) {
-          setResult(parsed.result);
+          setResult(normalizePackageHtml(parsed.result));
           setHasCompletedResult(true);
         }
       }, 0);
@@ -670,7 +676,9 @@ export default function Home() {
       .then(async (response) => response.ok ? await response.json() as { html: string; images: { featured: FinalImageAsset; inline: FinalImageAsset } } : null)
       .then((payload) => {
         if (!payload || cancelled) return;
-        setResult((current) => current.slug === result.slug && !current.images ? { ...current, html: payload.html, images: payload.images } : current);
+        setResult((current) => current.slug === result.slug && !current.images
+          ? normalizePackageHtml({ ...current, html: payload.html, images: payload.images })
+          : current);
       })
       .catch(() => undefined);
     return () => { cancelled = true; };
@@ -720,7 +728,7 @@ export default function Home() {
         imagesReady: Boolean(payload.images?.featured && payload.images?.inline),
         warning: [payload.persistence?.warning, payload.wordpress.seo?.warning, payload.wordpress.design?.warning].filter(Boolean).join(" ") || undefined,
       });
-      return payload.package || { ...next, images: payload.images };
+      return normalizePackageHtml(payload.package || { ...next, images: payload.images });
     } catch (publishError) {
       const error = publishError instanceof Error ? publishError : new Error("Automatic draft creation failed.");
       const canRetryFinalize = Boolean((error as Error & { canRetryFinalize?: boolean }).canRetryFinalize);
