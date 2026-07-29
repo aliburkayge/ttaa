@@ -380,15 +380,32 @@ function parsePackage(response: OpenAIResponse, approvedLinks: ResearchedLink[],
 async function createResponse(payload: Record<string, unknown>) {
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) throw new Error("OPENAI_API_KEY is missing from .env.local.");
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-    cache: "no-store",
-    signal: AbortSignal.timeout(240_000),
-  });
-  const body = parseResilientJson<OpenAIResponse>(await response.text(), "OpenAI response service");
-  if (!response.ok) throw new Error(`OpenAI generation failed: ${body.error?.message || `HTTP ${response.status}`}`);
+  let response: Response;
+  try {
+    response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      cache: "no-store",
+      signal: AbortSignal.timeout(180_000),
+    });
+  } catch (error) {
+    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+      throw new Error("OpenAI content generation exceeded the safe three-minute step limit. Please retry the request.");
+    }
+    throw error;
+  }
+  const raw = await response.text();
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`;
+    try {
+      detail = parseResilientJson<OpenAIResponse>(raw, "OpenAI response service").error?.message || detail;
+    } catch {
+      if (/upstream error/i.test(raw)) detail = "temporary upstream service error";
+    }
+    throw new Error(`OpenAI generation failed: ${detail}`);
+  }
+  const body = parseResilientJson<OpenAIResponse>(raw, "OpenAI response service");
   return body;
 }
 

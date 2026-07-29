@@ -482,6 +482,24 @@ function ArticleRenderer({ html }: { html: string }) {
   );
 }
 
+async function readApiPayload<T>(response: Response, operation: string): Promise<T> {
+  const raw = await response.text();
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    const requestId = response.headers.get("x-railway-request-id");
+    const upstreamFailure = [502, 503, 504].includes(response.status) || /upstream error/i.test(raw);
+    const message = upstreamFailure
+      ? `${operation} Railway bağlantısı tarafından geçici olarak kesildi. Birkaç dakika sonra tekrar deneyin.${requestId ? ` İstek kodu: ${requestId}` : ""}`
+      : `${operation} sunucudan okunamayan bir yanıt aldı (HTTP ${response.status || "unknown"}).`;
+    throw Object.assign(new Error(message), {
+      canRetryFinalize: upstreamFailure,
+      requestId,
+      status: response.status,
+    });
+  }
+}
+
 function LoginScreen({ onAuthenticated }: { onAuthenticated: (email: string) => void }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -498,7 +516,7 @@ function LoginScreen({ onAuthenticated }: { onAuthenticated: (email: string) => 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
       });
-      const payload = (await response.json()) as { authenticated?: boolean; email?: string; error?: string };
+      const payload = await readApiPayload<{ authenticated?: boolean; email?: string; error?: string }>(response, "Giriş işlemi");
       if (!response.ok || !payload.authenticated || !payload.email) throw new Error(payload.error || "Sign-in failed.");
       onAuthenticated(payload.email);
     } catch (loginError) {
@@ -606,7 +624,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ brief, package: next }),
       });
-      const payload = (await response.json()) as {
+      const payload = await readApiPayload<{
         error?: string;
         retryable?: boolean;
         phase?: string;
@@ -614,7 +632,7 @@ export default function Home() {
         images?: { featured: FinalImageAsset; inline: FinalImageAsset };
         wordpress?: { id: number; status: string; editUrl: string; canonical: string; seo?: { plugin: string; applied: boolean; focusKeywordApplied?: boolean; secondaryKeywordsApplied?: boolean; warning?: string }; design?: { sharedStylesheetReady: boolean; inlineFallbackEmbedded: boolean; warning?: string } };
         persistence?: { saved: boolean; warning?: string };
-      };
+      }>(response, "Görsel ve WordPress taslak aktarımı");
       if (response.status === 401) {
         setAuthState("anonymous");
         throw new Error("Your session expired. Sign in again to create the WordPress draft.");
@@ -657,13 +675,13 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(brief),
       });
-      const generationPayload = (await generationResponse.json()) as {
+      const generationPayload = await readApiPayload<{
         error?: string;
         article?: GeneratedArticle;
         links?: ResearchedLink[];
         generation?: GenerationTrace;
         research?: { mode: string; researchedAt: string };
-      };
+      }>(generationResponse, "İçerik üretimi");
       if (generationResponse.status === 401) {
         setAuthState("anonymous");
         throw new Error("Your session expired before AI research could start.");
