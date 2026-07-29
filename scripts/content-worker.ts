@@ -1,7 +1,7 @@
-import { loadEnvConfig } from "@next/env";
+import nextEnv from "@next/env";
 import { createServer, type Server } from "node:http";
 
-loadEnvConfig(process.cwd());
+nextEnv.loadEnvConfig(process.cwd());
 process.env.CONTENT_WORKER = "true";
 
 const { classifyJobError } = await import("../lib/job-errors");

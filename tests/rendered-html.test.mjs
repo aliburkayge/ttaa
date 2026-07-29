@@ -161,6 +161,8 @@ test("runs long production work through the durable Supabase worker queue", asyn
   assert.match(pipeline, /jobId:\s*job\.id/);
   assert.match(worker, /renewContentJobLease/);
   assert.match(worker, /concurrency:\s*1/);
+  assert.doesNotMatch(worker, /import\s*\{\s*loadEnvConfig\s*\}\s*from\s*"@next\/env"/);
+  assert.match(worker, /nextEnv\.loadEnvConfig/);
   assert.match(worker, /writeWorkerHeartbeat\(workerId,\s*"starting"\)/);
   assert.match(worker, /recoverWorkerUnavailableJobs/);
   assert.match(railwayStart, /serviceName\.includes\("worker"\)/);
