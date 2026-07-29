@@ -1,4 +1,5 @@
 import { loadEnvConfig } from "@next/env";
+import { createServer, type Server } from "node:http";
 
 loadEnvConfig(process.cwd());
 process.env.CONTENT_WORKER = "true";
@@ -10,6 +11,7 @@ const {
   deleteExpiredJobs,
   failContentJob,
   getContentJob,
+  recoverWorkerUnavailableJobs,
   requeueContentJob,
   renewContentJobLease,
   writeWorkerHeartbeat,
@@ -23,6 +25,7 @@ const leaseSeconds = Math.max(30, Math.round(Number(process.env.JOB_LEASE_SECOND
 const heartbeatMs = Math.max(10_000, Math.round((Number(process.env.JOB_HEARTBEAT_SECONDS) || 30) * 1_000));
 let stopping = false;
 let activeJobId: string | undefined;
+let healthServer: Server | null = null;
 
 function wait(milliseconds: number) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -43,8 +46,42 @@ async function heartbeat(status: string) {
   }
 }
 
+function startHealthServer() {
+  const port = Number(process.env.PORT);
+  if (!Number.isFinite(port) || port <= 0) return;
+  healthServer = createServer((request, response) => {
+    if (request.url === "/api/auth/status" || request.url === "/health") {
+      response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      response.end(JSON.stringify({
+        worker: "ok",
+        status: activeJobId ? "busy" : stopping ? "stopping" : "idle",
+        activeJob: Boolean(activeJobId),
+      }));
+      return;
+    }
+    response.writeHead(404, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ error: "Not found" }));
+  });
+  healthServer.listen(port, "0.0.0.0", () => {
+    logEvent("worker.health_server_started", { workerId, port });
+  });
+}
+
 async function run() {
   logEvent("worker.started", { workerId, leaseSeconds, heartbeatMs, concurrency: 1 });
+  try {
+    await writeWorkerHeartbeat(workerId, "starting");
+  } catch (error) {
+    logEvent("worker.startup_failed", { workerId, stage: "heartbeat", errorCode: classifyJobError(error, "heartbeat").code });
+    throw error;
+  }
+  startHealthServer();
+  try {
+    const recovered = await recoverWorkerUnavailableJobs();
+    logEvent("worker.unavailable_jobs_recovered", { workerId, recovered });
+  } catch (error) {
+    logEvent("worker.recovery_failed", { workerId, errorCode: classifyJobError(error, "worker-recovery").code });
+  }
   try {
     const deleted = await deleteExpiredJobs(Math.max(1, Number(process.env.JOB_RETENTION_DAYS) || 7));
     logEvent("worker.retention_cleanup", { workerId, deleted });
@@ -120,6 +157,7 @@ async function run() {
 
   clearInterval(idleHeartbeat);
   await heartbeat("stopped");
+  if (healthServer) await new Promise<void>((resolve) => healthServer?.close(() => resolve()));
   logEvent("worker.stopped", { workerId });
 }
 

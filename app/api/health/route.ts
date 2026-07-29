@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { asyncJobsEnabled, getLatestWorkerHeartbeat } from "../../../lib/jobs";
+import { asyncJobsEnabled, getWorkerAvailability } from "../../../lib/jobs";
 
 export const runtime = "nodejs";
 export const maxDuration = 15;
@@ -10,9 +10,7 @@ export async function GET() {
     return NextResponse.json({ web: "ok", asyncJobs: false, worker: { status: "disabled" }, checkedAt });
   }
   try {
-    const heartbeat = await getLatestWorkerHeartbeat();
-    const ageMs = heartbeat?.last_seen_at ? Date.now() - Date.parse(heartbeat.last_seen_at) : null;
-    const healthy = ageMs !== null && ageMs < 90_000;
+    const { heartbeat, ageMs, healthy } = await getWorkerAvailability();
     return NextResponse.json({
       web: "ok",
       asyncJobs: true,
@@ -29,4 +27,3 @@ export async function GET() {
     }, { status: 503 });
   }
 }
-

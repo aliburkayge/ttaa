@@ -273,6 +273,70 @@ export async function getLatestWorkerHeartbeat() {
   return data;
 }
 
+export async function getWorkerAvailability(maxAgeMs = 90_000) {
+  const heartbeat = await getLatestWorkerHeartbeat();
+  const ageMs = heartbeat?.last_seen_at ? Date.now() - Date.parse(heartbeat.last_seen_at) : null;
+  return {
+    healthy: ageMs !== null && ageMs >= 0 && ageMs < maxAgeMs,
+    heartbeat,
+    ageMs,
+  };
+}
+
+export async function failUnclaimedJobWithoutWorker(job: ContentJob) {
+  if (job.status !== "queued" || job.lease_owner) return job;
+  const now = new Date().toISOString();
+  const errorValue: SafeJobError = {
+    code: "WORKER_UNAVAILABLE",
+    message: "The Railway content worker is not connected. Check the worker start command and Supabase service-role variables, then retry this job.",
+    stage: "queued",
+    retryable: true,
+    httpStatus: 503,
+  };
+  const { data, error } = await getSupabaseAdmin()
+    .from(TABLE)
+    .update({
+      status: "failed",
+      error: errorValue,
+      finished_at: now,
+      updated_at: now,
+    })
+    .eq("id", job.id)
+    .eq("status", "queued")
+    .is("lease_owner", null)
+    .select("*")
+    .maybeSingle();
+  if (error) throw new Error(`Supabase unavailable-worker checkpoint failed: ${error.message}`);
+  return (data || job) as ContentJob;
+}
+
+export async function recoverWorkerUnavailableJobs(limit = 10) {
+  const { data: failed, error: lookupError } = await getSupabaseAdmin()
+    .from(TABLE)
+    .select("id")
+    .eq("status", "failed")
+    .contains("error", { code: "WORKER_UNAVAILABLE" })
+    .order("updated_at", { ascending: true })
+    .limit(Math.max(1, Math.min(50, limit)));
+  if (lookupError) throw new Error(`Supabase worker-recovery lookup failed: ${lookupError.message}`);
+  const ids = (failed || []).map((job) => job.id);
+  if (!ids.length) return 0;
+  const { error } = await getSupabaseAdmin()
+    .from(TABLE)
+    .update({
+      status: "queued",
+      error: null,
+      finished_at: null,
+      lease_owner: null,
+      lease_expires_at: null,
+      updated_at: new Date().toISOString(),
+    })
+    .in("id", ids)
+    .eq("status", "failed");
+  if (error) throw new Error(`Supabase worker recovery failed: ${error.message}`);
+  return ids.length;
+}
+
 export async function deleteExpiredJobs(retentionDays: number) {
   const cutoff = new Date(Date.now() - Math.max(1, retentionDays) * 86_400_000).toISOString();
   const { error, count } = await getSupabaseAdmin()

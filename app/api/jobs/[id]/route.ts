@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAdminSession } from "../../../../lib/auth";
-import { getContentJob } from "../../../../lib/jobs";
+import { failUnclaimedJobWithoutWorker, getContentJob, getWorkerAvailability } from "../../../../lib/jobs";
 import { classifyJobError, publicJobError } from "../../../../lib/job-errors";
 import { newRequestId } from "../../../../lib/observability";
 
@@ -12,9 +12,14 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
   try {
     const session = await requireAdminSession();
     const { id } = await context.params;
-    const job = await getContentJob(id);
+    let job = await getContentJob(id);
     if (!job || job.owner_email !== session.email) {
       return NextResponse.json({ error: { code: "NOT_FOUND", message: "Job not found.", retryable: false, requestId } }, { status: 404 });
+    }
+    const queuedForMs = job.status === "queued" ? Date.now() - Date.parse(job.created_at) : 0;
+    if (job.status === "queued" && !job.lease_owner && queuedForMs > 120_000) {
+      const worker = await getWorkerAvailability();
+      if (!worker.healthy) job = await failUnclaimedJobWithoutWorker(job);
     }
     const started = job.started_at ? Date.parse(job.started_at) : Date.parse(job.created_at);
     return NextResponse.json({
@@ -38,4 +43,3 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     return NextResponse.json({ error: publicJobError(safe) }, { status: safe.httpStatus });
   }
 }
-

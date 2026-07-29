@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAdminSession } from "../../../lib/auth";
-import { asyncJobsEnabled, createContentJob, getLatestActiveJob, type JobBrand } from "../../../lib/jobs";
+import { asyncJobsEnabled, createContentJob, getLatestActiveJob, getWorkerAvailability, type JobBrand } from "../../../lib/jobs";
 import { classifyJobError, publicJobError } from "../../../lib/job-errors";
 import { logEvent, newRequestId } from "../../../lib/observability";
 
@@ -28,6 +28,10 @@ export async function POST(request: Request) {
       }, { status: 503 });
     }
     const session = await requireAdminSession();
+    const worker = await getWorkerAvailability();
+    if (!worker.healthy) {
+      throw new Error("Content worker unavailable: no healthy content worker heartbeat was found.");
+    }
     const body = await request.json() as { brand?: unknown; brief?: unknown; clientRequestId?: unknown };
     if (!validBrand(body.brand)) throw new Error("Brand must be ttaa or ay-tercume.");
     const brief = validateBrief(body.brief);
@@ -63,4 +67,3 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: publicJobError(safe) }, { status: safe.httpStatus });
   }
 }
-

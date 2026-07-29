@@ -8,6 +8,7 @@ export type SafeErrorCode =
   | "MODERATION_BLOCKED"
   | "UPSTREAM_TIMEOUT"
   | "UPSTREAM_UNAVAILABLE"
+  | "WORKER_UNAVAILABLE"
   | "CONFIGURATION_ERROR"
   | "CANCELLED"
   | "INTERNAL_ERROR";
@@ -45,6 +46,8 @@ export function classifyJobError(error: unknown, stage = "unknown", requestId?: 
     safe = { code: "RATE_LIMITED", message, retryable: true, httpStatus: 429, upstreamStatus };
   } else if (/timed? ?out|timeout|deadline|exceeded the safe/.test(lower)) {
     safe = { code: "UPSTREAM_TIMEOUT", message, retryable: true, httpStatus: 504, upstreamStatus };
+  } else if (/worker unavailable|healthy content worker|worker heartbeat/.test(lower)) {
+    safe = { code: "WORKER_UNAVAILABLE", message, retryable: true, httpStatus: 503 };
   } else if ((upstreamStatus && upstreamStatus >= 500) || /upstream|fetch failed|econn|socket|network/.test(lower)) {
     safe = { code: "UPSTREAM_UNAVAILABLE", message, retryable: true, httpStatus: 503, upstreamStatus };
   } else if (/missing|not configured|credentials/.test(lower)) {
@@ -66,4 +69,3 @@ export function publicJobError(error: SafeJobError) {
     requestId: error.requestId,
   };
 }
-

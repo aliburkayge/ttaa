@@ -133,11 +133,12 @@ test("keeps AI generation server-side and WordPress draft-only", async () => {
 });
 
 test("runs long production work through the durable Supabase worker queue", async () => {
-  const [migration, jobs, pipeline, worker, jobsRoute, statusRoute, healthRoute, jobHook, page, ayStudio, envExample, wordpress] = await Promise.all([
+  const [migration, jobs, pipeline, worker, railwayStart, jobsRoute, statusRoute, healthRoute, jobHook, page, ayStudio, envExample, wordpress] = await Promise.all([
     readFile(new URL("../supabase/migrations/202607290001_content_jobs.sql", import.meta.url), "utf8"),
     readFile(new URL("../lib/jobs.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/job-pipeline.ts", import.meta.url), "utf8"),
     readFile(new URL("../scripts/content-worker.ts", import.meta.url), "utf8"),
+    readFile(new URL("../scripts/railway-start.mjs", import.meta.url), "utf8"),
     readFile(new URL("../app/api/jobs/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/jobs/[id]/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/health/route.ts", import.meta.url), "utf8"),
@@ -160,9 +161,14 @@ test("runs long production work through the durable Supabase worker queue", asyn
   assert.match(pipeline, /jobId:\s*job\.id/);
   assert.match(worker, /renewContentJobLease/);
   assert.match(worker, /concurrency:\s*1/);
+  assert.match(worker, /writeWorkerHeartbeat\(workerId,\s*"starting"\)/);
+  assert.match(worker, /recoverWorkerUnavailableJobs/);
+  assert.match(railwayStart, /serviceName\.includes\("worker"\)/);
   assert.match(jobsRoute, /status:\s*job\.status === "queued" \? 202/);
+  assert.match(jobsRoute, /getWorkerAvailability/);
   assert.match(statusRoute, /elapsedMs/);
-  assert.match(healthRoute, /getLatestWorkerHeartbeat/);
+  assert.match(statusRoute, /failUnclaimedJobWithoutWorker/);
+  assert.match(healthRoute, /getWorkerAvailability/);
   assert.match(jobHook, /startInFlight/);
   assert.match(jobHook, /window\.localStorage\.setItem\(storageKey/);
   assert.match(page, /useContentJob<DurableJobResult>\("ttaa"\)/);
