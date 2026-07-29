@@ -719,8 +719,8 @@ export default function Home() {
   }
 
   function downloadHtml() {
-    const document = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${result.head}<link rel="stylesheet" href="translation-article.css"></head><body>${result.html}<script type="application/ld+json">${result.schema.replace(/<\/script/gi, "<\\/script")}</script></body></html>`;
-    const blob = new Blob([document], { type: "text/html;charset=utf-8" });
+    const htmlDocument = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${result.head}<link rel="stylesheet" href="translation-article.css"></head><body>${result.html}<script type="application/ld+json">${result.schema.replace(/<\/script/gi, "<\\/script")}</script></body></html>`;
+    const blob = new Blob([htmlDocument], { type: "text/html;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;

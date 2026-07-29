@@ -29,7 +29,12 @@ export async function POST(request: Request) {
   try {
     const brief = (await request.json()) as GenerateRequest;
     validateBrief(brief);
-    const normalizedBrief: GenerateRequest = { audience: "", country: "", documentType: "", ...brief };
+    const normalizedBrief: GenerateRequest = {
+      ...brief,
+      audience: brief.audience ?? "",
+      country: brief.country ?? "",
+      documentType: brief.documentType ?? "",
+    };
 
     const research = await researchBrief(normalizedBrief);
     const generated = await generateAndEditArticle(normalizedBrief, research.links);

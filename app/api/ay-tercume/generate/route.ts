@@ -45,16 +45,16 @@ export async function POST(request: Request) {
     const brief = (await request.json()) as GenerateRequest;
     validateBrief(brief);
     const normalized: GenerateRequest = {
-      audience: "",
-      country: "",
-      documentType: "",
-      mode: "new",
-      length: "guide",
-      includeH1: true,
-      visibleBreadcrumb: true,
-      articleSchema: true,
-      faqSchema: true,
       ...brief,
+      audience: brief.audience ?? "",
+      country: brief.country ?? "",
+      documentType: brief.documentType ?? "",
+      mode: brief.mode ?? "new",
+      length: brief.length ?? "guide",
+      includeH1: brief.includeH1 ?? true,
+      visibleBreadcrumb: brief.visibleBreadcrumb ?? true,
+      articleSchema: brief.articleSchema ?? true,
+      faqSchema: brief.faqSchema ?? true,
     };
     const live = await liveAyLinks(normalized);
     const researchedAt = new Date().toISOString();
