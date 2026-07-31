@@ -56,6 +56,8 @@ export type AyContentPackage = {
   links: ResearchedLink[];
   generation: AyGenerationTrace;
   research: { mode: string; researchedAt: string };
+  projectId?: string;
+  projectRevision?: number;
 };
 
 function escapeHtml(value: string) {

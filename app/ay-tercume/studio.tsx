@@ -7,10 +7,18 @@ import { useEffect, useMemo, useState } from "react";
 import type { AyContentPackage } from "../../lib/ay-render";
 import { JobApiError, useContentJob } from "../../lib/use-content-job";
 import CompanySwitcher from "../company-switcher";
+import ProjectLibrary from "../project-library";
 
 type AyView = "create" | "library" | "brand" | "integrations";
 type AyTab = "preview" | "seo" | "html" | "head" | "schema";
-type AyDurableJobResult = { package: AyContentPackage; warning?: string };
+type AyDurableJobResult = { package: AyContentPackage; projectId?: string; warning?: string };
+
+type AyIntegrationHealth = {
+  wordpress?: { connected: boolean; user?: { name: string; seoPlugin?: string }; error?: string };
+  supabase?: { connected: boolean; storageReady: boolean; error?: string };
+  openai?: { connected: boolean; model?: string; image?: { connected: boolean }; error?: string };
+  whatsapp?: { connected: boolean; phone?: string; error?: string };
+};
 
 type AyBrief = {
   topic: string;
@@ -92,6 +100,10 @@ export default function AyTercumeStudio({ email }: { email: string }) {
   const [warning, setWarning] = useState("");
   const [copied, setCopied] = useState(false);
   const [savedAt, setSavedAt] = useState("");
+  const [health, setHealth] = useState<AyIntegrationHealth | null>(null);
+  const [healthLoading, setHealthLoading] = useState(false);
+  const [resultProjectId, setResultProjectId] = useState<string | null>(null);
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
 
   useEffect(() => {
     const current = asyncJob.job;
@@ -112,6 +124,7 @@ export default function AyTercumeStudio({ email }: { email: string }) {
       setIsGenerating(false);
       if (current.status === "succeeded" && current.result?.package) {
         setWarning(current.result.warning || "");
+        setResultProjectId(current.result.projectId || current.result.package.projectId || null);
         completePackage(current.result.package);
       } else if (current.status === "failed" || current.status === "cancelled") {
         setError(current.error?.message || (current.status === "cancelled" ? "Çalışma güvenli şekilde iptal edildi." : "İçerik işi tamamlanamadı."));
@@ -336,6 +349,22 @@ export default function AyTercumeStudio({ email }: { email: string }) {
     window.location.href = "/";
   }
 
+  async function loadIntegrationHealth() {
+    setHealthLoading(true);
+    try {
+      const response = await fetch("/api/integrations/health?brand=ay-tercume", { cache: "no-store" });
+      if (response.ok) setHealth(await response.json() as AyIntegrationHealth);
+    } finally {
+      setHealthLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    // Mirrors the mount-time fetch idiom used by checkIntegrations() in app/page.tsx.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (activeView === "integrations" && !health && !healthLoading) void loadIntegrationHealth();
+  }, [activeView, health, healthLoading]);
+
   return (
     <main className="studio-shell ay-studio">
       <header className="studio-header">
@@ -375,7 +404,7 @@ export default function AyTercumeStudio({ email }: { email: string }) {
             <section className="output-panel">
               <div className="workflow-strip">{AY_STAGES.map(([label, note], index) => <div key={label} className={stage > index ? "done" : stage === index ? "current" : ""}><span>{stage > index ? "✓" : index + 1}</span><div><strong>{label}</strong><small>{note}</small></div></div>)}</div>
               {error ? <div className="publish-banner error"><span>!</span><div><strong>{asyncJob.job?.canRetry ? "Eksik aşama yeniden denenebilir" : canRetryImages ? "Görsel paketi tamamlanamadı" : canRetryFinalize ? "WordPress aktarımı tamamlanamadı" : "İçerik tamamlanamadı"}</strong><small>{error}</small>{asyncJob.job?.error?.requestId ? <small>Takip kodu: {asyncJob.job.error.requestId}</small> : null}</div>{asyncJob.job?.canRetry ? <button onClick={() => void asyncJob.retry()}>Kaldığı yerden yeniden dene</button> : canRetryImages || canRetryFinalize ? <button onClick={() => void (canRetryFinalize ? retryFinalize() : retryImages())}>{canRetryFinalize ? "Taslak aktarımını yeniden dene" : "Görselleri yeniden dene"}</button> : null}</div> : null}
-              {result && !isGenerating && !error && result.images && result.wordpress ? <div className="publish-banner success"><span>✓</span><div><strong>Ay Tercüme WordPress taslağı hazır</strong><small>Yazı #{result.wordpress.id} · 2 görsel yüklendi · {result.wordpress.seo.applied ? `${result.wordpress.seo.plugin.toUpperCase()} SEO alanları doğrulandı` : result.wordpress.seo.focusKeywordApplied ? "Focus keyword doğrulandı; diğer SEO alanlarını kontrol edin" : "SEO alanları kontrol edilmeli"}</small>{warning ? <small>{warning}</small> : null}</div><a href={result.wordpress.editUrl} target="_blank" rel="noreferrer">WordPress&apos;te aç</a></div> : null}
+              {result && !isGenerating && !error && result.images && result.wordpress ? <div className="publish-banner success"><span>✓</span><div><strong>Ay Tercüme WordPress taslağı hazır</strong><small>Yazı #{result.wordpress.id} · 2 görsel yüklendi · {result.wordpress.seo.applied ? `${result.wordpress.seo.plugin.toUpperCase()} SEO alanları doğrulandı` : result.wordpress.seo.focusKeywordApplied ? "Focus keyword doğrulandı; diğer SEO alanlarını kontrol edin" : "SEO alanları kontrol edilmeli"}</small>{warning ? <small>{warning}</small> : null}</div><div style={{ display: "flex", gap: 8 }}>{resultProjectId && <button type="button" onClick={() => { setEditingProjectId(resultProjectId); setActiveView("library"); }}>Düzenle ve WordPress&apos;e Gönder</button>}<a href={result.wordpress.editUrl} target="_blank" rel="noreferrer">WordPress&apos;te aç</a></div></div> : null}
               {result && !isGenerating && !error && !result.images ? <div className="publish-banner attention"><span>IMG</span><div><strong>Yerel metin paketi yüklendi</strong><small>Büyük görsel dosyaları tarayıcı hafızasına kaydedilmez. Metni yeniden üretmeden iki görseli tekrar hazırlayabilirsiniz.</small></div><button onClick={() => void retryImages()}>2 görseli üret</button></div> : null}
               <div className="output-toolbar"><div className="tab-list" role="tablist">{([ ["preview", "Önizleme"], ["seo", "SEO özeti"], ["html", "HTML"], ["head", "SEO Head"], ["schema", "Schema"] ] as [AyTab, string][]).map(([tab, label]) => <button role="tab" aria-selected={activeTab === tab} key={tab} className={activeTab === tab ? "active" : ""} onClick={() => setActiveTab(tab)}>{label}</button>)}</div><div className="tool-actions"><button onClick={downloadHtml} disabled={!result}>HTML indir</button><button className="copy-button" onClick={() => void copyCurrent()} disabled={!result}>{copied ? "Kopyalandı ✓" : activeTab === "preview" ? "Paketi kopyala" : "Kopyala"}</button></div></div>
               <div className="output-canvas">
@@ -394,9 +423,9 @@ export default function AyTercumeStudio({ email }: { email: string }) {
             </section>
           </> : null}
 
-          {activeView === "library" ? <section className="utility-view ay-utility"><small>AY TERCÜME · SON ÇALIŞMA</small><h1>{result ? "Son içerik paketi cihazınızda kayıtlı." : "Henüz oluşturulmuş bir içerik yok."}</h1><p>{result ? "Bu çalışma yalnızca Ay Tercüme alanında tutulur. WordPress bağlantısı eklendiğinde taslak durumu da burada görünecek." : "İlk içerik üretiminden sonra sonuç burada listelenecek."}</p>{result ? <div className="library-card"><span className="file-icon">H1</span><div><h3>{result.preview.title}</h3><p>{result.slug} · {savedAt || "yerel kayıt"}</p></div><button onClick={() => { setActiveView("create"); setActiveTab("preview"); }}>Çalışmayı aç</button></div> : null}</section> : null}
+          {activeView === "library" ? <ProjectLibrary brand="ay-tercume" brandLabel="AY Tercüme" initialProjectId={editingProjectId} onProjectClosed={() => setEditingProjectId(null)} /> : null}
           {activeView === "brand" ? <section className="utility-view ay-utility"><small>AY TERCÜME · TASARIM SİSTEMİ</small><h1>Temiz, güven veren ve modern bir dil.</h1><p>Panel ve WordPress makale teması mint, mavi, koyu metin ve beyaz temel üzerine kuruludur.</p><div className="brand-grid"><article><span style={{ background: "#43cc9b" }} /><strong>Ana turkuaz / mint</strong><code>#43cc9b</code></article><article><span style={{ background: "#009fe4" }} /><strong>Vurgu mavisi</strong><code>#009fe4</code></article><article><span style={{ background: "#0f0b08" }} /><strong>Koyu yazı</strong><code>#0f0b08</code></article><article><span style={{ background: "#ffffff", border: "1px solid #dce5e1" }} /><strong>Ana arka plan</strong><code>#ffffff</code></article></div><div className="rules-panel"><h2>Her içerikte zorunlu</h2><ul><li>Türkçe, sade ve abartısız anlatım</li><li>Tek H1 ve düzenli H2/H3 hiyerarşisi</li><li>Mobil uyumlu ayc- sınıf ön eki</li><li>WordPress tema uyumluluğu için kapsüllenmiş makale stilleri</li><li>Sahte mühür, resmî logo veya kişisel veri içermeyen görsel brief</li></ul></div></section> : null}
-          {activeView === "integrations" ? <section className="utility-view ay-utility"><small>AY TERCÜME · BAĞLANTILAR</small><h1>İçerik, görsel ve WordPress taslak motoru hazır.</h1><p>OpenAI ve Ay Tercüme WordPress bağlantıları sunucu tarafında çalışır. Site bilgileri TTAA&apos;dan tamamen ayrıdır; gönderilen yazılar yalnızca taslak olarak oluşturulur.</p><div className="health-grid ay-health-grid"><article className="healthy"><span>✓</span><div><small>OPENAI İÇERİK</small><h3>Hazır</h3><p>Türkçe writer + editor + iki repair geçişi</p></div></article><article className="healthy"><span>✓</span><div><small>AY HTML TEMASI</small><h3>Hazır</h3><p>Bağımsız, responsive ortak CSS ve güvenli fallback</p></div></article><article className="healthy"><span>IMG</span><div><small>AY GÖRSEL PAKETİ</small><h3>Hazır</h3><p>İki paralel görsel · gerçek logo sol üstte · Ay renk sistemi</p></div></article><article className="healthy"><span>WP</span><div><small>AY WORDPRESS REST API</small><h3>Bağlandı</h3><p>Medya, featured image, AIOSEO ve draft aktarımı</p></div></article><article className="attention"><span>WA</span><div><small>AY WHATSAPP</small><h3>Numara bekliyor</h3><p>Şimdilik iletişim sayfasına yönlendirilir</p></div></article><article className="attention"><span>DB</span><div><small>AY ÖZEL DEPOLAMA</small><h3>Yapılandırma bekliyor</h3><p>TTAA kayıtlarıyla karıştırılmaz</p></div></article></div></section> : null}
+          {activeView === "integrations" ? <section className="utility-view ay-utility"><small>AY TERCÜME · BAĞLANTILAR</small><h1>İçerik, görsel ve WordPress taslak motoru hazır.</h1><p>OpenAI ve Ay Tercüme WordPress bağlantıları sunucu tarafında çalışır. Site bilgileri TTAA&apos;dan tamamen ayrıdır; gönderilen yazılar yalnızca taslak olarak oluşturulur.</p><div className="health-grid ay-health-grid"><article className="healthy"><span>✓</span><div><small>OPENAI İÇERİK</small><h3>Hazır</h3><p>Türkçe writer + editor + iki repair geçişi</p></div></article><article className="healthy"><span>✓</span><div><small>AY HTML TEMASI</small><h3>Hazır</h3><p>Bağımsız, responsive ortak CSS ve güvenli fallback</p></div></article><article className="healthy"><span>IMG</span><div><small>AY GÖRSEL PAKETİ</small><h3>Hazır</h3><p>İki paralel görsel · gerçek logo sol üstte · Ay renk sistemi</p></div></article><article className={health?.wordpress?.connected ? "healthy" : "attention"}><span>WP</span><div><small>AY WORDPRESS REST API</small><h3>{healthLoading && !health ? "Kontrol ediliyor…" : health?.wordpress?.connected ? "Bağlandı" : "Bağlantı yok"}</h3><p>{health?.wordpress?.connected ? "Medya, featured image, AIOSEO ve draft aktarımı" : health?.wordpress?.error || "Medya, featured image, AIOSEO ve draft aktarımı"}</p></div></article><article className={health?.whatsapp?.connected ? "healthy" : "attention"}><span>WA</span><div><small>AY WHATSAPP</small><h3>{healthLoading && !health ? "Kontrol ediliyor…" : health?.whatsapp?.connected ? "Bağlandı" : "Numara bekliyor"}</h3><p>{health?.whatsapp?.connected ? `+90 ${health.whatsapp.phone?.slice(2, 5)} ${health.whatsapp.phone?.slice(5, 8)} ${health.whatsapp.phone?.slice(8, 10)} ${health.whatsapp.phone?.slice(10, 12)}` : "Şimdilik iletişim sayfasına yönlendirilir"}</p></div></article><article className={health?.supabase?.connected ? "healthy" : "attention"}><span>DB</span><div><small>AY DEPOLAMA</small><h3>{healthLoading && !health ? "Kontrol ediliyor…" : health?.supabase?.connected ? "Hazır" : "Yapılandırma bekliyor"}</h3><p>Projeler ve görseller <code>brand=ay-tercume</code> ile TTAA kayıtlarından ayrı tutulur</p></div></article></div></section> : null}
         </section>
       </div>
     </main>

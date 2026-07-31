@@ -17,8 +17,7 @@ function internalUrl(path: string) {
 }
 
 export function buildAyContactUrl(topic?: string) {
-  const phone = process.env.AY_WHATSAPP_PHONE?.replace(/\D/g, "");
-  if (!phone) return internalUrl("/iletisim/");
+  const phone = (process.env.AY_WHATSAPP_PHONE || "905431850655").replace(/\D/g, "");
   const detail = topic?.trim() ? ` ${topic.trim()} konusunda` : "";
   const message = `Merhaba AY Tercüme,${detail} tercüme desteği almak istiyorum. Belgeyi buradan gönderip fiyat ve süreç bilgisi alabilir miyim?`;
   return `https://api.whatsapp.com/send/?phone=${phone}&text=${encodeURIComponent(message)}&type=phone_number&app_absent=0`;

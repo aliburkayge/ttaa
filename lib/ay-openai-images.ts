@@ -130,7 +130,7 @@ async function resolveLogoAsset(assetOrigin?: string): Promise<LogoAsset> {
   if (!assetOrigin) throw new Error("Ay Tercüme logo adresi bulunamadı.");
 
   const logoUrl = new URL("/ay-tercume-logo.jpg", assetOrigin);
-  const response = await fetch(logoUrl, { cache: "force-cache", signal: AbortSignal.timeout(15_000) });
+  const response = await fetch(logoUrl, { signal: AbortSignal.timeout(15_000) });
   if (!response.ok) throw new Error(`Ay Tercüme logo dosyası yüklenemedi (${response.status}).`);
   return {
     bytes: new Uint8Array(await response.arrayBuffer()),

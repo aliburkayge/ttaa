@@ -13,6 +13,8 @@ import { loadGeneratedImage, storeContentPackage, storeGeneratedImage } from "./
 import { buildTtaaContentPackage, type TtaaContentPackage, type TtaaRenderOptions } from "./ttaa-render";
 import { integerEnv } from "./upstream";
 import { attachWordPressMedia, createWordPressDraft, deleteWordPressMedia, uploadWordPressMedia, type WordPressMedia, type WordPressScope } from "./wordpress";
+import { fetchBrandInternalLinks, validatePackageLinks } from "./internal-links";
+import { upsertProjectFromCompletedJob } from "./projects";
 
 type BinaryImage = GeneratedImageBinary | AyGeneratedImageBinary;
 type ImageRoleValue = ImageRole | AyImageRole;
@@ -83,31 +85,6 @@ function addFeaturedImageToSchema(schema: string, media: WordPressMedia, image: 
     return JSON.stringify(parsed, null, 2);
   } catch {
     return schema;
-  }
-}
-
-async function liveAyLinks(brief: AyGenerationBrief): Promise<ResearchedLink[]> {
-  const base = process.env.AY_WP_URL?.trim().replace(/\/$/, "");
-  if (!base) return [];
-  try {
-    const query = new URLSearchParams({ search: `${brief.topic} ${brief.country}`.trim(), per_page: "8", type: "post" });
-    const response = await fetch(`${base}/wp-json/wp/v2/search?${query}`, {
-      headers: { Accept: "application/json" },
-      cache: "no-store",
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!response.ok) return [];
-    const items = await response.json() as Array<{ title?: string; url?: string; subtype?: string }>;
-    return items
-      .filter((item) => item.url?.startsWith(base) && item.title)
-      .map((item) => ({
-        anchor: (item.title || "").replace(/<[^>]+>/g, "").trim(),
-        url: item.url || "",
-        reason: `Related AY Tercüme ${item.subtype || "content"} page`,
-        source: "internal" as const,
-      }));
-  } catch {
-    return [];
   }
 }
 
@@ -205,11 +182,20 @@ export async function runContentJob(initialJob: ContentJob, workerId: string) {
     deadlineCheck();
     if (isAy(job)) {
       const brief = job.brief as unknown as AyGenerationBrief;
-      const links = dedupeAyLinks([...getAyCuratedLinks(brief), ...await liveAyLinks(brief)]).slice(0, 14);
-      cp.research = { links, mode: process.env.AY_WP_URL ? "live-ay-wordpress-plus-official-web-search" : "curated-ay-links-plus-official-web-search", researchedAt: new Date().toISOString() };
+      const official = getAyCuratedLinks(brief).filter((link) => link.source === "official");
+      const internal = await fetchBrandInternalLinks("ay-tercume", `${brief.topic} ${brief.country}`.trim());
+      const links = dedupeAyLinks([...internal, ...official]).slice(0, 14);
+      cp.research = { links, mode: "verified-ay-wordpress-plus-official-sources", researchedAt: new Date().toISOString() };
     } else {
-      const research = await researchBrief(job.brief as unknown as GenerationBrief);
-      cp.research = research;
+      const brief = job.brief as unknown as GenerationBrief;
+      const research = await researchBrief(brief);
+      const official = research.links.filter((link) => link.source === "official");
+      const internal = await fetchBrandInternalLinks("ttaa", `${brief.topic} ${brief.country}`.trim());
+      cp.research = {
+        ...research,
+        links: dedupeLinks([...internal, ...official]).slice(0, 14),
+        mode: "verified-ttaa-wordpress-plus-official-sources",
+      };
     }
     job = await checkpoint(job, workerId, "research", 18, cp);
   }
@@ -229,7 +215,7 @@ export async function runContentJob(initialJob: ContentJob, workerId: string) {
       const official = cp.research.links.filter((link) => link.source === "official");
       const known = new Set(official.map((link) => canonicalLinkHost(link.url)));
       const discovered = generated.discoveredSources.filter((link) => !known.has(canonicalLinkHost(link.url)));
-      const links = dedupeAyLinks([...internal, ...official, ...discovered]).slice(0, 14);
+      const links = await validatePackageLinks("ay-tercume", dedupeAyLinks([...internal, ...official, ...discovered]).slice(0, 14), generated.article.slug);
       cp.package = buildAyContentPackage(generated.article, links, {
         includeH1: brief.includeH1 ?? true,
         visibleBreadcrumb: brief.visibleBreadcrumb ?? true,
@@ -250,7 +236,7 @@ export async function runContentJob(initialJob: ContentJob, workerId: string) {
         discoveredHosts.add(host);
         return true;
       });
-      const links = dedupeLinks([...internal, ...official, ...discovered]).slice(0, 14);
+      const links = await validatePackageLinks("ttaa", dedupeLinks([...internal, ...official, ...discovered]).slice(0, 14), generated.article.slug);
       cp.package = buildTtaaContentPackage(generated.article, links, {
         includeH1: brief.includeH1 ?? true,
         visibleBreadcrumb: brief.visibleBreadcrumb ?? true,
@@ -393,9 +379,20 @@ export async function runContentJob(initialJob: ContentJob, workerId: string) {
     cp.warnings?.push(error instanceof Error ? error.message : "Supabase package backup failed.");
   }
   if (cp.warnings?.length) completedPackage.warning = cp.warnings.join(" ");
+  const project = await upsertProjectFromCompletedJob({
+    jobId: job.id,
+    brand: job.brand,
+    ownerEmail: job.owner_email,
+    brief: job.brief,
+    contentPackage: completedPackage as unknown as TtaaContentPackage | AyContentPackage,
+  });
+  completedPackage.projectId = project.id;
+  completedPackage.projectRevision = project.revision;
   job = await checkpoint(job, workerId, "persistence", 98, cp);
   return {
     package: completedPackage,
+    projectId: project.id,
+    projectRevision: project.revision,
     wordpress: cp.wordpress,
     images,
     warning: cp.warnings?.join(" ") || undefined,
@@ -405,4 +402,3 @@ export async function runContentJob(initialJob: ContentJob, workerId: string) {
 export function safePipelineError(error: unknown, job: ContentJob) {
   return classifyJobError(error, job.stage || "worker", job.id);
 }
-

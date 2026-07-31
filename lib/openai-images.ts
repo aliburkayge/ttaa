@@ -102,7 +102,7 @@ function embeddedLogoAsset(value: unknown): LogoAsset | null {
 async function resolveLogoAsset(assetOrigin?: string): Promise<LogoAsset> {
   if (assetOrigin) {
     const logoUrl = new URL("/ttaa-brand-logo.png", assetOrigin);
-    const response = await fetch(logoUrl, { cache: "force-cache", signal: AbortSignal.timeout(15_000) });
+    const response = await fetch(logoUrl, { signal: AbortSignal.timeout(15_000) });
     if (!response.ok) throw new Error(`The TTAA logo asset could not be loaded (${response.status}).`);
     return {
       bytes: new Uint8Array(await response.arrayBuffer()),

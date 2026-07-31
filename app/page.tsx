@@ -4,6 +4,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import CompanySwitcher from "./company-switcher";
+import ProjectLibrary from "./project-library";
 import { buildTtaaWhatsAppUrl, getCuratedLinks, type ResearchedLink } from "../lib/link-catalog";
 import type { GeneratedArticle, GenerationTrace, ImageSuggestion } from "../lib/openai";
 import { normalizeTtaaArticleHtml } from "../lib/ttaa-html";
@@ -26,6 +27,7 @@ type IntegrationHealth = {
 
 type DurableJobResult = {
   package: Package;
+  projectId?: string;
   wordpress: {
     id: number;
     editUrl: string;
@@ -584,6 +586,8 @@ export default function Home() {
   const [hasCompletedResult, setHasCompletedResult] = useState(false);
   const [integrationHealth, setIntegrationHealth] = useState<IntegrationHealth | null>(null);
   const [healthLoading, setHealthLoading] = useState(false);
+  const [resultProjectId, setResultProjectId] = useState<string | null>(null);
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
 
   useEffect(() => {
     const current = asyncJob.job;
@@ -610,6 +614,7 @@ export default function Home() {
         setHasCompletedResult(true);
         setPendingPackage(null);
         setActiveTab("preview");
+        setResultProjectId(current.result.projectId || null);
         setPublishState({
           status: "created",
           postId: wordpress.id,
@@ -904,7 +909,7 @@ export default function Home() {
                 {STAGES.map((item, index) => <div key={item.label} className={stage > index ? "done" : stage === index ? "current" : ""}><span>{stage > index ? "✓" : index + 1}</span><div><strong>{item.label}</strong><small>{item.note}</small></div></div>)}
               </div>
 
-              {publishState.status === "created" && <div className="publish-banner success"><span>✓</span><div><strong>WordPress taslağı hazır</strong><small>Yazı #{publishState.postId} · {publishState.imagesReady ? "2 görsel yüklendi" : "Görseller kontrol edilmeli"} · {publishState.seoApplied ? `${publishState.seoPlugin.toUpperCase()} SEO alanları doğrulandı` : publishState.focusKeywordApplied ? "Anahtar kelimeler doğrulandı; diğer SEO alanlarını kontrol edin" : "AIOSEO focus keyword kontrol edilmeli"}{publishState.persistenceSaved ? " · Yedek alındı" : " · Yedekleme kontrol edilmeli"}</small>{publishState.warning ? <small>{publishState.warning}</small> : null}</div><a href={publishState.editUrl} target="_blank" rel="noreferrer">WordPress&apos;te aç</a></div>}
+              {publishState.status === "created" && <div className="publish-banner success"><span>✓</span><div><strong>WordPress taslağı hazır</strong><small>Yazı #{publishState.postId} · {publishState.imagesReady ? "2 görsel yüklendi" : "Görseller kontrol edilmeli"} · {publishState.seoApplied ? `${publishState.seoPlugin.toUpperCase()} SEO alanları doğrulandı` : publishState.focusKeywordApplied ? "Anahtar kelimeler doğrulandı; diğer SEO alanlarını kontrol edin" : "AIOSEO focus keyword kontrol edilmeli"}{publishState.persistenceSaved ? " · Yedek alındı" : " · Yedekleme kontrol edilmeli"}</small>{publishState.warning ? <small>{publishState.warning}</small> : null}</div><div style={{ display: "flex", gap: 8 }}>{resultProjectId && <button type="button" onClick={() => { setEditingProjectId(resultProjectId); setActiveView("library"); }}>Düzenle ve WordPress&apos;e Gönder</button>}<a href={publishState.editUrl} target="_blank" rel="noreferrer">WordPress&apos;te aç</a></div></div>}
               {publishState.status === "error" && <div className="publish-banner error"><span>!</span><div><strong>{publishState.canRetryFinalize ? "Eksik aşama yeniden denenebilir" : "İçerik oluşturulamadı"}</strong><small>{publishState.message}</small>{asyncJob.job?.error?.requestId ? <small>Takip kodu: {asyncJob.job.error.requestId}</small> : null}</div>{asyncJob.job?.canRetry ? <button onClick={() => void asyncJob.retry()}>Kaldığı yerden yeniden dene</button> : publishState.canRetryFinalize && pendingPackage ? <button onClick={() => void finalizeProject(pendingPackage).then((finalized) => { setResult(finalized); setPendingPackage(null); setResultIsCurrent(true); setHasCompletedResult(true); }).catch(() => undefined)}>Görselleri ve taslağı yeniden dene</button> : null}</div>}
 
               <div className="output-toolbar">
@@ -933,7 +938,7 @@ export default function Home() {
             </section>
           </>}
 
-          {activeView === "library" && <section className="utility-view"><small>CONTENT LIBRARY</small><h1>Your final packages and WordPress drafts</h1><p>The current project is cached locally. Completed generations are also sent to WordPress as drafts and stored privately in Supabase Storage.</p><div className="library-card"><span className="file-icon">H1</span><div><h3>{result.preview.title}</h3><p>{publishState.status === "created" ? `WordPress draft #${publishState.postId}` : result.slug}</p></div><button onClick={() => { setActiveView("create"); setActiveTab("preview"); }}>Open project</button></div></section>}
+          {activeView === "library" && <ProjectLibrary brand="ttaa" brandLabel="TTAA" initialProjectId={editingProjectId} onProjectClosed={() => setEditingProjectId(null)} />}
           {activeView === "brand" && <section className="utility-view"><small>TTAA DESIGN SYSTEM</small><h1>One consistent editorial language</h1><p>The generator follows both TTAA agent manuals: the SEO and AI visibility operating system plus the WordPress design system.</p><div className="brand-grid"><article><span style={{ background: "#01adf2" }} /><strong>TT Blue</strong><code>#01adf2</code></article><article><span style={{ background: "#003e5b" }} /><strong>TT Navy</strong><code>#003e5b</code></article><article><span style={{ background: "#eaf8ff" }} /><strong>TT Blue Soft</strong><code>#eaf8ff</code></article><article><span style={{ background: "#486c7d" }} /><strong>TT Text</strong><code>#486c7d</code></article></div><div className="rules-panel"><h2>Always enforced</h2><ul><li>White content background and sidebar-safe width</li><li>Scoped class prefix for every generated page</li><li>No external fonts, icon libraries or JavaScript in blog output</li><li>Responsive H1/H2, cards, lists and image blocks</li><li>Real HTML text, semantic lists and accessible labels</li></ul></div></section>}
           {activeView === "integrations" && <section className="utility-view integrations-view">
             <small>LIVE CONNECTIONS</small>

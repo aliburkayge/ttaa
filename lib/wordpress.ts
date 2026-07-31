@@ -534,3 +534,14 @@ export async function createWordPressDraft(input: WordPressDraftInput, scope: Wo
     },
   };
 }
+
+export async function getWordPressDraftStatus(postId: number, scope: WordPressScope = "ttaa") {
+  const { baseUrl, username, applicationPassword } = wordpressConfig(scope);
+  const response = await fetch(`${baseUrl}/wp-json/wp/v2/posts/${postId}?context=edit&_fields=id,status`, {
+    headers: { Authorization: authHeader(username, applicationPassword), Accept: "application/json" },
+    cache: "no-store",
+  });
+  const payload = await readWordPressJson<{ id?: number; status?: string; message?: string }>(response, "managed draft status");
+  if (!response.ok) throw new Error(payload.message || `WordPress draft status lookup failed (${response.status}).`);
+  return payload.status || "";
+}
