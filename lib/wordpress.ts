@@ -148,16 +148,15 @@ async function sharedArticleCssReady(baseUrl: string, scope: WordPressScope) {
 }
 
 async function articleCssText(scope: WordPressScope) {
-  if (process.env.CONTENT_WORKER === "true") {
-    const { readFile } = await import("node:fs/promises");
-    const { resolve } = await import("node:path");
-    const file = scope === "ay-tercume" ? "ay-tercume-article.css" : "translation-article.css";
-    return readFile(resolve(process.cwd(), "public", file), "utf8");
-  }
-  const cssModule = scope === "ay-tercume"
-    ? await import("../public/ay-tercume-article.css?raw")
-    : await import("../public/translation-article.css?raw");
-  return cssModule.default;
+  // Always read the file directly. This runs both from the standalone
+  // content-worker process and from Next.js API route handlers (e.g. the
+  // project sync-to-WordPress endpoint); the webpack-only `?raw` import
+  // resolves to an empty module outside of page/client bundling and left
+  // `css` as `undefined`, crashing downstream on `.replace(...)`.
+  const { readFile } = await import("node:fs/promises");
+  const { resolve } = await import("node:path");
+  const file = scope === "ay-tercume" ? "ay-tercume-article.css" : "translation-article.css";
+  return readFile(resolve(process.cwd(), "public", file), "utf8");
 }
 
 async function inlineStyleFallback(scope: WordPressScope) {
