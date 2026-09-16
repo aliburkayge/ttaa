@@ -60,7 +60,7 @@ async function createLabel(brand: QrBrand, details: Pick<PrototypeDetails, "docu
     <text x="322" y="311" font-size="17" fill="#697b84">BELGE TARİHİ</text>
     <text x="322" y="340" font-size="22">${escapeXml(date)}</text>
     <path d="M30 382H670" stroke="#dce5e8"/>
-    <text x="350" y="420" text-anchor="middle" font-size="19" font-weight="700">${live ? "DOĞRULAMA: AYTERCUME.COM" : "PROTOTİP · RESMÎ DOĞRULAMA DEĞİLDİR"}</text>
+    <text x="350" y="420" text-anchor="middle" font-size="19" font-weight="700">${live ? brand === "ttaa" ? "VERIFICATION: TURKISHTRANSLATION.COM.TR" : "DOĞRULAMA: AYTERCUME.COM" : "PROTOTİP · RESMÎ DOĞRULAMA DEĞİLDİR"}</text>
   </g></svg>`;
   return { qrText, qrSvg, labelSvg, labelUrl: svgDataUrl(labelSvg) };
 }
@@ -73,4 +73,10 @@ export async function createAyVerificationLabel(details: Pick<PrototypeDetails, 
   const url = new URL(pageUrl);
   if (url.protocol !== "https:" || !["aytercume.com", "www.aytercume.com"].includes(url.hostname)) throw new Error("QR hedefi aytercume.com olmalıdır.");
   return createLabel("ay-tercume", details, url.toString(), true);
+}
+
+export async function createTtaaVerificationLabel(details: Pick<PrototypeDetails, "documentNumber" | "documentDate">, pageUrl: string) {
+  const url = new URL(pageUrl);
+  if (url.protocol !== "https:" || !["turkishtranslation.com.tr", "www.turkishtranslation.com.tr"].includes(url.hostname)) throw new Error("QR hedefi turkishtranslation.com.tr olmalıdır.");
+  return createLabel("ttaa", details, url.toString(), true);
 }

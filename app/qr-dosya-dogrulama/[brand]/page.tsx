@@ -3,7 +3,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { getAdminSession } from "../../../lib/auth";
 import CompanySwitcher from "../../company-switcher";
-import QrPrototypeStudio from "../prototype-studio";
+import TtaaVerificationStudio from "../ttaa-verification-studio";
 import AyVerificationStudio from "../ay-verification-studio";
 import "../qr-workspace.css";
 
@@ -35,7 +35,7 @@ export default async function QrWorkspace({ params }: { params: Promise<{ brand:
 
       {isAy
         ? <AyVerificationStudio today={new Date().toISOString().slice(0, 10)} />
-        : <QrPrototypeStudio brand={brand} today={new Date().toISOString().slice(0, 10)} />}
+        : <TtaaVerificationStudio today={new Date().toISOString().slice(0, 10)} />}
     </main>
   </div>;
 }
