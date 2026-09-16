@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test, type TestContext } from "node:test";
-import { attachAyVerificationPdf, ensureAyVerificationLanding, findAyVerificationDocument, publishAyVerificationDocument } from "../lib/ay-verification-wordpress.ts";
+import { attachAyVerificationPdf, ensureAyVerificationLanding, findAyVerificationDocument, listAyVerificationDocuments, publishAyVerificationDocument, setAyVerificationPdf } from "../lib/ay-verification-wordpress.ts";
 import { ayVerificationToken } from "../lib/ay-verification-token.ts";
 
 const originalEnv = { ...process.env };
@@ -40,7 +40,7 @@ function fakeWordPress(t: TestContext, options: { seoFails?: boolean; foreignSlu
     const match = /^\/wp-json\/wp\/v2\/pages(?:\/(\d+))?$/.exec(url.pathname);
     assert.ok(match, `Unexpected WordPress request: ${url}`);
     const id = match[1] ? Number(match[1]) : null;
-    if (method === "GET") return id ? json(records.find((record) => record.id === id) || { message: "Not found" }, records.some((record) => record.id === id) ? 200 : 404) : json(records.filter((record) => record.slug === url.searchParams.get("slug")));
+    if (method === "GET") return id ? json(records.find((record) => record.id === id) || { message: "Not found" }, records.some((record) => record.id === id) ? 200 : 404) : url.searchParams.has("slug") ? json(records.filter((record) => record.slug === url.searchParams.get("slug"))) : json(records.filter((record) => !url.searchParams.has("search") || record.content.raw.toLocaleLowerCase("tr-TR").includes((url.searchParams.get("search") || "").toLocaleLowerCase("tr-TR"))));
     if (!id) {
       const record = { id: records.length + 100, slug: String(body.slug), status: String(body.status), link: `https://aytercume.com/${String(body.slug)}/`, content: { raw: String(body.content) }, title: String(body.title), template: String(body.template) };
       records.push(record);
@@ -93,6 +93,28 @@ test("PDF can be attached later to the same published page and QR address", asyn
   assert.match(wp.records[0].content.raw, /<iframe/);
   assert.equal((await findAyVerificationDocument(token))?.document.fileUrl, document.fileUrl);
   await assert.rejects(attachAyVerificationPdf(token, document.fileUrl), /zaten eklenmiş/);
+  assert.equal(wp.records.length, 1);
+});
+
+test("old published documents are listed and PDFs can be replaced then removed without changing the QR URL", async (t) => {
+  const wp = fakeWordPress(t);
+  const token = ayVerificationToken(document.documentNumber);
+  const first = await publishAyVerificationDocument({ ...document, mediaId: 44 }, token);
+  const list = await listAyVerificationDocuments("Örnek", 1);
+  assert.equal(list.records.length, 1);
+  assert.equal(list.records[0].details.customer, document.customer);
+  const replacement = "https://aytercume.com/wp-content/uploads/2026/09/new.pdf";
+  const updated = await setAyVerificationPdf(token, { url: replacement, mediaId: 55 });
+  assert.equal(updated.id, first.id);
+  assert.equal(updated.url, first.url);
+  assert.equal(updated.document.mediaId, 55);
+  assert.match(wp.records[0].content.raw, /new\.pdf/);
+  const removed = await setAyVerificationPdf(token);
+  assert.equal(removed.url, first.url);
+  assert.equal(removed.document.fileUrl, undefined);
+  assert.equal(removed.document.mediaId, undefined);
+  assert.doesNotMatch(wp.records[0].content.raw, /<iframe/);
+  assert.match(wp.records[0].content.raw, /Gerekli evraklar şu anda yüklenmemiştir/);
   assert.equal(wp.records.length, 1);
 });
 

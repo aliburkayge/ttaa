@@ -126,6 +126,39 @@ export async function findAyVerificationDocument(token: string) {
   return { id: page.id, status: page.status, url: page.link, document, hasFile: Boolean(document.fileUrl) };
 }
 
+export async function listAyVerificationDocuments(query: string, pageNumber: number) {
+  const { baseUrl, authorization } = config();
+  const params = new URLSearchParams({ context: "edit", per_page: "50", page: String(pageNumber), orderby: "date", order: "desc", _fields: "id,slug,status,link,content" });
+  params.set("search", query || "Belge Doğrulama");
+  const response = await fetch(`${baseUrl}/wp-json/wp/v2/pages?${params}`, { headers: { Authorization: authorization, Accept: "application/json" }, cache: "no-store", signal: AbortSignal.timeout(30_000) });
+  if (response.status === 400 && pageNumber > 1) return { records: [], hasMore: false };
+  if (!response.ok) throw new Error(`Ay Tercüme belge listesi okunamadı (${response.status}).`);
+  const pages = await response.json() as WpPage[];
+  if (!Array.isArray(pages)) throw new Error("WordPress belge listesi geçersiz.");
+  const records = pages.flatMap((item) => {
+    const token = /^belge-dogrulama-([a-f0-9-]{36})$/.exec(item.slug)?.[1];
+    if (!token || item.status !== "publish") return [];
+    try {
+      const document = readAyVerificationDocument(item.content?.raw || "", `AY_VERIFICATION:${token}`);
+      if (query && !`${document.documentNumber} ${document.customer} ${document.documentType}`.toLocaleLowerCase("tr-TR").includes(query.toLocaleLowerCase("tr-TR"))) return [];
+      return [{ token, url: item.link, details: document, hasFile: Boolean(document.fileUrl) }];
+    } catch { return []; }
+  });
+  const totalPages = Number(response.headers.get("x-wp-totalpages") || 1);
+  return { records, hasMore: pageNumber < totalPages };
+}
+
+export async function findAyVerificationMediaId(fileUrl: string, pageId: number, storedId?: number) {
+  const { baseUrl, authorization } = config();
+  if (storedId) {
+    const item = await wpJson<{ id: number; source_url: string }>(`${baseUrl}/wp-json/wp/v2/media/${storedId}?context=edit&_fields=id,source_url`, authorization);
+    return item.source_url === fileUrl ? item.id : undefined;
+  }
+  const params = new URLSearchParams({ context: "edit", parent: String(pageId), per_page: "100", _fields: "id,source_url" });
+  const media = await wpJson<{ id: number; source_url: string }[]>(`${baseUrl}/wp-json/wp/v2/media?${params}`, authorization);
+  return media.find((item) => item.source_url === fileUrl)?.id;
+}
+
 export async function publishAyVerificationDocument(document: AyVerificationDocument, token: string) {
   if (!/^[a-f0-9-]{36}$/.test(token)) throw new Error("Geçersiz doğrulama kimliği.");
   const slug = `belge-dogrulama-${token}`;
@@ -140,21 +173,26 @@ export async function publishAyVerificationDocument(document: AyVerificationDocu
   });
 }
 
-export async function attachAyVerificationPdf(token: string, fileUrl: string) {
+export async function setAyVerificationPdf(token: string, file?: { url: string; mediaId?: number }) {
   if (!/^[a-f0-9-]{36}$/.test(token)) throw new Error("Geçersiz doğrulama kimliği.");
   const { baseUrl, authorization } = config();
   const current = await findAyVerificationDocument(token);
   if (!current || current.status !== "publish") throw new Error("Yayımlanmış doğrulama sayfası bulunamadı.");
-  if (current.hasFile) throw new Error("Bu sayfaya PDF zaten eklenmiş; mevcut dosya değiştirilmedi.");
-  const document = { ...current.document, fileUrl };
+  const document = { ...current.document, fileUrl: file?.url, mediaId: file?.mediaId };
   const marker = `AY_VERIFICATION:${token}`;
   const content = ayVerificationDocumentHtml(document, marker);
-  await saveSeo(baseUrl, authorization, current.id, ayVerificationSeo(document.documentNumber, true), true);
+  await saveSeo(baseUrl, authorization, current.id, ayVerificationSeo(document.documentNumber, Boolean(file)), true);
   const updated = await savePage(baseUrl, authorization, { content }, current.id);
   if (updated.status !== "publish" || updated.slug !== `belge-dogrulama-${token}`) throw new Error("WordPress mevcut doğrulama sayfasını güncellemedi.");
   const saved = await pageById(baseUrl, authorization, current.id);
-  if (!saved.content?.raw?.includes(marker) || !saved.content.raw.includes(fileUrl) || !saved.content.raw.includes("<iframe")) throw new Error("WordPress PDF görünümünü kaydetmedi.");
+  if (!saved.content?.raw?.includes(marker) || Boolean(saved.content.raw.includes("<iframe")) !== Boolean(file) || (file && !saved.content.raw.includes(file.url))) throw new Error("WordPress PDF görünümünü kaydetmedi.");
   const confirmed = readAyVerificationDocument(saved.content.raw, marker);
-  if (confirmed.fileUrl !== fileUrl) throw new Error("WordPress PDF bağlantısını kaydetmedi.");
+  if (confirmed.fileUrl !== file?.url || confirmed.mediaId !== file?.mediaId) throw new Error("WordPress PDF bağlantısını kaydetmedi.");
   return { id: current.id, url: current.url, document: confirmed };
+}
+
+export async function attachAyVerificationPdf(token: string, fileUrl: string, mediaId?: number) {
+  const current = await findAyVerificationDocument(token);
+  if (current?.hasFile) throw new Error("Bu sayfaya PDF zaten eklenmiş; mevcut dosya değiştirilmedi.");
+  return setAyVerificationPdf(token, { url: fileUrl, mediaId });
 }

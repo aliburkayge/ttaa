@@ -4,6 +4,7 @@ export type AyVerificationDocument = {
   documentDate: string;
   documentType: string;
   fileUrl?: string;
+  mediaId?: number;
 };
 
 export const AY_VERIFICATION_LANDING_SLUG = "belge-dogrulama";
@@ -66,6 +67,6 @@ export function readAyVerificationDocument(html: string, marker: string): AyVeri
   let value: AyVerificationDocument;
   try { value = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as AyVerificationDocument; }
   catch { throw new Error("Doğrulama sayfası belge bilgileri okunamadı."); }
-  if (!value || typeof value.documentNumber !== "string" || typeof value.customer !== "string" || typeof value.documentDate !== "string" || typeof value.documentType !== "string" || (value.fileUrl !== undefined && typeof value.fileUrl !== "string")) throw new Error("Doğrulama sayfası belge bilgileri geçersiz.");
+  if (!value || typeof value.documentNumber !== "string" || typeof value.customer !== "string" || typeof value.documentDate !== "string" || typeof value.documentType !== "string" || (value.fileUrl !== undefined && typeof value.fileUrl !== "string") || (value.mediaId !== undefined && (!Number.isSafeInteger(value.mediaId) || value.mediaId <= 0))) throw new Error("Doğrulama sayfası belge bilgileri geçersiz.");
   return value;
 }
