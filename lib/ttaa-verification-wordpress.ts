@@ -39,7 +39,7 @@ async function wpJson<T>(url: string, authorization: string, init?: RequestInit)
 }
 
 async function pagesBySlug(baseUrl: string, authorization: string, slug: string) {
-  const params = new URLSearchParams({ context: "edit", slug, per_page: "5", _fields: "id,slug,status,link,content" });
+  const params = new URLSearchParams({ context: "edit", status: "any", slug, per_page: "5", _fields: "id,slug,status,link,content" });
   return wpJson<WpPage[]>(`${baseUrl}/wp-json/wp/v2/pages?${params}`, authorization);
 }
 

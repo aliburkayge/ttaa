@@ -34,7 +34,7 @@ function fakeWordPress(t: TestContext, options: { dropSeo?: boolean; foreignSlug
     const id = match[1] ? Number(match[1]) : null;
     if (method === "GET") {
       if (id) return json(records.find((record) => record.id === id) || { message: "Not found" }, records.some((record) => record.id === id) ? 200 : 404);
-      if (url.searchParams.has("slug")) return json(records.filter((record) => record.slug === url.searchParams.get("slug")));
+      if (url.searchParams.has("slug")) return json(records.filter((record) => record.slug === url.searchParams.get("slug") && (record.status === "publish" || url.searchParams.get("status") === "any")));
       return json(records.filter((record) => !url.searchParams.has("search") || `${record.title} ${record.content.raw}`.toLowerCase().includes((url.searchParams.get("search") || "").toLowerCase())));
     }
     if (!id) {
@@ -94,6 +94,8 @@ test("SEO failure keeps a TTAA document in draft and foreign pages are untouched
   await assert.rejects(publishTtaaVerificationDocument(document, ttaaVerificationToken(document.documentNumber)), /AIOSEO/);
   assert.equal(wp.records[0].status, "draft");
   assert.ok(!wp.calls.some((call) => call.body.status === "publish"));
+  await assert.rejects(publishTtaaVerificationDocument(document, ttaaVerificationToken(document.documentNumber)), /AIOSEO/);
+  assert.equal(wp.records.length, 1, "a retry must reuse the failed draft");
 });
 
 test("TTAA never overwrites an unrelated page and can refresh its own landing", async (t) => {
