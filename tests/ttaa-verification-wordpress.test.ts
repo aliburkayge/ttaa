@@ -47,7 +47,15 @@ function fakeWordPress(t: TestContext, options: { dropSeo?: boolean; foreignSlug
     if (body.status) record.status = String(body.status);
     if (body.content) record.content.raw = String(body.content);
     if (body.title) record.title = String(body.title);
-    if (body.aioseo_meta_data && !options.dropSeo) record.aioseo_meta_data = body.aioseo_meta_data as Record<string, unknown>;
+    if (body.aioseo_meta_data && !options.dropSeo) {
+      const input = body.aioseo_meta_data as Record<string, unknown>;
+      record.aioseo_meta_data = {
+        title: input.title,
+        description: input.description,
+        robots_default: input.default === undefined ? true : Boolean(input.default),
+        robots_noindex: Boolean(input.noindex),
+      };
+    }
     return json(record);
   });
   return { records, calls };
@@ -63,6 +71,12 @@ test("TTAA page is published only after AIOSEO title, description and noindex re
   assert.match(wp.records[0].content.raw, /supporting PDF has not been uploaded yet/);
   assert.equal(wp.records[0].aioseo_meta_data?.robots_noindex, true);
   const seoIndex = wp.calls.findIndex((call) => Boolean(call.body.aioseo_meta_data));
+  assert.deepEqual(wp.calls[seoIndex].body.aioseo_meta_data, {
+    title: "Document TTAA2026009 Verification | TTAA",
+    description: "Check document TTAA2026009 verified by TTAA. The PDF has not been uploaded yet.",
+    default: false,
+    noindex: true,
+  });
   const publishIndex = wp.calls.findIndex((call) => call.body.status === "publish");
   assert.ok(seoIndex > 0 && publishIndex > seoIndex);
   assert.equal((await publishTtaaVerificationDocument(document, token)).reused, true);

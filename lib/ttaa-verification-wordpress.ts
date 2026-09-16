@@ -54,7 +54,7 @@ async function savePage(baseUrl: string, authorization: string, data: Record<str
 async function saveSeo(baseUrl: string, authorization: string, pageId: number, seo: { title: string; description: string }, noindex: boolean) {
   await savePage(baseUrl, authorization, { aioseo_meta_data: {
     title: seo.title, description: seo.description,
-    robots_default: !noindex, robots_noindex: noindex,
+    default: !noindex, noindex,
   } }, pageId);
   const result = await wpJson<WpPage>(`${baseUrl}/wp-json/wp/v2/pages/${pageId}?context=edit&_fields=aioseo_meta_data`, authorization);
   const meta = result.aioseo_meta_data;
