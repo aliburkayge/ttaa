@@ -1,5 +1,10 @@
 import { verificationStyle } from "./ay-verification-page";
 
+const ttaaLayoutStyle = `<style>
+body:has(main.ttaa-verification) .content_wrap:has(main.ttaa-verification) > .sidebar{display:none!important}
+body:has(main.ttaa-verification) .content_wrap:has(main.ttaa-verification) > .content{float:none!important;width:100%!important}
+</style>`;
+
 export type TtaaVerificationDocument = {
   documentNumber: string;
   customer: string;
@@ -10,7 +15,7 @@ export type TtaaVerificationDocument = {
 };
 
 export const TTAA_VERIFICATION_LANDING_SLUG = "document-verification";
-export const TTAA_VERIFICATION_DESIGN = "TTAA_VERIFICATION_DESIGN:1";
+export const TTAA_VERIFICATION_DESIGN = "TTAA_VERIFICATION_DESIGN:2";
 
 const siteHosts = ["turkishtranslation.com.tr", "www.turkishtranslation.com.tr"];
 
@@ -44,7 +49,7 @@ export function ttaaVerificationSeo(documentNumber?: string, hasFile = true) {
 }
 
 export function ttaaVerificationLandingHtml() {
-  return `${verificationStyle}<main class="ayv" lang="en"><header class="ayv-hero"><div class="ayv-hero-top"><div class="ayv-brand"><span>TTAA</span><strong>Document security</strong></div></div><div class="ayv-hero-body"><span class="ayv-kicker">OFFICIAL VERIFICATION AREA</span><h1>Document verification</h1><p class="ayv-lead">Scan the QR code on a document prepared by Turkish Translation & Attestation Agency to open its individual verification page. The document number, customer, date and PDF availability are shown there.</p></div></header>${contactSection()}</main>`;
+  return `${verificationStyle}${ttaaLayoutStyle}<main class="ayv ttaa-verification" lang="en"><header class="ayv-hero"><div class="ayv-hero-top"><div class="ayv-brand"><span>TTAA</span><strong>Document security</strong></div></div><div class="ayv-hero-body"><span class="ayv-kicker">OFFICIAL VERIFICATION AREA</span><h1>Document verification</h1><p class="ayv-lead">Scan the QR code on a document prepared by Turkish Translation & Attestation Agency to open its individual verification page. The document number, customer, date and PDF availability are shown there.</p></div></header>${contactSection()}</main>`;
 }
 
 export function ttaaVerificationDocumentHtml(document: TtaaVerificationDocument, marker: string) {
@@ -56,7 +61,7 @@ export function ttaaVerificationDocumentHtml(document: TtaaVerificationDocument,
     ? `<section class="ayv-file" aria-labelledby="ttaa-file-title"><div class="ayv-file-head"><div><span class="ayv-section-label">03 · DOCUMENT FILE</span><h2 id="ttaa-file-title">Verified document</h2><p>Review the PDF below. If your browser cannot display it, open the file in a separate tab.</p></div><a class="ayv-open" href="${fileUrl}" target="_blank" rel="noopener noreferrer">Open PDF <span aria-hidden="true">↗</span></a></div><div class="ayv-pdf-frame"><div class="ayv-pdf-bar">Document preview <small>PDF</small></div><iframe class="ayv-pdf" src="${fileUrl}#toolbar=0" title="Verified document ${number}" loading="lazy" referrerpolicy="no-referrer"></iframe></div></section>`
     : `<section class="ayv-file ayv-pending" aria-labelledby="ttaa-file-title"><span class="ayv-pending-icon" aria-hidden="true"></span><span class="ayv-section-label">03 · FILE STATUS</span><h2 id="ttaa-file-title">The supporting PDF has not been uploaded yet.</h2><p>Please check again soon. When the file is added, it will appear at this same QR address.</p></section>`;
   const encoded = Buffer.from(JSON.stringify(document), "utf8").toString("base64url");
-  return `${verificationStyle}<main class="ayv" lang="en"><header class="ayv-hero"><div class="ayv-hero-top"><span class="ayv-seal" aria-hidden="true"></span><div class="ayv-brand"><span>TTAA</span><strong>Document verification</strong></div><span class="ayv-verified">VERIFIED RECORD</span></div><div class="ayv-hero-body"><span class="ayv-kicker">DOCUMENT VERIFICATION</span><h1>This document was prepared and verified by Turkish Translation & Attestation Agency.</h1><p class="ayv-lead">${url ? "Review the document details and PDF below." : "The document details are shown below. The PDF will appear here once uploaded."}</p></div><div class="ayv-hero-foot"><span class="ayv-status">Verified document</span><span class="ayv-hero-foot-note">TTAA document record</span></div></header>
+  return `${verificationStyle}${ttaaLayoutStyle}<main class="ayv ttaa-verification" lang="en"><header class="ayv-hero"><div class="ayv-hero-top"><span class="ayv-seal" aria-hidden="true"></span><div class="ayv-brand"><span>TTAA</span><strong>Document verification</strong></div><span class="ayv-verified">VERIFIED RECORD</span></div><div class="ayv-hero-body"><span class="ayv-kicker">DOCUMENT VERIFICATION</span><h1>This document was prepared and verified by Turkish Translation & Attestation Agency.</h1><p class="ayv-lead">${url ? "Review the document details and PDF below." : "The document details are shown below. The PDF will appear here once uploaded."}</p></div><div class="ayv-hero-foot"><span class="ayv-status">Verified document</span><span class="ayv-hero-foot-note">TTAA document record</span></div></header>
   <section class="ayv-details" aria-label="Document details"><div class="ayv-detail"><span class="ayv-detail-index" aria-hidden="true">01</span><div class="ayv-detail-body"><span>Document number</span><strong>${number}</strong></div></div><div class="ayv-detail"><span class="ayv-detail-index" aria-hidden="true">02</span><div class="ayv-detail-body"><span>Customer</span><strong>${escapeHtml(document.customer)}</strong></div></div><div class="ayv-detail"><span class="ayv-detail-index" aria-hidden="true">03</span><div class="ayv-detail-body"><span>Document date</span><strong>${escapeHtml(displayDate(document.documentDate))}</strong></div></div><div class="ayv-detail"><span class="ayv-detail-index" aria-hidden="true">04</span><div class="ayv-detail-body"><span>Document type</span><strong>${escapeHtml(document.documentType)}</strong></div></div></section>
   ${fileSection}${contactSection()}</main><!-- ${escapeHtml(marker)} --><!-- ${TTAA_VERIFICATION_DESIGN} --><!-- TTAA_VERIFICATION_DATA:${encoded} -->`;
 }
