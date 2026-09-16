@@ -78,12 +78,12 @@ export default function CompanySwitcher({ current }: CompanySwitcherProps) {
           <div className="assistant-options qr-menu-options">
             <Link href="/qr-dosya-dogrulama/ttaa" className={current === "ttaa-qr" ? "active" : ""} aria-current={current === "ttaa-qr" ? "page" : undefined} role="menuitem">
               <span className="company-option-logo"><img src="/ttaa-logo.png" alt="" /></span>
-              <span><strong>TTAA Doğrulama</strong><small>Hazırlık aşamasında</small></span>
+              <span><strong>TTAA Doğrulama</strong><small>QR etiket prototipi</small></span>
               {current === "ttaa-qr" ? <b>✓</b> : null}
             </Link>
             <Link href="/qr-dosya-dogrulama/ay-tercume" className={current === "ay-tercume-qr" ? "active" : ""} aria-current={current === "ay-tercume-qr" ? "page" : undefined} role="menuitem">
               <span className="company-option-logo ay-company-option-logo"><img src="/ay-tercume-logo.jpg" alt="" /></span>
-              <span><strong>Ay Tercüme Doğrulama</strong><small>Hazırlık aşamasında</small></span>
+              <span><strong>Ay Tercüme Doğrulama</strong><small>QR etiket prototipi</small></span>
               {current === "ay-tercume-qr" ? <b>✓</b> : null}
             </Link>
           </div>
