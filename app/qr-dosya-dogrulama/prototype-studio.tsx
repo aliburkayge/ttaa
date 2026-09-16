@@ -138,9 +138,7 @@ export default function QrPrototypeStudio({ brand, today }: { brand: QrBrand; to
 
     <div className="qr-proto-grid">
       <section className="qr-form-panel" aria-labelledby="qr-form-title">
-        <div className="qr-panel-heading"><div><small>01 · BELGE BİLGİLERİ</small><h2 id="qr-form-title">Yeni kayıt ve QR etiketi</h2></div><button type="button" className="qr-text-button" disabled={busy} onClick={() => {
-          setForm({ ...empty, documentNumber: brand === "ttaa" ? "TEST-TTAA-001" : "TEST-AY-001", customer: "Örnek Müşteri" }); setSelected(null); setSelectedRecord(null); setError(""); setNotice("");
-        }}>Örnek bilgilerle dene</button></div>
+        <div className="qr-panel-heading"><div><small>01 · BELGE BİLGİLERİ</small><h2 id="qr-form-title">Yeni kayıt ve QR etiketi</h2></div></div>
         <form onSubmit={generate}>
           <fieldset disabled={busy}>
             <div className="qr-fields-two">
@@ -159,7 +157,7 @@ export default function QrPrototypeStudio({ brand, today }: { brand: QrBrand; to
       <section className="qr-label-panel" aria-labelledby="qr-label-title">
         <div className="qr-panel-heading"><div><small>02 · ETİKET ÖNİZLEMESİ</small><h2 id="qr-label-title">Yazdırmaya hazır</h2></div><span className="qr-size-badge">70 × 45 mm</span></div>
         <div className="qr-label-stage">
-          {selected ? <img className="qr-generated-label" src={selected.labelUrl} alt={`${company} prototip QR etiketi, belge ${selected.documentNumber}`} /> : <div className="qr-label-empty"><span><QrIcon size={48} /></span><strong>Etiketiniz burada görünecek</strong><p>Belge bilgilerini doldurup<br />“QR etiketi oluştur” düğmesine basın.</p></div>}
+          {selected ? <img className="qr-generated-label" src={selected.labelUrl} alt={`${company} prototip QR etiketi, belge ${selected.documentNumber}`} /> : <div className="qr-label-empty"><span><QrIcon size={48} /></span><strong>Etiketiniz burada görünecek</strong><p>Belge bilgilerini doldurup<br />“Kaydet ve QR oluştur” düğmesine basın.</p></div>}
         </div>
         <div aria-live="polite" className={`qr-label-feedback${dirty ? " is-dirty" : ""}`}>{dirty ? "Bilgiler değişti. İndirmeden veya yazdırmadan önce etiketi güncelleyin." : notice || "Etikette müşteri adı ve Drive bağlantısı bulunmaz."}</div>
         <div className="qr-label-actions"><button type="button" className="qr-primary-button" disabled={!ready} onClick={() => window.print()}>Etiketi yazdır</button><button type="button" className="qr-secondary-button" disabled={!ready} onClick={() => void downloadPng()}>PNG indir</button><button type="button" className="qr-secondary-button" disabled={!ready} onClick={() => { if (selected) downloadFile(selected.labelUrl, `${brand}-prototip-etiket.svg`); }}>SVG indir</button></div>
