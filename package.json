@@ -15,7 +15,8 @@
     "worker:railway": "tsx scripts/content-worker.ts",
     "typecheck:worker": "tsc -p tsconfig.worker.json --noEmit",
     "test:wordpress": "node --import tsx --test tests/wordpress-target.test.ts",
-    "test": "npm run build && node --test tests/rendered-html.test.mjs && npm run test:wordpress",
+    "test:quality": "node --import tsx --test tests/content-quality.test.ts",
+    "test": "npm run build && node --test tests/rendered-html.test.mjs && npm run test:wordpress && npm run test:quality",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
   },

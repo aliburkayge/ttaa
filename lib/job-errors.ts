@@ -40,7 +40,7 @@ export function classifyJobError(error: unknown, stage = "unknown", requestId?: 
     safe = { code: error.httpStatus === 409 ? "CONFLICT" : "VALIDATION_ERROR", message, retryable: false, httpStatus: error.httpStatus };
   } else if (/cancel(?:led|ed)|iptal/.test(lower)) {
     safe = { code: "CANCELLED", message: "The job was cancelled safely.", retryable: false, httpStatus: 409 };
-  } else if (/billing|quota|hard limit|insufficient_quota|credit balance/.test(lower)) {
+  } else if (/\b(?:billing(?:_[a-z_]+)?|quota|hard limit|insufficient_quota|credit balance)\b/.test(lower)) {
     safe = { code: "BILLING_OR_QUOTA", message, retryable: false, httpStatus: 422, upstream: "openai", upstreamStatus };
   } else if (/moderation|safety system|content policy|refusal|reddetti/.test(lower)) {
     safe = { code: "MODERATION_BLOCKED", message, retryable: false, httpStatus: 422, upstream: "openai", upstreamStatus };

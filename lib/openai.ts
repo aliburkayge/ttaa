@@ -1,6 +1,7 @@
 import type { ResearchedLink } from "./link-catalog";
 import { parseResilientJson } from "./json";
 import { auditKeywordPolicy } from "./keyword-policy";
+import { auditFaqIntents } from "./faq-policy";
 import { requestOpenAIResponse, type OpenAIResponseOptions } from "./openai-background";
 
 export type GenerationBrief = {
@@ -292,19 +293,14 @@ function repetitionGate(articlePackage: { article: GeneratedArticle; topicLock: 
   return { passes: exactKeywordCount <= keywordLimit && brandCount <= brandLimit, keyword, exactKeywordCount, keywordLimit, brandCount, brandLimit };
 }
 
-function faqGate(articlePackage: { article: GeneratedArticle; topicLock: TopicLock }, brief: GenerationBrief) {
+export function faqGate(articlePackage: { article: Pick<GeneratedArticle, "faqs">; topicLock: Pick<TopicLock, "languagePair" | "documentType" | "centralSubject" | "formalProcess"> }, brief: Pick<GenerationBrief, "topic">) {
   const faqs = articlePackage.article.faqs;
   const questions = faqs.map((faq) => normalizedWords(faq.question));
   const issues: string[] = [];
   if (faqs.length < 7 || faqs.length > 10) issues.push(`FAQ count is ${faqs.length}; required range is 7-10.`);
-  if (!/\bttaa\b/.test(questions[0] || "") || !/\bhelp\b|\bassist\b|\bhandle\b|\bprovide\b/.test(questions[0] || "")) {
-    issues.push("The first FAQ must explain how TTAA helps with the exact service.");
-  }
+  issues.push(...auditFaqIntents(faqs, brief.topic));
   const ttaaQuestionCount = questions.filter((question) => /\bttaa\b/.test(question)).length;
   if (ttaaQuestionCount < 2) issues.push("At least two FAQ questions must explicitly mention TTAA.");
-  if (!questions.some((question) => /\bscan\b|\bquotation\b|\bquote\b|\bsend\b.*\bdocument\b|\bwhat\b.*\bsend\b/.test(question))) {
-    issues.push("At least one FAQ must explain what to send for review or quotation.");
-  }
   const banned = [
     "is translation always required", "why is translation important", "which source should i trust",
     "is professional translation necessary", "what is the best translation", "why should documents be translated",
@@ -423,8 +419,8 @@ TOPIC-LOCK OPERATING RULES
 12. Explain each idea once. Avoid repeating readable-file, authority, deadline, names/dates, notarization and delivery advice throughout the article.
 13. Position TTAA with concrete process strengths: appropriate translator assignment, official-document experience, terminology consistency, translation/revision workflow, relevant certification coordination and clear delivery. Never claim best, number one, flawless, guaranteed acceptance, universal validity or world-class superiority.
 14. Use cautious official-process language. The receiving institution makes the final acceptance decision. Never promise visa approval, legal recognition or application acceptance.
-15. Generate 7-10 FAQs from the visitor's real intent. The first question should normally ask how TTAA can help with the exact article topic. At least two questions must explicitly mention TTAA, and their answers must describe concrete help such as document review, translation direction, specialist assignment, checking, certification coordination or delivery.
-16. Balance the FAQs: 2-3 TTAA service questions, 2-3 questions unique to the exact language pair/document/process, only 1-2 formal-service questions when genuinely relevant, and 2 transaction questions. At least one question must explain what the reader should send for a review or quotation.
+15. Generate 7-10 FAQs from the visitor's real intent. The first question must explicitly name TTAA and ask about its help, support or service for the exact article topic; for example, "How can TTAA help with [the exact topic]?" Replace the bracketed text with the actual topic. At least two questions must explicitly mention TTAA, and their answers must describe concrete help such as document review, translation direction, specialist assignment, checking, certification coordination or delivery. Never imply that TTAA grants government approvals.
+16. Balance the FAQs: 2-3 TTAA service questions, 2-3 questions unique to the exact language pair/document/process, only 1-2 formal-service questions when genuinely relevant, and 2 transaction questions. At least one question must ask which documents, scans, files or details to send, submit or upload for a review or quotation. Its answer must identify the relevant input materials and explain what to send for review, using only supported facts. A price-only answer does not satisfy this requirement.
 17. For language-pair FAQs, cover realities unique to that pair, such as names/transliteration, regional or writing-system variants, stamps, tables, terminology, dates or reference spelling. For document pages, keep most questions on that document. For formal-process pages, explain the precise process without presenting one sequence as universal.
 18. FAQ answers should normally be 45-90 words, lead with a direct useful sentence, use plain professional English and avoid repeated answers. Fewer than 30% of questions may focus mainly on notarization, apostille, legalization or authority requirements unless the title itself is a formal-process topic.
 19. Do not use generic default questions such as "Is translation always required?", "Why is translation important?", "Which source should I trust?", "What is translation?" or the vague "How long will the process take?". Use a topic-specific turnaround question instead. Never expose FAQ planning, categories or audit scores.
