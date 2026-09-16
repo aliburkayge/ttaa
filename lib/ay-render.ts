@@ -1,3 +1,4 @@
+import type { WordPressTarget } from "./wordpress-target";
 import { buildAyContactUrl, getAyCanonical } from "./ay-link-catalog";
 import type { AyGenerationTrace } from "./ay-openai";
 import type { ResearchedLink } from "./link-catalog";
@@ -31,6 +32,7 @@ export type AyGeneratedImageAsset = {
 };
 
 export type AyContentPackage = {
+  wordpressTarget?: WordPressTarget;
   title: string;
   meta: string;
   slug: string;
@@ -46,6 +48,7 @@ export type AyContentPackage = {
   imageSuggestions: ImageSuggestion[];
   images?: { featured: AyGeneratedImageAsset; inline: AyGeneratedImageAsset };
   wordpress?: {
+    wordpressTarget?: WordPressTarget;
     id: number;
     status: "draft";
     editUrl: string;

@@ -1,3 +1,4 @@
+import { wordpressTarget } from "../../../../lib/wordpress-target";
 import { NextResponse } from "next/server";
 import { requireAdminSession } from "../../../../lib/auth";
 import { failUnclaimedJobWithoutWorker, getContentJob, getWorkerAvailability } from "../../../../lib/jobs";
@@ -24,6 +25,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     const started = job.started_at ? Date.parse(job.started_at) : Date.parse(job.created_at);
     return NextResponse.json({
       jobId: job.id,
+      wordpressTarget: wordpressTarget(job.brief.wordpressTarget),
       brand: job.brand,
       status: job.status,
       stage: job.stage,

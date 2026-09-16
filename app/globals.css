@@ -457,6 +457,29 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .optional { display: inline; color: #8a989e; font-size: 9px; font-weight: 500; }
 .two-fields { gap: 10px; }
 
+.wp-destination { min-width: 0; margin: 16px 0 0; padding: 0; border: 0; }
+.wp-destination__legend { padding: 0; color: var(--tt-navy); font-size: 11px; font-weight: 700; }
+.wp-destination__heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 5px 0 10px; color: var(--tt-muted); font-size: 10px; }
+.wp-destination__badge { padding: 3px 7px; border: 1px solid var(--tt-border); border-radius: 5px; background: #f8fafb; color: var(--tt-muted); font-size: 9px; font-weight: 600; }
+.wp-destination__options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.wp-destination__option { position: relative; min-width: 0; cursor: pointer; }
+.wp-destination__option > input { position: absolute; width: 1px; height: 1px; margin: 0; padding: 0; opacity: 0; }
+.wp-destination__card { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; height: 100%; min-height: 106px; padding: 13px 12px 12px; border: 1px solid var(--tt-border); border-radius: 9px; background: #fff; transition: border-color .16s ease, background .16s ease, box-shadow .16s ease; }
+.wp-destination__icon { display: grid; place-items: center; width: 29px; height: 29px; margin-bottom: 5px; border-radius: 7px; background: #f2f6f8; color: #6c8590; }
+.wp-destination__card > strong { color: var(--tt-navy); font-size: 12px; font-weight: 700; line-height: 1.4; }
+.wp-destination__card > small { color: var(--tt-muted); font-size: 9px; line-height: 1.5; }
+.wp-destination__check { position: absolute; top: 13px; right: 12px; display: grid; place-items: center; width: 15px; height: 15px; border: 1px solid #cad7dd; border-radius: 50%; background: #fff; color: transparent; }
+.wp-destination__option > input:checked + .wp-destination__card { border-color: var(--tt-blue); background: var(--tt-blue-soft); box-shadow: inset 0 0 0 1px var(--tt-blue); }
+.wp-destination__option > input:checked + .wp-destination__card .wp-destination__icon { background: #fff; color: var(--tt-blue-dark); }
+.wp-destination__option > input:checked + .wp-destination__card .wp-destination__check { border-color: var(--tt-blue); background: var(--tt-blue); color: var(--tt-navy); }
+.wp-destination__option > input:focus-visible + .wp-destination__card { outline: 2px solid var(--tt-blue-dark); outline-offset: 3px; }
+.wp-destination__option:hover > input:not(:disabled) + .wp-destination__card { border-color: var(--tt-blue-dark); }
+.wp-destination__option > input:disabled + .wp-destination__card { cursor: not-allowed; opacity: .55; }
+.wp-destination__note { display: flex; align-items: flex-start; gap: 6px; margin: 10px 0 0; color: var(--tt-muted); font-size: 9px; line-height: 1.6; }
+.wp-destination__note > svg { flex-shrink: 0; margin-top: 1px; color: var(--tt-blue-dark); }
+.wp-destination__note strong { color: var(--tt-text); font-weight: 600; }
+@media (prefers-reduced-motion: reduce) { .wp-destination__card { transition: none; } }
+
 .advanced-card { margin-top: 12px; border: 1px solid var(--tt-border); border-radius: 10px; background: #fff; }
 .advanced-card summary { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 13px 14px; cursor: pointer; list-style: none; }
 .advanced-card summary::-webkit-details-marker { display: none; }

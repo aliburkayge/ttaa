@@ -1,3 +1,5 @@
+import { WordPressTargetError } from "./wordpress-target";
+
 export type SafeErrorCode =
   | "VALIDATION_ERROR"
   | "UNAUTHORIZED"
@@ -34,7 +36,9 @@ export function classifyJobError(error: unknown, stage = "unknown", requestId?: 
   const upstreamStatus = Number(/\b(?:http|status)\s*(\d{3})\b/i.exec(message)?.[1]) || undefined;
 
   let safe: Omit<SafeJobError, "stage" | "requestId">;
-  if (/cancel(?:led|ed)|iptal/.test(lower)) {
+  if (error instanceof WordPressTargetError) {
+    safe = { code: error.httpStatus === 409 ? "CONFLICT" : "VALIDATION_ERROR", message, retryable: false, httpStatus: error.httpStatus };
+  } else if (/cancel(?:led|ed)|iptal/.test(lower)) {
     safe = { code: "CANCELLED", message: "The job was cancelled safely.", retryable: false, httpStatus: 409 };
   } else if (/billing|quota|hard limit|insufficient_quota|credit balance/.test(lower)) {
     safe = { code: "BILLING_OR_QUOTA", message, retryable: false, httpStatus: 422, upstream: "openai", upstreamStatus };

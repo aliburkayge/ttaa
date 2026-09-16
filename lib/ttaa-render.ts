@@ -1,3 +1,4 @@
+import type { WordPressTarget } from "./wordpress-target";
 import { buildTtaaWhatsAppUrl, type ResearchedLink } from "./link-catalog";
 import type { GeneratedArticle, GenerationTrace } from "./openai";
 
@@ -9,6 +10,7 @@ export type TtaaRenderOptions = {
 };
 
 export type TtaaContentPackage = {
+  wordpressTarget?: WordPressTarget;
   title: string;
   meta: string;
   slug: string;

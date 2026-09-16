@@ -1,3 +1,4 @@
+import { packageWordPressTarget, requireNewWordPressTarget, type WordPressTarget } from "../../../../lib/wordpress-target";
 import { NextResponse } from "next/server";
 import { requireAdminSession } from "../../../../lib/auth";
 import { generateBlogImages, type GeneratedImageBinary, type ImageSuggestionInput } from "../../../../lib/openai-images";
@@ -30,6 +31,7 @@ type FinalImageAsset = {
 type FinalizeRequest = {
   brief: Record<string, unknown>;
   package: {
+    wordpressTarget?: WordPressTarget;
     title: string;
     meta: string;
     slug: string;
@@ -158,6 +160,7 @@ export async function POST(request: Request) {
   try {
     return await withDeadline(async () => {
     const body = (await request.json()) as FinalizeRequest;
+    const target = requireNewWordPressTarget(packageWordPressTarget(body.package, body.brief));
     validatePayload(body);
     const postTitle = typeof body.package.preview?.title === "string" ? body.package.preview.title : body.package.title;
 
@@ -179,6 +182,7 @@ export async function POST(request: Request) {
     phase = "wordpress-draft";
     try {
       wordpress = await createWordPressDraft({
+        wordpressTarget: target,
         postTitle,
         seoTitle: body.package.title,
         html: finalHtml,
@@ -200,7 +204,7 @@ export async function POST(request: Request) {
       featured: finalImageAsset(generatedImages.featured, media.featured, backups.featured),
       inline: finalImageAsset(generatedImages.inline, media.inline, backups.inline),
     };
-    const completedPackage = { ...body.package, html: finalHtml, schema: finalSchema, images };
+    const completedPackage = { ...body.package, wordpressTarget: target, wordpress, html: finalHtml, schema: finalSchema, images };
 
     const mediaAttachment = await attachWordPressMedia([media.featured.id, media.inline.id], wordpress.id);
     let storage: { bucket: string; path: string } | null = null;

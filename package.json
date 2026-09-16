@@ -14,7 +14,8 @@
     "web:railway": "next start --hostname 0.0.0.0",
     "worker:railway": "tsx scripts/content-worker.ts",
     "typecheck:worker": "tsc -p tsconfig.worker.json --noEmit",
-    "test": "npm run build && node --test tests/rendered-html.test.mjs",
+    "test:wordpress": "node --import tsx --test tests/wordpress-target.test.ts",
+    "test": "npm run build && node --test tests/rendered-html.test.mjs && npm run test:wordpress",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
   },

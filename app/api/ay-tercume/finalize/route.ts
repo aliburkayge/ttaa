@@ -1,3 +1,4 @@
+import { packageWordPressTarget, requireNewWordPressTarget } from "../../../../lib/wordpress-target";
 import { NextResponse } from "next/server";
 import { requireAdminSession } from "../../../../lib/auth";
 import type { AyContentPackage, AyGeneratedImageAsset } from "../../../../lib/ay-render";
@@ -85,6 +86,7 @@ export async function POST(request: Request) {
   try {
     return await withDeadline(async () => {
     const body = (await request.json()) as FinalizeRequest;
+    const target = requireNewWordPressTarget(packageWordPressTarget(body.package || {}, body.brief));
     const contentPackage = body.package;
     if (!contentPackage?.html || !contentPackage.schema || !contentPackage.slug || !contentPackage.focusKeyword || !contentPackage.images) {
       throw new Error("WordPress taslağı için içerik veya görsel paketi eksik.");
@@ -101,6 +103,7 @@ export async function POST(request: Request) {
     let wordpress;
     try {
       wordpress = await createWordPressDraft({
+        wordpressTarget: target,
         postTitle,
         seoTitle: contentPackage.title,
         html: finalHtml,
@@ -124,12 +127,13 @@ export async function POST(request: Request) {
     };
     const completedPackage: AyContentPackage = {
       ...contentPackage,
+      wordpressTarget: target,
       html: finalHtml,
       schema: finalSchema,
       canonical: wordpress.canonical,
       canonicalReady: true,
       images,
-      wordpress: { id: wordpress.id, status: "draft", editUrl: wordpress.editUrl, canonical: wordpress.canonical, seo: wordpress.seo, design: wordpress.design },
+      wordpress: { wordpressTarget: target, id: wordpress.id, status: "draft", editUrl: wordpress.editUrl, canonical: wordpress.canonical, seo: wordpress.seo, design: wordpress.design },
     };
     const warnings = [attachment.warning, wordpress.seo.warning, wordpress.design.warning].filter(Boolean);
     return NextResponse.json({ success: true, package: completedPackage, wordpress: completedPackage.wordpress, warning: warnings.join(" ") || undefined }, { status: 201 });

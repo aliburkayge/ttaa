@@ -1,3 +1,4 @@
+import { wordpressTarget, requireNewWordPressTarget, packageWordPressTarget, withoutWordPressTarget } from "./wordpress-target";
 import { dedupeAyLinks, getAyCuratedLinks } from "./ay-link-catalog";
 import { generateAyArticle, type AyGenerationBrief } from "./ay-openai";
 import { generateAyBlogImage, type AyGeneratedImageBinary, type AyImageRole } from "./ay-openai-images";
@@ -166,7 +167,10 @@ export async function runContentJob(initialJob: ContentJob, workerId: string) {
   const startedAt = Date.now();
   const maxRuntime = integerEnv("JOB_MAX_RUNTIME_MS", 2_700_000, 60_000);
   let job = initialJob;
+  const target = wordpressTarget(job.brief.wordpressTarget);
   const cp = { ...(job.checkpoint || {}) } as PipelineCheckpoint;
+  packageWordPressTarget({ wordpressTarget: cp.package?.wordpressTarget, wordpress: cp.wordpress }, job.brief);
+  if (!cp.wordpress) requireNewWordPressTarget(target);
   cp.responseIds = { ...(cp.responseIds || {}) };
   cp.images = { ...(cp.images || {}) };
   cp.wordpressMedia = { ...(cp.wordpressMedia || {}) };
@@ -209,7 +213,7 @@ export async function runContentJob(initialJob: ContentJob, workerId: string) {
     };
     if (isAy(job)) {
       const brief = job.brief as unknown as AyGenerationBrief & AyRenderOptions;
-      const generated = await generateAyArticle(brief, cp.research.links, { jobId: job.id, responseIds: cp.responseIds, onResponseId });
+      const generated = await generateAyArticle(withoutWordPressTarget(brief), cp.research.links, { jobId: job.id, responseIds: cp.responseIds, onResponseId });
       const selected = new Set(generated.article.internalLinkSuggestions.map((anchor) => anchor.toLocaleLowerCase("tr-TR")));
       const internal = cp.research.links.filter((link) => link.source === "internal" && selected.has(link.anchor.toLocaleLowerCase("tr-TR"))).slice(0, 6);
       const official = cp.research.links.filter((link) => link.source === "official");
@@ -224,7 +228,7 @@ export async function runContentJob(initialJob: ContentJob, workerId: string) {
       }, generated.trace, { mode: cp.research.mode, researchedAt: cp.research.researchedAt });
     } else {
       const brief = job.brief as unknown as GenerationBrief & TtaaRenderOptions;
-      const generated = await generateAndEditArticle(brief, cp.research.links, { jobId: job.id, responseIds: cp.responseIds, onResponseId });
+      const generated = await generateAndEditArticle(withoutWordPressTarget(brief), cp.research.links, { jobId: job.id, responseIds: cp.responseIds, onResponseId });
       const selected = new Set(generated.article.internalLinkSuggestions.map((anchor) => anchor.toLowerCase()));
       const internal = cp.research.links.filter((link) => link.source === "internal" && selected.has(link.anchor.toLowerCase())).slice(0, 6);
       const official = cp.research.links.filter((link) => link.source === "official");
@@ -244,6 +248,7 @@ export async function runContentJob(initialJob: ContentJob, workerId: string) {
         faqSchema: brief.faqSchema ?? true,
       }, generated.trace, { mode: cp.research.mode, researchedAt: cp.research.researchedAt });
     }
+    cp.package.wordpressTarget = target;
     job = await checkpoint(job, workerId, "quality-control", 58, cp);
   }
 
@@ -327,6 +332,7 @@ export async function runContentJob(initialJob: ContentJob, workerId: string) {
     job = await checkpoint(job, workerId, "wordpress-draft", 90, cp);
     try {
       cp.wordpress = await createWordPressDraft({
+        wordpressTarget: target,
         postTitle: cp.package.preview.title,
         seoTitle: cp.package.title,
         html: finalHtml,
@@ -357,6 +363,7 @@ export async function runContentJob(initialJob: ContentJob, workerId: string) {
   };
   const completedPackage = {
     ...cp.package,
+    wordpressTarget: target,
     html: finalHtml,
     schema: finalSchema,
     canonical: wordpress.canonical || cp.package.canonical,

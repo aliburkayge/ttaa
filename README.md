@@ -39,6 +39,9 @@ Ay Tercüme uses only `AY_*` integration variables. Its WordPress credentials ar
 
 ## Local use
 
+WordPress Yazı / Sayfa hedef seçimi varsayılan kapalıdır. Geriye uyumluluk,
+testler ve web/worker devreye alma sırası için [WordPress hedefleri](WORDPRESS_TARGETS.md).
+
 ```bash
 npm install
 npm run dev

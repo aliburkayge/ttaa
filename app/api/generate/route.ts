@@ -1,3 +1,4 @@
+import { requireNewWordPressTarget, withoutWordPressTarget, type WordPressTarget } from "../../../lib/wordpress-target";
 import { NextResponse } from "next/server";
 import { requireAdminSession } from "../../../lib/auth";
 import { canonicalLinkHost, dedupeLinks, type LinkBrief } from "../../../lib/link-catalog";
@@ -10,7 +11,7 @@ import { withDeadline } from "../../../lib/deadline";
 export const runtime = "nodejs";
 export const maxDuration = 840;
 
-type GenerateRequest = LinkBrief & GenerationBrief;
+type GenerateRequest = { wordpressTarget?: WordPressTarget } & LinkBrief & GenerationBrief;
 
 function validateBrief(brief: GenerateRequest) {
   if (!brief?.topic?.trim()) throw new Error("Topic is required.");
@@ -37,6 +38,7 @@ export async function POST(request: Request) {
     return await withDeadline(async () => {
     const brief = (await request.json()) as GenerateRequest;
     validateBrief(brief);
+    requireNewWordPressTarget(brief.wordpressTarget);
     const normalizedBrief: GenerateRequest = {
       ...brief,
       audience: brief.audience ?? "",
@@ -45,7 +47,7 @@ export async function POST(request: Request) {
     };
 
     const research = await researchBrief(normalizedBrief);
-    const generated = await generateAndEditArticle(normalizedBrief, research.links);
+    const generated = await generateAndEditArticle(withoutWordPressTarget(normalizedBrief), research.links);
     const selectedInternalAnchors = new Set(generated.article.internalLinkSuggestions.map((anchor) => anchor.toLowerCase()));
     const selectedInternalLinks = research.links.filter((link) => link.source === "internal" && selectedInternalAnchors.has(link.anchor.toLowerCase())).slice(0, 6);
     const officialLinks = research.links.filter((link) => link.source === "official");

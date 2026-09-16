@@ -1,6 +1,7 @@
 import { parseResilientJson } from "./json";
 import { normalizeTtaaArticleHtml } from "./ttaa-html";
 import { fetchWithRetry, integerEnv } from "./upstream";
+import { wordpressCollection, wordpressTarget, type WordPressTarget } from "./wordpress-target";
 
 const fetch = (input: string | URL | Request, init?: RequestInit) => fetchWithRetry(input, init, {
   upstream: "WordPress",
@@ -11,6 +12,9 @@ const fetch = (input: string | URL | Request, init?: RequestInit) => fetchWithRe
 export type WordPressScope = "ttaa" | "ay-tercume";
 
 export type WordPressDraftInput = {
+  wordpressTarget?: WordPressTarget;
+  /** Synchronization must address the saved draft, never create a replacement. */
+  managedDraftId?: number;
   postTitle: string;
   seoTitle: string;
   html: string;
@@ -121,8 +125,8 @@ function verifyAioseoKeyphrases(meta: AioseoMeta | undefined, focusKeyword: stri
   return { focusKeywordApplied, secondaryKeywordsApplied };
 }
 
-async function readAioseoMeta(baseUrl: string, authorization: string, postId: number) {
-  const response = await fetch(`${baseUrl}/wp-json/wp/v2/posts/${postId}?context=edit&_fields=aioseo_meta_data`, {
+async function readAioseoMeta(baseUrl: string, authorization: string, postId: number, target: WordPressTarget) {
+  const response = await fetch(`${baseUrl}/wp-json/wp/v2/${wordpressCollection(target)}/${postId}?context=edit&_fields=aioseo_meta_data`, {
     headers: { Authorization: authorization, Accept: "application/json" },
     cache: "no-store",
   });
@@ -176,12 +180,13 @@ function imageAttribute(tag: string, name: string) {
   return match?.[1] || "";
 }
 
-export async function getWordPressDraftMedia(slug: string): Promise<WordPressDraftMediaSnapshot | null> {
+export async function getWordPressDraftMedia(slug: string, target: WordPressTarget = "post"): Promise<WordPressDraftMediaSnapshot | null> {
   const { baseUrl, username, applicationPassword } = wordpressConfig();
   const authorization = authHeader(username, applicationPassword);
   const safeSlug = slug.replace(/^\/+|\/+$/g, "");
   const postFields = "id,slug,content,featured_media,modified";
-  const postsResponse = await fetch(`${baseUrl}/wp-json/wp/v2/posts?status=draft&context=edit&slug=${encodeURIComponent(safeSlug)}&per_page=1&_fields=${postFields}`, {
+  const collection = wordpressCollection(target);
+  const postsResponse = await fetch(`${baseUrl}/wp-json/wp/v2/${collection}?status=draft&context=edit&slug=${encodeURIComponent(safeSlug)}&per_page=1&_fields=${postFields}`, {
     headers: { Authorization: authorization, Accept: "application/json" },
     cache: "no-store",
   });
@@ -190,7 +195,7 @@ export async function getWordPressDraftMedia(slug: string): Promise<WordPressDra
   let posts = await postsResponse.json() as DraftLookup[];
   if (!posts.length) {
     const search = safeSlug.replaceAll("-", " ");
-    const fallbackResponse = await fetch(`${baseUrl}/wp-json/wp/v2/posts?status=draft&context=edit&search=${encodeURIComponent(search)}&orderby=modified&order=desc&per_page=20&_fields=${postFields}`, {
+    const fallbackResponse = await fetch(`${baseUrl}/wp-json/wp/v2/${collection}?status=draft&context=edit&search=${encodeURIComponent(search)}&orderby=modified&order=desc&per_page=20&_fields=${postFields}`, {
       headers: { Authorization: authorization, Accept: "application/json" },
       cache: "no-store",
     });
@@ -333,7 +338,7 @@ function schemaForContent(schema: string, seoPlugin: "aioseo" | "yoast" | "rank-
 
 function canonicalFromDraft(baseUrl: string, slug: string, link: string) {
   const cleanSlug = slug.replace(/^\/+|\/+$/g, "");
-  if (link && !/[?&]p=\d+/.test(link)) return link.endsWith("/") ? link : `${link}/`;
+  if (link && !/[?&](?:p|page_id)=\d+/.test(link)) return link.endsWith("/") ? link : `${link}/`;
   return `${baseUrl}/${cleanSlug}/`;
 }
 
@@ -347,15 +352,17 @@ async function findDraftByJobMarker(
   requestedSlug: string,
   postTitle: string,
   marker: string,
+  target: WordPressTarget,
 ) {
   const fields = "id,status,link,slug,title,content,featured_media";
+  const collection = wordpressCollection(target);
   const endpoints = [
-    `${baseUrl}/wp-json/wp/v2/posts?status=draft&context=edit&slug=${encodeURIComponent(requestedSlug)}&per_page=20&_fields=${fields}`,
-    `${baseUrl}/wp-json/wp/v2/posts?status=draft&context=edit&search=${encodeURIComponent(postTitle)}&orderby=modified&order=desc&per_page=20&_fields=${fields}`,
+    `${baseUrl}/wp-json/wp/v2/${collection}?status=draft&context=edit&slug=${encodeURIComponent(requestedSlug)}&per_page=20&_fields=${fields}`,
+    `${baseUrl}/wp-json/wp/v2/${collection}?status=draft&context=edit&search=${encodeURIComponent(postTitle)}&orderby=modified&order=desc&per_page=20&_fields=${fields}`,
   ];
   for (const endpoint of endpoints) {
     const response = await fetch(endpoint, { headers: { Authorization: authorization, Accept: "application/json" }, cache: "no-store" });
-    if (!response.ok) continue;
+    if (!response.ok) throw new Error(`WordPress taslak kontrolü başarısız (status ${response.status}); ${target === "page" ? "sayfa" : "yazı"} erişim yetkisini kontrol edin.`);
     const posts = await readWordPressJson<WordPressDraftLookup[]>(response, "idempotency lookup");
     const match = posts.find((post) => post.content?.raw?.includes(marker));
     if (match) return match;
@@ -382,6 +389,8 @@ export async function verifyWordPressConnection(scope: WordPressScope = "ttaa") 
 }
 
 export async function createWordPressDraft(input: WordPressDraftInput, scope: WordPressScope = "ttaa") {
+  const target = wordpressTarget(input.wordpressTarget);
+  const collection = wordpressCollection(target);
   const { baseUrl, username, applicationPassword } = wordpressConfig(scope);
   const authorization = authHeader(username, applicationPassword);
   const seoPlugin = await detectSeoPlugin(baseUrl);
@@ -399,10 +408,21 @@ export async function createWordPressDraft(input: WordPressDraftInput, scope: Wo
   const content = safeSchema ? `${contentBody}\n\n<script type="application/ld+json">\n${safeSchema}\n</script>` : contentBody;
   const requestedSlug = input.slug.replace(/^\/+|\/+$/g, "");
 
-  const existing = marker ? await findDraftByJobMarker(baseUrl, authorization, requestedSlug, input.postTitle, marker) : null;
+  let existing: WordPressDraftLookup | null = null;
+  if (input.managedDraftId) {
+    const saved = await fetch(`${baseUrl}/wp-json/wp/v2/${collection}/${input.managedDraftId}?context=edit`, {
+      headers: { Authorization: authorization, Accept: "application/json" }, cache: "no-store",
+    });
+    if (!saved.ok) throw new Error(`WordPress managed draft lookup failed (status ${saved.status}).`);
+    existing = await readWordPressJson<WordPressDraftLookup>(saved, "managed draft lookup");
+    if (!marker || !existing.content?.raw?.includes(marker)) throw new Error("WordPress managed draft marker mismatch.");
+  } else if (marker) {
+    existing = await findDraftByJobMarker(baseUrl, authorization, requestedSlug, input.postTitle, marker, target);
+  }
+  if (existing && existing.status !== "draft") throw new Error("WORDPRESS_NOT_DRAFT");
   const endpoint = existing
-    ? `${baseUrl}/wp-json/wp/v2/posts/${existing.id}`
-    : `${baseUrl}/wp-json/wp/v2/posts`;
+    ? `${baseUrl}/wp-json/wp/v2/${collection}/${existing.id}`
+    : `${baseUrl}/wp-json/wp/v2/${collection}`;
   const response = await fetch(endpoint, {
     method: "POST",
     headers: { Authorization: authorization, "Content-Type": "application/json", Accept: "application/json" },
@@ -416,7 +436,7 @@ export async function createWordPressDraft(input: WordPressDraftInput, scope: Wo
     }),
   });
   const payload = await readWordPressJson<WordPressDraft>(response, existing ? "idempotent draft reconciliation" : "draft creation");
-  if (!response.ok) throw new Error(payload.message || `WordPress draft creation failed (${response.status}).`);
+  if (!response.ok) throw new Error(`${target === "page" ? "WordPress sayfa taslağı oluşturulamadı; sayfa düzenleme yetkisini kontrol edin. " : ""}${payload.message || `WordPress draft creation failed (status ${response.status}).`}`);
   if (payload.status !== "draft") throw new Error("WordPress returned a non-draft status; the operation was stopped.");
 
   const canonical = canonicalFromDraft(baseUrl, payload.slug || requestedSlug, payload.link);
@@ -426,9 +446,9 @@ export async function createWordPressDraft(input: WordPressDraftInput, scope: Wo
   let seoWarning: string | undefined;
 
   if (seoPlugin === "aioseo") {
-    const initialMeta = await readAioseoMeta(baseUrl, authorization, payload.id);
+    const initialMeta = await readAioseoMeta(baseUrl, authorization, payload.id, target);
     const keyphrases = buildAioseoKeyphrases(initialMeta?.keyphrases, input.focusKeyword, input.secondaryKeywords);
-    const seoResponse = await fetch(`${baseUrl}/wp-json/wp/v2/posts/${payload.id}`, {
+    const seoResponse = await fetch(`${baseUrl}/wp-json/wp/v2/${collection}/${payload.id}`, {
       method: "POST",
       headers: { Authorization: authorization, "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify({
@@ -443,7 +463,7 @@ export async function createWordPressDraft(input: WordPressDraftInput, scope: Wo
     const seoPayload = await readWordPressJson<{ message?: string }>(seoResponse, "AIOSEO metadata update");
     if (!seoResponse.ok) {
       seoWarning = seoPayload.message || `AIOSEO metadata update failed (${seoResponse.status}).`;
-      const baseMetadataResponse = await fetch(`${baseUrl}/wp-json/wp/v2/posts/${payload.id}`, {
+      const baseMetadataResponse = await fetch(`${baseUrl}/wp-json/wp/v2/${collection}/${payload.id}`, {
         method: "POST",
         headers: { Authorization: authorization, "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify({ aioseo_meta_data: { title: input.seoTitle, description: input.metaDescription, canonical_url: canonical } }),
@@ -454,7 +474,7 @@ export async function createWordPressDraft(input: WordPressDraftInput, scope: Wo
       }
     }
 
-    let meta = await readAioseoMeta(baseUrl, authorization, payload.id);
+    let meta = await readAioseoMeta(baseUrl, authorization, payload.id, target);
     let keyphraseVerification = verifyAioseoKeyphrases(meta, input.focusKeyword, input.secondaryKeywords);
     if (!keyphraseVerification.focusKeywordApplied || !keyphraseVerification.secondaryKeywordsApplied) {
       const fallbackResponse = await fetch(`${baseUrl}/wp-json/aioseo/v1/keyphrases`, {
@@ -463,7 +483,7 @@ export async function createWordPressDraft(input: WordPressDraftInput, scope: Wo
         body: JSON.stringify({ postId: payload.id, keyphrases }),
       });
       if (fallbackResponse.ok) {
-        meta = await readAioseoMeta(baseUrl, authorization, payload.id);
+        meta = await readAioseoMeta(baseUrl, authorization, payload.id, target);
         keyphraseVerification = verifyAioseoKeyphrases(meta, input.focusKeyword, input.secondaryKeywords);
       } else {
         const fallbackPayload = await readWordPressJson<{ message?: string }>(fallbackResponse, "AIOSEO keyphrase fallback");
@@ -507,6 +527,7 @@ export async function createWordPressDraft(input: WordPressDraftInput, scope: Wo
   }
 
   return {
+    wordpressTarget: target,
     id: payload.id,
     status: payload.status,
     link: payload.link,
@@ -534,9 +555,9 @@ export async function createWordPressDraft(input: WordPressDraftInput, scope: Wo
   };
 }
 
-export async function getWordPressDraftStatus(postId: number, scope: WordPressScope = "ttaa") {
+export async function getWordPressDraftStatus(postId: number, scope: WordPressScope = "ttaa", target: WordPressTarget = "post") {
   const { baseUrl, username, applicationPassword } = wordpressConfig(scope);
-  const response = await fetch(`${baseUrl}/wp-json/wp/v2/posts/${postId}?context=edit&_fields=id,status`, {
+  const response = await fetch(`${baseUrl}/wp-json/wp/v2/${wordpressCollection(target)}/${postId}?context=edit&_fields=id,status`, {
     headers: { Authorization: authHeader(username, applicationPassword), Accept: "application/json" },
     cache: "no-store",
   });

@@ -1,5 +1,6 @@
 "use client";
 
+import type { WordPressTarget } from "./wordpress-target";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { JobBrand, JobStatus } from "./jobs";
 
@@ -13,6 +14,7 @@ export type PublicJobError = {
 
 export type PublicJob<TResult> = {
   jobId: string;
+  wordpressTarget?: WordPressTarget;
   brand: JobBrand;
   status: JobStatus;
   stage: string;

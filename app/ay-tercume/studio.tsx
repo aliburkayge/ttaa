@@ -3,6 +3,8 @@
 /* Generated previews use authenticated data URLs and cannot use next/image. */
 /* eslint-disable @next/next/no-img-element */
 
+import WordPressTargetSelect from "../wordpress-target-select";
+import { wordpressTarget, type WordPressTarget } from "../../lib/wordpress-target";
 import { useEffect, useMemo, useState } from "react";
 import type { AyContentPackage } from "../../lib/ay-render";
 import { JobApiError, useContentJob } from "../../lib/use-content-job";
@@ -21,6 +23,7 @@ type AyIntegrationHealth = {
 };
 
 type AyBrief = {
+  wordpressTarget: WordPressTarget;
   topic: string;
   mode: "new" | "update";
   length: "standard" | "guide" | "service";
@@ -37,6 +40,7 @@ type AyBrief = {
 };
 
 const EMPTY_BRIEF: AyBrief = {
+  wordpressTarget: "post",
   topic: "",
   mode: "new",
   length: "guide",
@@ -109,6 +113,7 @@ export default function AyTercumeStudio({ email }: { email: string }) {
     const current = asyncJob.job;
     if (!current) return;
     const timer = window.setTimeout(() => {
+      setBrief((previous) => ({ ...previous, wordpressTarget: wordpressTarget(current.wordpressTarget) }));
       const stages: Record<string, number> = {
         queued: 1, research: 1, writer: 2, writing: 2, editor: 2,
         "quality-control": 3, images: 4, "wordpress-media": 5,
@@ -199,7 +204,7 @@ export default function AyTercumeStudio({ email }: { email: string }) {
     const response = await fetch("/api/ay-tercume/finalize", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ brief, package: contentPackage }),
+      body: JSON.stringify({ brief: { ...brief, wordpressTarget: wordpressTarget(contentPackage.wordpressTarget) }, package: contentPackage }),
     });
     const payload = (await response.json()) as { package?: AyContentPackage; error?: string; warning?: string; retryable?: boolean };
     if (response.status === 401) {
@@ -395,6 +400,7 @@ export default function AyTercumeStudio({ email }: { email: string }) {
                 <label>Mevcut metin veya notlar<textarea value={brief.sourceText} onChange={(event) => updateBrief("sourceText", event.target.value)} placeholder="Geliştirilecek eski yazıyı veya kaynak notlarını buraya ekleyin." /></label>
               </div></details>
 
+              <WordPressTargetSelect value={asyncJob.active ? wordpressTarget(asyncJob.job?.wordpressTarget) : brief.wordpressTarget} disabled={isGenerating || asyncJob.active || asyncJob.loading || Boolean(pendingPackage)} onChange={(value) => updateBrief("wordpressTarget", value)} />
               <details className="advanced-card output-settings"><summary><span><strong>Teknik çıktı ayarları</strong><small>Önerilen ayarlar hazır seçilidir</small></span><b>+</b></summary><div className="settings-card"><AyToggle label="İçerikte H1 kullan" checked={brief.includeH1} onChange={(value) => updateBrief("includeH1", value)} /><AyToggle label="Breadcrumb göster" checked={brief.visibleBreadcrumb} onChange={(value) => updateBrief("visibleBreadcrumb", value)} /><AyToggle label="Article schema" checked={brief.articleSchema} onChange={(value) => updateBrief("articleSchema", value)} /><AyToggle label="FAQ schema" checked={brief.faqSchema} onChange={(value) => updateBrief("faqSchema", value)} /></div></details>
 
               <button className="generate-button" onClick={() => void generate()} disabled={isGenerating || !brief.topic.trim()}><span>{isGenerating ? "Paket hazırlanıyor..." : "İçeriği ve 2 görseli oluştur"}</span><b aria-hidden="true">→</b></button>

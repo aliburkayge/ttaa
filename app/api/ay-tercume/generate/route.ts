@@ -1,3 +1,4 @@
+import { requireNewWordPressTarget, withoutWordPressTarget, type WordPressTarget } from "../../../../lib/wordpress-target";
 import { NextResponse } from "next/server";
 import { requireAdminSession } from "../../../../lib/auth";
 import { dedupeAyLinks, getAyCuratedLinks, type AyLinkBrief } from "../../../../lib/ay-link-catalog";
@@ -11,7 +12,7 @@ import { withDeadline } from "../../../../lib/deadline";
 export const runtime = "nodejs";
 export const maxDuration = 840;
 
-type GenerateRequest = AyLinkBrief & AyGenerationBrief & AyRenderOptions;
+type GenerateRequest = { wordpressTarget?: WordPressTarget } & AyLinkBrief & AyGenerationBrief & AyRenderOptions;
 
 function validateBrief(brief: GenerateRequest) {
   if (!brief?.topic?.trim()) throw new Error("Yazı başlığı gereklidir.");
@@ -52,6 +53,7 @@ export async function POST(request: Request) {
     return await withDeadline(async () => {
     const brief = (await request.json()) as GenerateRequest;
     validateBrief(brief);
+    const target = requireNewWordPressTarget(brief.wordpressTarget);
     const normalized: GenerateRequest = {
       ...brief,
       audience: brief.audience ?? "",
@@ -67,7 +69,7 @@ export async function POST(request: Request) {
     const live = await liveAyLinks(normalized);
     const researchedAt = new Date().toISOString();
     const approved = dedupeAyLinks([...getAyCuratedLinks(normalized), ...live]).slice(0, 14);
-    const generated = await generateAyArticle(normalized, approved);
+    const generated = await generateAyArticle(withoutWordPressTarget(normalized), approved);
     const selectedAnchors = new Set(generated.article.internalLinkSuggestions.map((anchor) => anchor.toLocaleLowerCase("tr-TR")));
     const selectedInternal = approved.filter((link) => link.source === "internal" && selectedAnchors.has(link.anchor.toLocaleLowerCase("tr-TR"))).slice(0, 6);
     const official = approved.filter((link) => link.source === "official");
@@ -82,7 +84,7 @@ export async function POST(request: Request) {
     const links = dedupeAyLinks([...selectedInternal, ...official, ...discovered]).slice(0, 14);
     const research = { mode: process.env.AY_WP_URL ? "live-ay-wordpress-plus-official-web-search" : "curated-ay-links-plus-official-web-search", researchedAt };
     const contentPackage = buildAyContentPackage(generated.article, links, normalized, generated.trace, research);
-    return NextResponse.json({ package: contentPackage });
+    return NextResponse.json({ package: { ...contentPackage, wordpressTarget: target } });
     });
   } catch (error) {
     const safe = classifyJobError(error, "legacy-ay-content-generation", requestId);

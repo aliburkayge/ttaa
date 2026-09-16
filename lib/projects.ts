@@ -1,3 +1,4 @@
+import { packageWordPressTarget } from "./wordpress-target";
 import { buildAyContentPackage, type AyContentPackage } from "./ay-render";
 import type { JobBrand } from "./jobs";
 import type { GeneratedArticle } from "./openai";
@@ -180,6 +181,7 @@ function rebuildPackage(project: ContentProject, article: GeneratedArticle, link
     : buildTtaaContentPackage(article, links, options, previous.generation as TtaaContentPackage["generation"], previous.research);
   const merged = {
     ...rebuilt,
+    wordpressTarget: packageWordPressTarget(previous, project.brief),
     images: previous.images,
     wordpress: previous.wordpress,
   } as ContentPackage;
@@ -244,11 +246,14 @@ export async function syncProjectToWordPress(id: string, ownerEmail: string) {
   if (!project) return null;
   if (!project.wordpress_post_id || !project.source_job_id) throw new Error("This project has no managed WordPress draft.");
   const scope = project.brand as WordPressScope;
-  const status = await getWordPressDraftStatus(project.wordpress_post_id, scope);
+  const target = packageWordPressTarget(project.content_package, project.brief);
+  const status = await getWordPressDraftStatus(project.wordpress_post_id, scope, target);
   if (status !== "draft") throw new Error("WORDPRESS_NOT_DRAFT");
   const links = await validatePackageLinks(project.brand, project.content_package.links, project.content_package.slug);
   const contentPackage = rebuildPackage(project, project.content_package.preview, links);
   const wordpress = await createWordPressDraft({
+    wordpressTarget: target,
+    managedDraftId: project.wordpress_post_id,
     postTitle: contentPackage.preview.title,
     seoTitle: contentPackage.title,
     html: contentPackage.html,

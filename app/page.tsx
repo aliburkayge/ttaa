@@ -2,6 +2,8 @@
 /* eslint-disable @next/next/no-img-element */
 "use client";
 
+import WordPressTargetSelect from "./wordpress-target-select";
+import { wordpressTarget, type WordPressTarget } from "../lib/wordpress-target";
 import { useEffect, useMemo, useState } from "react";
 import CompanySwitcher from "./company-switcher";
 import ProjectLibrary from "./project-library";
@@ -57,6 +59,7 @@ type FinalImageAsset = {
 };
 
 type Brief = {
+  wordpressTarget: WordPressTarget;
   topic: string;
   primaryKeyword: string;
   desiredWordCount: string;
@@ -74,6 +77,7 @@ type Brief = {
 };
 
 type Package = {
+  wordpressTarget?: WordPressTarget;
   title: string;
   meta: string;
   slug: string;
@@ -109,6 +113,7 @@ function normalizePackageHtml(contentPackage: Package): Package {
 }
 
 const DEFAULT_BRIEF: Brief = {
+  wordpressTarget: "post",
   topic: "QVP Verification for KSA Work Visa",
   primaryKeyword: "",
   desiredWordCount: "",
@@ -466,6 +471,7 @@ function buildPackage(
   const imagePrompt = generatedArticle?.imagePrompt || `Clean 16:9 corporate editorial image about ${preview.title}, white and TTAA blue palette, document workflow, subtle international context, no fake seals or personal data.`;
   const canonical = `https://turkishtranslation.com.tr/${slug}/`;
   return {
+    wordpressTarget: wordpressTarget(brief.wordpressTarget),
     title,
     meta,
     slug: `/${slug}/`,
@@ -593,6 +599,7 @@ export default function Home() {
     const current = asyncJob.job;
     if (!current) return;
     const timer = window.setTimeout(() => {
+      setBrief((previous) => ({ ...previous, wordpressTarget: wordpressTarget(current.wordpressTarget) }));
       const stages: Record<string, number> = {
         queued: 1, research: 1, writer: 2, writing: 2, editor: 2,
         "quality-control": 3, images: 3, "wordpress-media": 4,
@@ -677,7 +684,7 @@ export default function Home() {
   useEffect(() => {
     if (authState !== "authenticated" || !hasCompletedResult || result.images || !result.slug) return;
     let cancelled = false;
-    void fetch(`/api/projects/media?slug=${encodeURIComponent(result.slug.replace(/^\/+|\/+$/g, ""))}`, { cache: "no-store" })
+    void fetch(`/api/projects/media?slug=${encodeURIComponent(result.slug.replace(/^\/+|\/+$/g, ""))}&wordpressTarget=${wordpressTarget(result.wordpressTarget)}`, { cache: "no-store" })
       .then(async (response) => response.ok ? await response.json() as { html: string; images: { featured: FinalImageAsset; inline: FinalImageAsset } } : null)
       .then((payload) => {
         if (!payload || cancelled) return;
@@ -687,7 +694,7 @@ export default function Home() {
       })
       .catch(() => undefined);
     return () => { cancelled = true; };
-  }, [authState, hasCompletedResult, result.images, result.slug]);
+  }, [authState, hasCompletedResult, result.images, result.slug, result.wordpressTarget]);
 
   const output = useMemo(() => activeTab === "schema" ? result.schema : activeTab === "head" ? result.head : result.html, [activeTab, result]);
 
@@ -701,7 +708,7 @@ export default function Home() {
       const response = await fetch("/api/projects/finalize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ brief, package: next }),
+        body: JSON.stringify({ brief: { ...brief, wordpressTarget: wordpressTarget(next.wordpressTarget) }, package: next }),
       });
       const payload = await readApiPayload<{
         error?: string;
@@ -896,6 +903,7 @@ export default function Home() {
                   <label>Mevcut metin veya notlar<textarea value={brief.sourceText} onChange={(event) => updateBrief("sourceText", event.target.value)} placeholder="Geliştirilecek eski yazıyı veya kaynak notlarını buraya ekleyin." /></label>
                 </div>
               </details>
+              <WordPressTargetSelect value={asyncJob.active ? wordpressTarget(asyncJob.job?.wordpressTarget) : brief.wordpressTarget} disabled={isGenerating || asyncJob.active || asyncJob.loading || Boolean(pendingPackage)} onChange={(value) => updateBrief("wordpressTarget", value)} />
               <details className="advanced-card output-settings">
                 <summary><span><strong>Teknik çıktı ayarları</strong><small>Önerilen ayarlar hazır seçilidir</small></span><b>+</b></summary>
                 <div className="settings-card"><Toggle label="İçerikte H1 kullan" checked={brief.includeH1} onChange={(value) => updateBrief("includeH1", value)} /><Toggle label="Breadcrumb göster" checked={brief.visibleBreadcrumb} onChange={(value) => updateBrief("visibleBreadcrumb", value)} /><Toggle label="Article schema" checked={brief.articleSchema} onChange={(value) => updateBrief("articleSchema", value)} /><Toggle label="FAQ schema" checked={brief.faqSchema} onChange={(value) => updateBrief("faqSchema", value)} /><Toggle label="Breadcrumb schema" checked={brief.breadcrumbSchema} onChange={(value) => updateBrief("breadcrumbSchema", value)} /></div>
