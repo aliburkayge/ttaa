@@ -400,6 +400,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .assistant-options button > span:last-child { display: grid; gap: 2px; }
 .assistant-options strong { color: var(--tt-navy); font-size: 10px; font-weight: 750; }
 .assistant-options small { color: var(--tt-muted); font-size: 8px; }
+.qr-menu-icon { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 7px; background: var(--tt-blue-soft); color: var(--tt-blue-dark); }
+.company-menu .qr-menu-options a { grid-template-columns: 54px 1fr 12px; min-height: 52px; gap: 9px; padding: 6px 9px; }
+.qr-menu-options a:focus-visible { outline: 2px solid var(--tt-blue-dark); outline-offset: 1px; }
 .billing-partnership-item { display: grid; grid-template-columns: 24px 1fr; gap: 9px; align-items: center; width: 100%; min-height: 46px; padding: 7px 10px; border: 0; border-radius: 8px; background: transparent; text-align: left; opacity: .74; cursor: default; }
 .billing-partnership-item > span:last-child { display: grid; gap: 2px; }
 .billing-partnership-item strong { color: var(--tt-navy); font-size: 10px; font-weight: 750; }

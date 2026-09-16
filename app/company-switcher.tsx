@@ -2,27 +2,31 @@
 /* eslint-disable @next/next/no-img-element */
 
 import Link from "next/link";
+import QrIcon from "./qr-icon";
 
 type CompanySwitcherProps = {
-  current: "ttaa" | "ay-tercume" | "billing";
+  current: "ttaa" | "ay-tercume" | "billing" | "ttaa-qr" | "ay-tercume-qr";
 };
 
 export default function CompanySwitcher({ current }: CompanySwitcherProps) {
   const isTtaa = current === "ttaa";
   const isAyTercume = current === "ay-tercume";
   const isBilling = current === "billing";
+  const isQr = current === "ttaa-qr" || current === "ay-tercume-qr";
+  const isTtaaBrand = isTtaa || current === "ttaa-qr";
+  const isAyBrand = isAyTercume || current === "ay-tercume-qr";
 
   return (
     <details className="company-switcher">
       <summary aria-label="Firma değiştir">
-        {isTtaa
+        {isTtaaBrand
           ? <img className="brand-logo-image" src="/ttaa-logo.png" alt="Turkish Translation & Attestation Agency" />
-          : isAyTercume
+          : isAyBrand
             ? <img className="ay-brand-logo-image" src="/ay-tercume-logo.jpg" alt="Ay Tercüme" />
             : <span className="billing-summary-icon" aria-hidden="true">₺</span>}
         <div>
-          <strong>{isTtaa ? "Content Studio" : isAyTercume ? "Ay Tercüme" : "Faturalandırma"}</strong>
-          <span>{isTtaa ? "TTAA çalışma alanı" : isAyTercume ? "Ay Tercüme çalışma alanı" : "Ödeme takvimi ve partnerlik"}</span>
+          <strong>{isQr ? "Dosya Doğrulama" : isTtaa ? "Content Studio" : isAyTercume ? "Ay Tercüme" : "Faturalandırma"}</strong>
+          <span>{isTtaaBrand ? "TTAA çalışma alanı" : isAyBrand ? "Ay Tercüme çalışma alanı" : "Ödeme takvimi ve partnerlik"}</span>
         </div>
         <b aria-hidden="true">⌄</b>
       </summary>
@@ -62,6 +66,26 @@ export default function CompanySwitcher({ current }: CompanySwitcherProps) {
               </span>
               <span><strong>AY Asistan</strong><small>Yakında kullanıma açılacak</small></span>
             </button>
+          </div>
+        </details>
+        <div className="company-menu-divider" />
+        <details className="assistant-switcher qr-menu" open={isQr}>
+          <summary>
+            <span className="qr-menu-icon"><QrIcon size={15} /></span>
+            <span>QR Dosya Doğrulama Sistemi</span>
+            <b aria-hidden="true">⌄</b>
+          </summary>
+          <div className="assistant-options qr-menu-options">
+            <Link href="/qr-dosya-dogrulama/ttaa" className={current === "ttaa-qr" ? "active" : ""} aria-current={current === "ttaa-qr" ? "page" : undefined} role="menuitem">
+              <span className="company-option-logo"><img src="/ttaa-logo.png" alt="" /></span>
+              <span><strong>TTAA Doğrulama</strong><small>Hazırlık aşamasında</small></span>
+              {current === "ttaa-qr" ? <b>✓</b> : null}
+            </Link>
+            <Link href="/qr-dosya-dogrulama/ay-tercume" className={current === "ay-tercume-qr" ? "active" : ""} aria-current={current === "ay-tercume-qr" ? "page" : undefined} role="menuitem">
+              <span className="company-option-logo ay-company-option-logo"><img src="/ay-tercume-logo.jpg" alt="" /></span>
+              <span><strong>Ay Tercüme Doğrulama</strong><small>Hazırlık aşamasında</small></span>
+              {current === "ay-tercume-qr" ? <b>✓</b> : null}
+            </Link>
           </div>
         </details>
         <div className="company-menu-divider" />
