@@ -23,7 +23,7 @@ const document = {
   fileUrl: "https://aytercume.com/wp-content/uploads/2026/09/verified.pdf",
 };
 
-type RecordPage = { id: number; slug: string; status: string; link: string; content: { raw: string }; title: string };
+type RecordPage = { id: number; slug: string; status: string; link: string; content: { raw: string }; title: string; template?: string };
 function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }); }
 
 function fakeWordPress(t: TestContext, options: { seoFails?: boolean; foreignSlug?: boolean } = {}) {
@@ -42,7 +42,7 @@ function fakeWordPress(t: TestContext, options: { seoFails?: boolean; foreignSlu
     const id = match[1] ? Number(match[1]) : null;
     if (method === "GET") return id ? json(records.find((record) => record.id === id) || { message: "Not found" }, records.some((record) => record.id === id) ? 200 : 404) : json(records.filter((record) => record.slug === url.searchParams.get("slug")));
     if (!id) {
-      const record = { id: records.length + 100, slug: String(body.slug), status: String(body.status), link: `https://aytercume.com/${String(body.slug)}/`, content: { raw: String(body.content) }, title: String(body.title) };
+      const record = { id: records.length + 100, slug: String(body.slug), status: String(body.status), link: `https://aytercume.com/${String(body.slug)}/`, content: { raw: String(body.content) }, title: String(body.title), template: String(body.template) };
       records.push(record);
       return json(record, 201);
     }
@@ -51,6 +51,7 @@ function fakeWordPress(t: TestContext, options: { seoFails?: boolean; foreignSlu
     if (body.status) record.status = String(body.status);
     if (body.content) record.content.raw = String(body.content);
     if (body.title) record.title = String(body.title);
+    if (body.template) record.template = String(body.template);
     return json(record);
   });
   return { records, calls };
@@ -63,6 +64,7 @@ test("document page is drafted, given SEO, then published; retry reuses it", asy
   assert.equal(first.reused, false);
   assert.equal(first.url, `https://aytercume.com/belge-dogrulama-${token}/`);
   assert.equal(wp.records[0].status, "publish");
+  assert.equal(wp.records[0].template, "elementor_header_footer");
   assert.match(wp.records[0].content.raw, /Örnek Müşteri/);
   assert.match(wp.records[0].content.raw, /<iframe/);
   const seoIndex = wp.calls.findIndex((call) => call.pathname.includes("updateMeta"));

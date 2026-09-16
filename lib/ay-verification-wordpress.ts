@@ -5,9 +5,12 @@ type WpPage = {
   slug: string;
   status: string;
   link: string;
+  template?: string;
   content?: { raw?: string; rendered?: string };
   message?: string;
 };
+
+const VERIFICATION_TEMPLATE = "elementor_header_footer";
 
 function config() {
   const baseUrl = process.env.AY_WP_URL?.replace(/\/+$/, "");
@@ -35,12 +38,12 @@ async function wpJson<T>(url: string, authorization: string, init?: RequestInit)
 }
 
 async function pagesBySlug(baseUrl: string, authorization: string, slug: string) {
-  const params = new URLSearchParams({ context: "edit", slug, per_page: "5", _fields: "id,slug,status,link,content" });
+  const params = new URLSearchParams({ context: "edit", slug, per_page: "5", _fields: "id,slug,status,link,content,template" });
   return wpJson<WpPage[]>(`${baseUrl}/wp-json/wp/v2/pages?${params}`, authorization);
 }
 
 async function pageById(baseUrl: string, authorization: string, id: number) {
-  return wpJson<WpPage>(`${baseUrl}/wp-json/wp/v2/pages/${id}?context=edit&_fields=id,slug,status,link,content`, authorization);
+  return wpJson<WpPage>(`${baseUrl}/wp-json/wp/v2/pages/${id}?context=edit&_fields=id,slug,status,link,content,template`, authorization);
 }
 
 async function savePage(baseUrl: string, authorization: string, data: Record<string, unknown>, id?: number) {
@@ -70,9 +73,10 @@ async function ensurePage(input: { slug: string; title: string; content: string;
   if (existing && !existing.content?.raw?.includes(input.marker)) throw new Error("Aynı adreste farklı bir WordPress sayfası mevcut; üzerine yazılmadı.");
   if (existing?.status === "publish" && !input.refreshPublished) return { id: existing.id, url: existing.link, reused: true };
   if (existing?.status === "publish") {
-    await savePage(baseUrl, authorization, { title: input.title, content: input.content, excerpt: input.seo.description }, existing.id);
+    await savePage(baseUrl, authorization, { title: input.title, content: input.content, excerpt: input.seo.description, template: VERIFICATION_TEMPLATE }, existing.id);
     const saved = await pageById(baseUrl, authorization, existing.id);
     if (!saved.content?.raw?.includes(input.marker)) throw new Error("WordPress doğrulama sayfası işaretini saklamadı.");
+    if (saved.template !== VERIFICATION_TEMPLATE) throw new Error("WordPress tam genişlik sayfa şablonunu kaydetmedi.");
     await saveSeo(baseUrl, authorization, existing.id, input.seo, input.noindex);
     return { id: existing.id, url: existing.link, reused: true };
   }
@@ -82,13 +86,15 @@ async function ensurePage(input: { slug: string; title: string; content: string;
     excerpt: input.seo.description,
     slug: input.slug,
     status: "draft",
+    template: VERIFICATION_TEMPLATE,
     comment_status: "closed",
     ping_status: "closed",
   });
   if (draft.slug !== input.slug || draft.status !== "draft") throw new Error("WordPress beklenen sayfa taslağını oluşturmadı.");
-  if (existing) await savePage(baseUrl, authorization, { title: input.title, content: input.content, excerpt: input.seo.description }, draft.id);
+  if (existing) await savePage(baseUrl, authorization, { title: input.title, content: input.content, excerpt: input.seo.description, template: VERIFICATION_TEMPLATE }, draft.id);
   const saved = await pageById(baseUrl, authorization, draft.id);
   if (!saved.content?.raw?.includes(input.marker)) throw new Error("WordPress doğrulama sayfası işaretini saklamadı; taslak yayımlanmadı.");
+  if (saved.template !== VERIFICATION_TEMPLATE) throw new Error("WordPress tam genişlik sayfa şablonunu kaydetmedi; taslak yayımlanmadı.");
   if (input.noindex && (!saved.content.raw.includes("<iframe") || !saved.content.raw.includes("ayv-file"))) throw new Error("WordPress dosya görünümünü saklamadı; taslak yayımlanmadı.");
   await saveSeo(baseUrl, authorization, draft.id, input.seo, input.noindex);
   const published = await savePage(baseUrl, authorization, { status: "publish" }, draft.id);
