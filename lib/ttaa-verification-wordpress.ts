@@ -58,7 +58,13 @@ async function saveSeo(baseUrl: string, authorization: string, pageId: number, s
   } }, pageId);
   const result = await wpJson<WpPage>(`${baseUrl}/wp-json/wp/v2/pages/${pageId}?context=edit&_fields=aioseo_meta_data`, authorization);
   const meta = result.aioseo_meta_data;
-  if (meta?.title !== seo.title || meta.description !== seo.description || (noindex && (Boolean(meta.robots_default) || !Boolean(meta.robots_noindex)))) throw new Error("AIOSEO başlık, açıklama veya noindex ayarını kaydetmedi; sayfa yayımlanmadı.");
+  const missing = [
+    meta?.title !== seo.title && "başlık",
+    meta?.description !== seo.description && "açıklama",
+    noindex && Boolean(meta?.robots_default) && "varsayılan robots kapatma",
+    noindex && !Boolean(meta?.robots_noindex) && "noindex",
+  ].filter(Boolean);
+  if (missing.length) throw new Error(`AIOSEO ${missing.join(", ")} ayarını kaydetmedi; sayfa yayımlanmadı.`);
 }
 
 async function ensurePage(input: { slug: string; title: string; content: string; marker: string; seo: { title: string; description: string }; noindex: boolean; hasFile?: boolean; refreshPublished?: boolean }) {
