@@ -4,6 +4,7 @@ import { validatePrototypeDetails, type PrototypeDetails } from "./qr-prototype"
 
 const BUCKET = "ttaa-qr-private";
 const recordPrefix = "ttaa/records";
+let bucketReady: Promise<void> | undefined;
 
 export type TtaaQrRecord = {
   id: string;
@@ -21,14 +22,18 @@ function recordId(number: string) {
 function recordPath(id: string) { return `${recordPrefix}/${id}.json`; }
 
 async function bucket() {
-  const storage = getSupabaseAdmin().storage;
-  const { data, error } = await storage.listBuckets();
-  if (error) throw new Error(`Belge deposu açılamadı: ${error.message}`);
-  if (!data.some((item) => item.id === BUCKET)) {
-    const { error: createError } = await storage.createBucket(BUCKET, { public: false, fileSizeLimit: 10 * 1024 * 1024, allowedMimeTypes: ["application/pdf", "application/json"] });
-    if (createError && !/already|exist|duplicate/i.test(createError.message)) throw new Error(`Belge deposu oluşturulamadı: ${createError.message}`);
-  }
-  return storage.from(BUCKET);
+  if (!bucketReady) bucketReady = (async () => {
+    const storage = getSupabaseAdmin().storage;
+    const { data, error } = await storage.listBuckets();
+    if (error) throw new Error(`Belge deposu açılamadı: ${error.message}`);
+    if (!data.some((item) => item.id === BUCKET)) {
+      const { error: createError } = await storage.createBucket(BUCKET, { public: false, fileSizeLimit: 10 * 1024 * 1024, allowedMimeTypes: ["application/pdf", "application/json"] });
+      if (createError && !/already|exist|duplicate/i.test(createError.message)) throw new Error(`Belge deposu oluşturulamadı: ${createError.message}`);
+    }
+  })();
+  try { await bucketReady; }
+  catch (error) { bucketReady = undefined; throw error; }
+  return getSupabaseAdmin().storage.from(BUCKET);
 }
 
 async function save(record: TtaaQrRecord) {
