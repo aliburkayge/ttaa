@@ -40,8 +40,7 @@ export function svgDataUrl(svg: string) {
 }
 
 // Only public label fields cross this boundary. Customer and Drive data stay in the form.
-export async function createPrototypeLabel(brand: QrBrand, details: Pick<PrototypeDetails, "documentNumber" | "documentDate">) {
-  const qrText = prototypeQrText(brand, details.documentNumber);
+async function createLabel(brand: QrBrand, details: Pick<PrototypeDetails, "documentNumber" | "documentDate">, qrText: string, live: boolean) {
   const qrSvg = await QRCode.toString(qrText, { type: "svg", errorCorrectionLevel: "M", margin: 4, width: 600, color: { dark: "#000000", light: "#ffffff" } });
   const numberLines = Array.from(details.documentNumber).reduce<string[]>((lines, character, index) => {
     const line = Math.floor(index / 19);
@@ -53,7 +52,7 @@ export async function createPrototypeLabel(brand: QrBrand, details: Pick<Prototy
   <rect x="1" y="1" width="698" height="448" rx="16" fill="white" stroke="#cbd5db" stroke-width="2"/>
   <g font-family="Arial, sans-serif" fill="#123746">
     <text x="30" y="53" font-size="30" font-weight="700">${escapeXml(qrCompany(brand))}</text>
-    <text x="670" y="49" text-anchor="end" font-size="17" fill="#697b84">QR ETİKETİ · DENEME</text>
+    <text x="670" y="49" text-anchor="end" font-size="17" fill="#697b84">${live ? "QR ETİKETİ · DOĞRULAMA" : "QR ETİKETİ · DENEME"}</text>
     <path d="M30 78H670" stroke="#dce5e8"/>
     <image x="20" y="95" width="280" height="280" href="${escapeXml(svgDataUrl(qrSvg))}"/>
     <text x="322" y="142" font-size="18" fill="#697b84">BELGE NO</text>
@@ -61,7 +60,17 @@ export async function createPrototypeLabel(brand: QrBrand, details: Pick<Prototy
     <text x="322" y="311" font-size="17" fill="#697b84">BELGE TARİHİ</text>
     <text x="322" y="340" font-size="22">${escapeXml(date)}</text>
     <path d="M30 382H670" stroke="#dce5e8"/>
-    <text x="350" y="420" text-anchor="middle" font-size="19" font-weight="700">PROTOTİP · RESMÎ DOĞRULAMA DEĞİLDİR</text>
+    <text x="350" y="420" text-anchor="middle" font-size="19" font-weight="700">${live ? "DOĞRULAMA: AYTERCUME.COM" : "PROTOTİP · RESMÎ DOĞRULAMA DEĞİLDİR"}</text>
   </g></svg>`;
   return { qrText, qrSvg, labelSvg, labelUrl: svgDataUrl(labelSvg) };
+}
+
+export async function createPrototypeLabel(brand: QrBrand, details: Pick<PrototypeDetails, "documentNumber" | "documentDate">) {
+  return createLabel(brand, details, prototypeQrText(brand, details.documentNumber), false);
+}
+
+export async function createAyVerificationLabel(details: Pick<PrototypeDetails, "documentNumber" | "documentDate">, pageUrl: string) {
+  const url = new URL(pageUrl);
+  if (url.protocol !== "https:" || !["aytercume.com", "www.aytercume.com"].includes(url.hostname)) throw new Error("QR hedefi aytercume.com olmalıdır.");
+  return createLabel("ay-tercume", details, url.toString(), true);
 }

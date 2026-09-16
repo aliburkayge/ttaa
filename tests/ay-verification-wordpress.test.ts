@@ -1,0 +1,104 @@
+import assert from "node:assert/strict";
+import { afterEach, beforeEach, test, type TestContext } from "node:test";
+import { ensureAyVerificationLanding, publishAyVerificationDocument } from "../lib/ay-verification-wordpress.ts";
+import { ayVerificationToken } from "../lib/ay-verification-token.ts";
+
+const originalEnv = { ...process.env };
+beforeEach(() => {
+  process.env.AY_WP_URL = "https://aytercume.com";
+  process.env.AY_WP_USERNAME = "test";
+  process.env.AY_WP_APP_PASSWORD = "test";
+  process.env.AUTH_SESSION_SECRET = "test-secret-with-more-than-thirty-two-characters";
+});
+afterEach(() => {
+  for (const key of Object.keys(process.env)) if (!(key in originalEnv)) delete process.env[key];
+  Object.assign(process.env, originalEnv);
+});
+
+const document = {
+  documentNumber: "AYT2026009",
+  customer: "Örnek Müşteri",
+  documentDate: "2026-09-16",
+  documentType: "Tercüme belgesi",
+  fileUrl: "https://aytercume.com/wp-content/uploads/2026/09/verified.pdf",
+};
+
+type RecordPage = { id: number; slug: string; status: string; link: string; content: { raw: string }; title: string };
+function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }); }
+
+function fakeWordPress(t: TestContext, options: { seoFails?: boolean; foreignSlug?: boolean } = {}) {
+  const records: RecordPage[] = [];
+  const calls: { pathname: string; method: string; body: Record<string, unknown> }[] = [];
+  if (options.foreignSlug) records.push({ id: 9, slug: `belge-dogrulama-${ayVerificationToken(document.documentNumber)}`, status: "publish", link: "https://aytercume.com/foreign/", content: { raw: "unrelated" }, title: "Unrelated" });
+  t.mock.method(globalThis, "fetch", async (raw: string | URL | Request, init: RequestInit = {}) => {
+    const url = new URL(raw instanceof Request ? raw.url : raw.toString());
+    assert.equal(url.hostname, "aytercume.com", `Unexpected network destination: ${url.hostname}`);
+    const method = init.method || "GET";
+    const body = typeof init.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : {};
+    calls.push({ pathname: url.pathname, method, body });
+    if (url.pathname === "/wp-json/rankmath/v1/updateMeta") return options.seoFails ? json({ message: "SEO update denied" }, 403) : json({ success: true });
+    const match = /^\/wp-json\/wp\/v2\/pages(?:\/(\d+))?$/.exec(url.pathname);
+    assert.ok(match, `Unexpected WordPress request: ${url}`);
+    const id = match[1] ? Number(match[1]) : null;
+    if (method === "GET") return id ? json(records.find((record) => record.id === id) || { message: "Not found" }, records.some((record) => record.id === id) ? 200 : 404) : json(records.filter((record) => record.slug === url.searchParams.get("slug")));
+    if (!id) {
+      const record = { id: records.length + 100, slug: String(body.slug), status: String(body.status), link: `https://aytercume.com/${String(body.slug)}/`, content: { raw: String(body.content) }, title: String(body.title) };
+      records.push(record);
+      return json(record, 201);
+    }
+    const record = records.find((item) => item.id === id);
+    assert.ok(record);
+    if (body.status) record.status = String(body.status);
+    if (body.content) record.content.raw = String(body.content);
+    if (body.title) record.title = String(body.title);
+    return json(record);
+  });
+  return { records, calls };
+}
+
+test("document page is drafted, given SEO, then published; retry reuses it", async (t) => {
+  const wp = fakeWordPress(t);
+  const token = ayVerificationToken(document.documentNumber);
+  const first = await publishAyVerificationDocument(document, token);
+  assert.equal(first.reused, false);
+  assert.equal(first.url, `https://aytercume.com/belge-dogrulama-${token}/`);
+  assert.equal(wp.records[0].status, "publish");
+  assert.match(wp.records[0].content.raw, /Örnek Müşteri/);
+  assert.match(wp.records[0].content.raw, /<iframe/);
+  const seoIndex = wp.calls.findIndex((call) => call.pathname.includes("updateMeta"));
+  const publishIndex = wp.calls.findIndex((call) => call.body.status === "publish");
+  assert.ok(seoIndex > 0 && publishIndex > seoIndex);
+  assert.deepEqual((wp.calls[seoIndex].body.meta as Record<string, unknown>).rank_math_robots, ["noindex", "follow"]);
+  const second = await publishAyVerificationDocument(document, token);
+  assert.equal(second.reused, true);
+  assert.equal(wp.records.length, 1);
+});
+
+test("SEO error leaves a document as a draft", async (t) => {
+  const wp = fakeWordPress(t, { seoFails: true });
+  await assert.rejects(publishAyVerificationDocument(document, ayVerificationToken(document.documentNumber)), /SEO update denied/);
+  assert.equal(wp.records[0].status, "draft");
+  assert.ok(!wp.calls.some((call) => call.body.status === "publish"));
+});
+
+test("an unrelated existing slug is never overwritten", async (t) => {
+  const wp = fakeWordPress(t, { foreignSlug: true });
+  await assert.rejects(publishAyVerificationDocument(document, ayVerificationToken(document.documentNumber)), /farklı bir WordPress sayfası/);
+  assert.ok(!wp.calls.some((call) => call.method === "POST"));
+});
+
+test("owned landing page can be refreshed without creating a duplicate", async (t) => {
+  const wp = fakeWordPress(t);
+  const first = await ensureAyVerificationLanding();
+  const second = await ensureAyVerificationLanding();
+  assert.equal(first.url, "https://aytercume.com/belge-dogrulama/");
+  assert.equal(second.reused, true);
+  assert.equal(wp.records.length, 1);
+  assert.ok(wp.calls.filter((call) => call.pathname.includes("updateMeta")).length === 2);
+});
+
+test("document token is stable and needs a configured secret", () => {
+  assert.equal(ayVerificationToken("AYT2026009"), ayVerificationToken(" ayt2026009 "));
+  delete process.env.AUTH_SESSION_SECRET;
+  assert.throws(() => ayVerificationToken("AYT2026009"), /sunucu sırrı/);
+});

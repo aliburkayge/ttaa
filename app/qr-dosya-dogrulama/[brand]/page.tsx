@@ -4,6 +4,7 @@ import { notFound, redirect } from "next/navigation";
 import { getAdminSession } from "../../../lib/auth";
 import CompanySwitcher from "../../company-switcher";
 import QrPrototypeStudio from "../prototype-studio";
+import AyVerificationStudio from "../ay-verification-studio";
 import "../qr-workspace.css";
 
 export const metadata: Metadata = {
@@ -32,7 +33,9 @@ export default async function QrWorkspace({ params }: { params: Promise<{ brand:
         <Link href="/qr-dosya-dogrulama/ay-tercume" aria-current={isAy ? "page" : undefined}>Ay Tercüme</Link>
       </nav>
 
-      <QrPrototypeStudio key={brand} brand={brand} today={new Date().toISOString().slice(0, 10)} />
+      {isAy
+        ? <AyVerificationStudio today={new Date().toISOString().slice(0, 10)} />
+        : <QrPrototypeStudio brand={brand} today={new Date().toISOString().slice(0, 10)} />}
     </main>
   </div>;
 }

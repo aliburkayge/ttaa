@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createPrototypeLabel, prototypeQrText, validatePrototypeDetails, type PrototypeDetails } from "../lib/qr-prototype.ts";
+import { createAyVerificationLabel, createPrototypeLabel, prototypeQrText, validatePrototypeDetails, type PrototypeDetails } from "../lib/qr-prototype.ts";
 
 const details: PrototypeDetails = {
   documentNumber: "TEST-001",
@@ -33,6 +33,14 @@ test("document number is escaped in the printable SVG", async () => {
   const result = await createPrototypeLabel("ttaa", { documentNumber: "A&B<12>", documentDate: details.documentDate });
   assert.match(result.labelSvg, /A&amp;B&lt;12&gt;/);
   assert.ok(!result.labelSvg.includes("<12>"));
+});
+
+test("live Ay label points only to aytercume.com and is clearly distinct from a prototype", async () => {
+  const label = await createAyVerificationLabel(details, "https://aytercume.com/belge-dogrulama-123/");
+  assert.equal(label.qrText, "https://aytercume.com/belge-dogrulama-123/");
+  assert.match(label.labelSvg, /DOĞRULAMA: AYTERCUME.COM/);
+  assert.ok(!label.labelSvg.includes(details.customer));
+  await assert.rejects(() => createAyVerificationLabel(details, "https://aytercume.com.evil.test/file"), /aytercume/);
 });
 
 test("form rejects malformed dates and Drive links", () => {
