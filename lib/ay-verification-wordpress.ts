@@ -1,4 +1,4 @@
-import { AY_VERIFICATION_LANDING_SLUG, ayVerificationDocumentHtml, ayVerificationLandingHtml, ayVerificationSeo, type AyVerificationDocument } from "./ay-verification-page";
+import { AY_VERIFICATION_LANDING_SLUG, ayVerificationDocumentHtml, ayVerificationLandingHtml, ayVerificationSeo, readAyVerificationDocument, type AyVerificationDocument } from "./ay-verification-page";
 
 type WpPage = {
   id: number;
@@ -66,7 +66,7 @@ async function saveSeo(baseUrl: string, authorization: string, pageId: number, s
   if (result.success === false) throw new Error(result.message || "Rank Math SEO bilgileri kaydedilemedi.");
 }
 
-async function ensurePage(input: { slug: string; title: string; content: string; marker: string; seo: { title: string; description: string }; noindex: boolean; refreshPublished?: boolean }) {
+async function ensurePage(input: { slug: string; title: string; content: string; marker: string; seo: { title: string; description: string }; noindex: boolean; hasFile?: boolean; refreshPublished?: boolean }) {
   const { baseUrl, authorization } = config();
   const matches = await pagesBySlug(baseUrl, authorization, input.slug);
   const existing = matches.find((page) => page.slug === input.slug);
@@ -95,7 +95,7 @@ async function ensurePage(input: { slug: string; title: string; content: string;
   const saved = await pageById(baseUrl, authorization, draft.id);
   if (!saved.content?.raw?.includes(input.marker)) throw new Error("WordPress doğrulama sayfası işaretini saklamadı; taslak yayımlanmadı.");
   if (saved.template !== VERIFICATION_TEMPLATE) throw new Error("WordPress tam genişlik sayfa şablonunu kaydetmedi; taslak yayımlanmadı.");
-  if (input.noindex && (!saved.content.raw.includes("<iframe") || !saved.content.raw.includes("ayv-file"))) throw new Error("WordPress dosya görünümünü saklamadı; taslak yayımlanmadı.");
+  if (input.noindex && (!saved.content.raw.includes("ayv-file") || Boolean(saved.content.raw.includes("<iframe")) !== Boolean(input.hasFile))) throw new Error("WordPress dosya durumunu saklamadı; taslak yayımlanmadı.");
   await saveSeo(baseUrl, authorization, draft.id, input.seo, input.noindex);
   const published = await savePage(baseUrl, authorization, { status: "publish" }, draft.id);
   if (published.status !== "publish" || published.slug !== input.slug) throw new Error("WordPress sayfayı yayımlamadı.");
@@ -122,8 +122,8 @@ export async function findAyVerificationDocument(token: string) {
   const slug = `belge-dogrulama-${token}`;
   const page = (await pagesBySlug(baseUrl, authorization, slug)).find((item) => item.slug === slug);
   if (!page) return null;
-  if (!page.content?.raw?.includes(`AY_VERIFICATION:${token}`)) throw new Error("Doğrulama sayfası işareti uyuşmuyor.");
-  return { id: page.id, status: page.status, url: page.link };
+  const document = readAyVerificationDocument(page.content?.raw || "", `AY_VERIFICATION:${token}`);
+  return { id: page.id, status: page.status, url: page.link, document, hasFile: Boolean(document.fileUrl) };
 }
 
 export async function publishAyVerificationDocument(document: AyVerificationDocument, token: string) {
@@ -134,7 +134,27 @@ export async function publishAyVerificationDocument(document: AyVerificationDocu
     title: `Belge Doğrulama – ${document.documentNumber}`,
     content: ayVerificationDocumentHtml(document, `AY_VERIFICATION:${token}`),
     marker: `AY_VERIFICATION:${token}`,
-    seo: ayVerificationSeo(document.documentNumber),
+    seo: ayVerificationSeo(document.documentNumber, Boolean(document.fileUrl)),
     noindex: true,
+    hasFile: Boolean(document.fileUrl),
   });
+}
+
+export async function attachAyVerificationPdf(token: string, fileUrl: string) {
+  if (!/^[a-f0-9-]{36}$/.test(token)) throw new Error("Geçersiz doğrulama kimliği.");
+  const { baseUrl, authorization } = config();
+  const current = await findAyVerificationDocument(token);
+  if (!current || current.status !== "publish") throw new Error("Yayımlanmış doğrulama sayfası bulunamadı.");
+  if (current.hasFile) throw new Error("Bu sayfaya PDF zaten eklenmiş; mevcut dosya değiştirilmedi.");
+  const document = { ...current.document, fileUrl };
+  const marker = `AY_VERIFICATION:${token}`;
+  const content = ayVerificationDocumentHtml(document, marker);
+  await saveSeo(baseUrl, authorization, current.id, ayVerificationSeo(document.documentNumber, true), true);
+  const updated = await savePage(baseUrl, authorization, { content }, current.id);
+  if (updated.status !== "publish" || updated.slug !== `belge-dogrulama-${token}`) throw new Error("WordPress mevcut doğrulama sayfasını güncellemedi.");
+  const saved = await pageById(baseUrl, authorization, current.id);
+  if (!saved.content?.raw?.includes(marker) || !saved.content.raw.includes(fileUrl) || !saved.content.raw.includes("<iframe")) throw new Error("WordPress PDF görünümünü kaydetmedi.");
+  const confirmed = readAyVerificationDocument(saved.content.raw, marker);
+  if (confirmed.fileUrl !== fileUrl) throw new Error("WordPress PDF bağlantısını kaydetmedi.");
+  return { id: current.id, url: current.url, document: confirmed };
 }

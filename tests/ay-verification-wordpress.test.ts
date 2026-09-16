@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test, type TestContext } from "node:test";
-import { ensureAyVerificationLanding, publishAyVerificationDocument } from "../lib/ay-verification-wordpress.ts";
+import { attachAyVerificationPdf, ensureAyVerificationLanding, findAyVerificationDocument, publishAyVerificationDocument } from "../lib/ay-verification-wordpress.ts";
 import { ayVerificationToken } from "../lib/ay-verification-token.ts";
 
 const originalEnv = { ...process.env };
@@ -73,6 +73,26 @@ test("document page is drafted, given SEO, then published; retry reuses it", asy
   assert.deepEqual((wp.calls[seoIndex].body.meta as Record<string, unknown>).rank_math_robots, ["noindex", "follow"]);
   const second = await publishAyVerificationDocument(document, token);
   assert.equal(second.reused, true);
+  assert.equal(wp.records.length, 1);
+});
+
+test("PDF can be attached later to the same published page and QR address", async (t) => {
+  const wp = fakeWordPress(t);
+  const token = ayVerificationToken(document.documentNumber);
+  const placeholder = await publishAyVerificationDocument({ ...document, fileUrl: undefined }, token);
+  assert.equal(wp.records[0].status, "publish");
+  assert.match(wp.records[0].content.raw, /Gerekli evraklar şu anda yüklenmemiştir/);
+  assert.ok(!wp.records[0].content.raw.includes("<iframe"));
+  const lookup = await findAyVerificationDocument(token);
+  assert.equal(lookup?.hasFile, false);
+  assert.equal(lookup?.document.customer, document.customer);
+  const updated = await attachAyVerificationPdf(token, document.fileUrl);
+  assert.equal(updated.id, placeholder.id);
+  assert.equal(updated.url, placeholder.url);
+  assert.equal(wp.records.length, 1);
+  assert.match(wp.records[0].content.raw, /<iframe/);
+  assert.equal((await findAyVerificationDocument(token))?.document.fileUrl, document.fileUrl);
+  await assert.rejects(attachAyVerificationPdf(token, document.fileUrl), /zaten eklenmiş/);
   assert.equal(wp.records.length, 1);
 });
 
