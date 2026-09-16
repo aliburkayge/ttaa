@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test, type TestContext } from "node:test";
-import { attachAyVerificationPdf, ensureAyVerificationLanding, findAyVerificationDocument, listAyVerificationDocuments, publishAyVerificationDocument, setAyVerificationPdf } from "../lib/ay-verification-wordpress.ts";
+import { attachAyVerificationPdf, ensureAyVerificationLanding, findAyVerificationDocument, listAyVerificationDocuments, publishAyVerificationDocument, refreshAyVerificationDocumentDesign, setAyVerificationPdf } from "../lib/ay-verification-wordpress.ts";
 import { ayVerificationToken } from "../lib/ay-verification-token.ts";
 
 const originalEnv = { ...process.env };
@@ -116,6 +116,23 @@ test("old published documents are listed and PDFs can be replaced then removed w
   assert.doesNotMatch(wp.records[0].content.raw, /<iframe/);
   assert.match(wp.records[0].content.raw, /Gerekli evraklar şu anda yüklenmemiştir/);
   assert.equal(wp.records.length, 1);
+});
+
+test("an owned published page receives the new design without changing metadata, PDF or URL", async (t) => {
+  const wp = fakeWordPress(t);
+  const token = ayVerificationToken(document.documentNumber);
+  const first = await publishAyVerificationDocument(document, token);
+  wp.records[0].content.raw = wp.records[0].content.raw.replace("<!-- AY_VERIFICATION_DESIGN:2 -->", "");
+  const refreshed = await refreshAyVerificationDocumentDesign(token);
+  assert.equal(refreshed.id, first.id);
+  assert.equal(refreshed.url, first.url);
+  assert.equal(refreshed.reused, false);
+  assert.match(wp.records[0].content.raw, /AY_VERIFICATION_DESIGN:2/);
+  assert.match(wp.records[0].content.raw, /<iframe/);
+  assert.deepEqual((await findAyVerificationDocument(token))?.document, document);
+  const count = wp.calls.filter((call) => call.method === "POST" && call.pathname.endsWith(`/${first.id}`)).length;
+  assert.equal((await refreshAyVerificationDocumentDesign(token)).reused, true);
+  assert.equal(wp.calls.filter((call) => call.method === "POST" && call.pathname.endsWith(`/${first.id}`)).length, count);
 });
 
 test("SEO error leaves a document as a draft", async (t) => {

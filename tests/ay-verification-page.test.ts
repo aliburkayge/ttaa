@@ -23,6 +23,10 @@ test("verified page embeds its PDF but escapes supplied fields", () => {
     fileUrl: "https://aytercume.com/wp-content/uploads/example.pdf",
   }, "AY_VERIFICATION:test-marker");
   assert.match(html, /Bu dosya AY Tercüme tarafından oluşturulup doğrulanmıştır/);
+  assert.match(html, /\.ayv-seal:before\{[^}]*border-left:5px solid #fff/);
+  assert.match(html, /background:linear-gradient\(145deg,#0aa4ee,#0769c7/);
+  assert.match(html, /AY_VERIFICATION_DESIGN:2/);
+  assert.ok(!html.includes("✓"));
   assert.match(html, /A&amp;B&lt;7&gt;&quot;/);
   assert.match(html, /Sözleşme &lt;ek&gt;/);
   assert.match(html, /Firma &lt;İstanbul&gt;/);

@@ -159,6 +159,24 @@ export async function findAyVerificationMediaId(fileUrl: string, pageId: number,
   return media.find((item) => item.source_url === fileUrl)?.id;
 }
 
+export async function refreshAyVerificationDocumentDesign(token: string) {
+  if (!/^[a-f0-9-]{36}$/.test(token)) throw new Error("Geçersiz doğrulama kimliği.");
+  const { baseUrl, authorization } = config();
+  const current = await findAyVerificationDocument(token);
+  if (!current || current.status !== "publish") throw new Error("Yayımlanmış doğrulama sayfası bulunamadı.");
+  const slug = `belge-dogrulama-${token}`;
+  const before = await pageById(baseUrl, authorization, current.id);
+  if (before.content?.raw?.includes("<!-- AY_VERIFICATION_DESIGN:2 -->")) return { id: current.id, url: current.url, reused: true };
+  const content = ayVerificationDocumentHtml(current.document, `AY_VERIFICATION:${token}`);
+  const updated = await savePage(baseUrl, authorization, { content }, current.id);
+  if (updated.status !== "publish" || updated.slug !== slug) throw new Error("WordPress mevcut sayfanın durumunu veya adresini değiştirdi.");
+  const saved = await pageById(baseUrl, authorization, current.id);
+  const raw = saved.content?.raw || "";
+  const confirmed = readAyVerificationDocument(raw, `AY_VERIFICATION:${token}`);
+  if (!raw.includes("<!-- AY_VERIFICATION_DESIGN:2 -->") || !raw.includes("ayv-seal") || Boolean(raw.includes("<iframe")) !== current.hasFile || JSON.stringify(confirmed) !== JSON.stringify(current.document)) throw new Error("WordPress yeni tasarımı ve belge bilgilerini birlikte saklamadı.");
+  return { id: current.id, url: current.url, reused: false };
+}
+
 export async function publishAyVerificationDocument(document: AyVerificationDocument, token: string) {
   if (!/^[a-f0-9-]{36}$/.test(token)) throw new Error("Geçersiz doğrulama kimliği.");
   const slug = `belge-dogrulama-${token}`;
