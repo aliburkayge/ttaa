@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireAdminSession } from "../../../../lib/auth";
 import { findAyVerificationDocument, publishAyVerificationDocument } from "../../../../lib/ay-verification-wordpress";
 import { ayVerificationToken } from "../../../../lib/ay-verification-token";
+import { isSameOriginPanelRequest } from "../../../../lib/qr-request-origin";
 import { validatePrototypeDetails } from "../../../../lib/qr-prototype";
 import { attachWordPressMedia, deleteWordPressMedia, uploadWordPressMedia } from "../../../../lib/wordpress";
 
@@ -18,7 +19,7 @@ export async function POST(request: Request) {
   } catch {
     return json({ error: "Oturum açmanız gerekiyor." }, 401);
   }
-  if (request.headers.get("origin") !== new URL(request.url).origin) return json({ error: "Geçersiz istek kaynağı." }, 403);
+  if (!isSameOriginPanelRequest(request)) return json({ error: "Geçersiz istek kaynağı." }, 403);
   const contentLength = Number(request.headers.get("content-length") || 0);
   if (contentLength > 10 * 1024 * 1024) return json({ error: "PDF en fazla 8 MB olabilir." }, 413);
   try {
