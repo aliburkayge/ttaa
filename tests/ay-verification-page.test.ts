@@ -11,6 +11,8 @@ test("landing has a distinct title, description and both offices", () => {
   assert.match(html, /İstanbul Şubesi/);
   assert.match(html, /\+90 543 185 06 55/);
   assert.match(html, /\+90 544 761 96 87/);
+  assert.match(html, /<iframe[^>]+\/verify\/ay-tercume[^>]+allow="camera"/);
+  assert.match(html, /Belgenizi buradan doğrulayın/);
   assert.ok(!html.includes("Bu dosya AY Tercüme tarafından doğrulanmıştır"));
 });
 

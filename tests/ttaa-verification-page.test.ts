@@ -10,6 +10,8 @@ test("TTAA public verification uses its own English brand and official contacts"
   assert.match(landing, /Document verification/);
   assert.match(landing, /\+90 530 519 60 99/);
   assert.match(landing, /info@turkishtranslation\.com\.tr/);
+  assert.match(landing, /<iframe[^>]+\/verify\/ttaa[^>]+allow="camera"/);
+  assert.match(landing, /Verify your document here/);
   assert.doesNotMatch(landing, /AY TERCÜME|aytercume\.com/);
   assert.match(ttaaVerificationSeo().title, /Document Verification \| TTAA/);
 });

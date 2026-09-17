@@ -1,3 +1,5 @@
+import { verificationLandingWidget } from "./verification-landing-widget";
+
 export type AyVerificationDocument = {
   documentNumber: string;
   customer: string;
@@ -64,8 +66,10 @@ export const verificationStyle = `<style>
 .ayv-office-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding-bottom:18px;border-bottom:1px solid #e5eef5}.ayv-office-head span{color:var(--blue-dark);font-size:10px;font-weight:850;letter-spacing:.14em}.ayv-office h3{margin:3px 0 0;font-size:20px;line-height:1.2}.ayv-hours{padding:5px 8px;border-radius:999px;background:#eef7ff;color:var(--blue-dark);font-size:9px;font-weight:800;white-space:nowrap}
 .ayv-office dl{margin:0}.ayv-office dt{margin-top:17px;color:var(--muted);font-size:10px;font-weight:800;letter-spacing:.10em;text-transform:uppercase}.ayv-office dd{margin:5px 0 0;color:var(--text);font-size:13px;line-height:1.65;overflow-wrap:anywhere}.ayv-office dd a{font-size:14px;font-weight:750;text-decoration:none}
 .ayv-note{margin-top:16px;padding:16px 20px;background:#f6faff;color:var(--muted);font-size:11px}.ayv-note p{margin:0}
+.ayv-lookup{margin-top:28px}.ayv-lookup-heading{padding:0 4px 14px}.ayv-lookup h2{margin:7px 0 7px;font-size:clamp(24px,3vw,32px)}.ayv-lookup-heading p{margin:0;color:var(--muted);font-size:13px}.ayv-lookup-frame{display:block;width:100%;height:475px;border:0;background:transparent}.ayv-lookup-fallback{margin:0 4px;color:var(--muted);font-size:11px}
 @media(max-width:700px){.ayv-offices{grid-template-columns:1fr}.ayv-pdf{height:500px}.ayv-office{padding:22px}}
-@media(max-width:560px){.ayv{padding:0 8px}.ayv-hero{border-radius:18px}.ayv-seal{width:61px;height:61px;border-radius:19px}.ayv-brand strong{font-size:16px}.ayv-verified{margin-left:0}.ayv-hero-body{margin-top:25px}.ayv-details{gap:10px}.ayv-detail{min-height:94px;padding:17px;gap:11px}.ayv-detail:nth-child(-n+2){grid-column:1/-1}.ayv-detail-index{width:30px;height:30px}.ayv-detail strong{font-size:15px}.ayv-file{padding:20px}.ayv-pdf{height:430px}.ayv-open{width:100%}}
+@media(max-width:700px){.ayv-lookup-frame{height:980px}}
+@media(max-width:560px){.ayv{padding:0 8px}.ayv-hero{border-radius:18px}.ayv-seal{width:61px;height:61px;border-radius:19px}.ayv-brand strong{font-size:16px}.ayv-verified{margin-left:0}.ayv-hero-body{margin-top:25px}.ayv-details{gap:10px}.ayv-detail{min-height:94px;padding:17px;gap:11px}.ayv-detail:nth-child(-n+2){grid-column:1/-1}.ayv-detail-index{width:30px;height:30px}.ayv-detail strong{font-size:15px}.ayv-file{padding:20px}.ayv-pdf{height:430px}.ayv-open{width:100%}.ayv-lookup-frame{height:1020px}}
 </style>`;
 
 function contactSection() {
@@ -89,7 +93,7 @@ export function ayVerificationSeo(documentNumber?: string, hasFile = true) {
 }
 
 export function ayVerificationLandingHtml() {
-  return `${verificationStyle}<main class="ayv"><header class="ayv-hero"><div class="ayv-hero-top"><div class="ayv-brand"><span>AY TERCÜME</span><strong>Belge güvenliği</strong></div></div><div class="ayv-hero-body"><span class="ayv-kicker">RESMÎ DOĞRULAMA ALANI</span><h1>Belge doğrulama</h1><p class="ayv-lead">AY Tercüme tarafından hazırlanan QR kodlu belgelerde kodu okutarak belgeye özel doğrulama sayfasını açabilirsiniz. Sayfada belge numarası, müşteri adı, tarih ve dosya gösterilir.</p></div></header>${contactSection()}</main>`;
+  return `${verificationStyle}<main class="ayv"><header class="ayv-hero"><div class="ayv-hero-top"><div class="ayv-brand"><span>AY TERCÜME</span><strong>Belge güvenliği</strong></div></div><div class="ayv-hero-body"><span class="ayv-kicker">RESMÎ DOĞRULAMA ALANI</span><h1>Belge doğrulama</h1><p class="ayv-lead">AY Tercüme tarafından hazırlanan QR kodlu belgeleri burada QR koduyla veya belge numarasıyla sorgulayabilirsiniz.</p></div></header>${verificationLandingWidget("ay-tercume")}${contactSection()}</main>`;
 }
 
 export function ayVerificationDocumentHtml(document: AyVerificationDocument, marker: string) {

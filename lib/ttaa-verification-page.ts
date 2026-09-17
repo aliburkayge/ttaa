@@ -1,4 +1,5 @@
 import { verificationStyle } from "./ay-verification-page";
+import { verificationLandingWidget } from "./verification-landing-widget";
 
 const ttaaLayoutStyle = `<style>
 body:has(main.ttaa-verification) .content_wrap:has(main.ttaa-verification) > .sidebar{display:none!important}
@@ -49,7 +50,7 @@ export function ttaaVerificationSeo(documentNumber?: string, hasFile = true) {
 }
 
 export function ttaaVerificationLandingHtml() {
-  return `${verificationStyle}${ttaaLayoutStyle}<main class="ayv ttaa-verification" lang="en"><header class="ayv-hero"><div class="ayv-hero-top"><div class="ayv-brand"><span>TTAA</span><strong>Document security</strong></div></div><div class="ayv-hero-body"><span class="ayv-kicker">OFFICIAL VERIFICATION AREA</span><h1>Document verification</h1><p class="ayv-lead">Scan the QR code on a document prepared by Turkish Translation & Attestation Agency to open its individual verification page. The document number, customer, date and PDF availability are shown there.</p></div></header>${contactSection()}</main>`;
+  return `${verificationStyle}${ttaaLayoutStyle}<main class="ayv ttaa-verification" lang="en"><header class="ayv-hero"><div class="ayv-hero-top"><div class="ayv-brand"><span>TTAA</span><strong>Document security</strong></div></div><div class="ayv-hero-body"><span class="ayv-kicker">OFFICIAL VERIFICATION AREA</span><h1>Document verification</h1><p class="ayv-lead">Verify a document prepared by Turkish Translation & Attestation Agency with its QR code or document number.</p></div></header>${verificationLandingWidget("ttaa")}${contactSection()}</main>`;
 }
 
 export function ttaaVerificationDocumentHtml(document: TtaaVerificationDocument, marker: string) {
