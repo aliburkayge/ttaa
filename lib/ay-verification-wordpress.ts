@@ -23,12 +23,19 @@ function config() {
 }
 
 async function wpJson<T>(url: string, authorization: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    ...init,
-    headers: { Authorization: authorization, Accept: "application/json", ...(init?.body ? { "Content-Type": "application/json" } : {}), ...init?.headers },
-    cache: "no-store",
-    signal: AbortSignal.timeout(30_000),
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers: { Authorization: authorization, Accept: "application/json", ...(init?.body ? { "Content-Type": "application/json" } : {}), ...init?.headers },
+      cache: "no-store",
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch (error) {
+    const cause = error instanceof Error ? (error as Error & { cause?: unknown }).cause : undefined;
+    const code = cause && typeof cause === "object" && "code" in cause && typeof cause.code === "string" ? cause.code : undefined;
+    throw new Error(`AY WordPress bağlantısı kurulamadı${code ? ` (${code})` : ""}.`);
+  }
   const raw = await response.text();
   let value: T & { message?: string };
   try { value = JSON.parse(raw) as T & { message?: string }; }
