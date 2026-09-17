@@ -5,14 +5,21 @@ import { ayVerificationDocumentHtml, ayVerificationLandingHtml, ayVerificationSe
 test("landing has a distinct title, description and both offices", () => {
   const seo = ayVerificationSeo();
   const html = ayVerificationLandingHtml();
-  assert.match(seo.title, /Belge Doğrulama.*AY Tercüme/);
-  assert.match(seo.description, /QR belge doğrulama/);
+  assert.match(seo.title, /Resmî Belge Doğrulama.*AY Tercüme/);
+  assert.match(seo.description, /QR kod veya belge numarasıyla/);
   assert.match(html, /Ankara Şubesi/);
   assert.match(html, /İstanbul Şubesi/);
   assert.match(html, /\+90 543 185 06 55/);
   assert.match(html, /\+90 544 761 96 87/);
   assert.match(html, /<iframe[^>]+\/verify\/ay-tercume[^>]+allow="camera"/);
   assert.match(html, /Belgenizi buradan doğrulayın/);
+  assert.match(html, /<article class="ayv-editorial"/);
+  assert.match(html, /<h2 id="ayv-editorial-title">Resmî Belge Doğrulama<\/h2>/);
+  assert.match(html, /Yeminli tercüme doğrulama nasıl yapılır/);
+  assert.match(html, /Noter onaylı tercüme, apostil ve diğer belgeler/);
+  assert.match(html, /Doğrulamanın kapsamı/);
+  assert.ok(html.indexOf('class="ayv-lookup"') < html.indexOf('class="ayv-editorial"'));
+  assert.ok(html.indexOf('class="ayv-editorial"') < html.indexOf('class="ayv-contact"'));
   assert.ok(!html.includes("Bu dosya AY Tercüme tarafından doğrulanmıştır"));
 });
 

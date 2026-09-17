@@ -1,4 +1,5 @@
 import { verificationLandingWidget } from "./verification-landing-widget";
+import { ayVerificationArticleHtml, ayVerificationArticleStyle } from "./ay-verification-article";
 
 export type AyVerificationDocument = {
   documentNumber: string;
@@ -81,8 +82,8 @@ function contactSection() {
 
 export function ayVerificationSeo(documentNumber?: string, hasFile = true) {
   if (!documentNumber) return {
-    title: "Belge Doğrulama | AY Tercüme",
-    description: "AY Tercüme QR belge doğrulama alanı. Belge bilgilerini ve dosyayı görüntüleyin; Ankara ve İstanbul ofislerimize ulaşın.",
+    title: "Resmî Belge Doğrulama | AY Tercüme",
+    description: "AY Tercüme ile resmî belge ve yeminli tercüme doğrulama. QR kod veya belge numarasıyla kaydı sorgulayın, bilgileri ve varsa PDF dosyasını karşılaştırın.",
   };
   return {
     title: `Belge ${documentNumber.slice(0, 28)} Doğrulama | AY Tercüme`,
@@ -93,7 +94,7 @@ export function ayVerificationSeo(documentNumber?: string, hasFile = true) {
 }
 
 export function ayVerificationLandingHtml() {
-  return `${verificationStyle}<main class="ayv"><header class="ayv-hero"><div class="ayv-hero-top"><div class="ayv-brand"><span>AY TERCÜME</span><strong>Belge güvenliği</strong></div></div><div class="ayv-hero-body"><span class="ayv-kicker">RESMÎ DOĞRULAMA ALANI</span><h1>Belge doğrulama</h1><p class="ayv-lead">AY Tercüme tarafından hazırlanan QR kodlu belgeleri burada QR koduyla veya belge numarasıyla sorgulayabilirsiniz.</p></div></header>${verificationLandingWidget("ay-tercume")}${contactSection()}</main>`;
+  return `${verificationStyle}${ayVerificationArticleStyle}<main class="ayv"><header class="ayv-hero"><div class="ayv-hero-top"><div class="ayv-brand"><span>AY TERCÜME</span><strong>Belge güvenliği</strong></div></div><div class="ayv-hero-body"><span class="ayv-kicker">RESMÎ DOĞRULAMA ALANI</span><h1>Belge doğrulama</h1><p class="ayv-lead">AY Tercüme tarafından hazırlanan QR kodlu belgeleri burada QR koduyla veya belge numarasıyla sorgulayabilirsiniz.</p></div></header>${verificationLandingWidget("ay-tercume")}${ayVerificationArticleHtml}${contactSection()}</main>`;
 }
 
 export function ayVerificationDocumentHtml(document: AyVerificationDocument, marker: string) {
