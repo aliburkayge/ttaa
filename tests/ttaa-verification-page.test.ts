@@ -12,8 +12,15 @@ test("TTAA public verification uses its own English brand and official contacts"
   assert.match(landing, /info@turkishtranslation\.com\.tr/);
   assert.match(landing, /<iframe[^>]+\/verify\/ttaa[^>]+allow="camera"/);
   assert.match(landing, /Verify your document here/);
+  assert.match(landing, /<article class="ayv-editorial"/);
+  assert.match(landing, /Official Document Verification/);
+  assert.match(landing, /How to verify a certified or sworn translation/);
+  assert.match(landing, /Why does document verification matter/);
+  assert.match(landing, /What this check covers/);
+  assert.ok(landing.indexOf('class="ayv-lookup"') < landing.indexOf('class="ayv-editorial"'));
+  assert.ok(landing.indexOf('class="ayv-editorial"') < landing.indexOf('class="ayv-contact"'));
   assert.doesNotMatch(landing, /AY TERCÜME|aytercume\.com/);
-  assert.match(ttaaVerificationSeo().title, /Document Verification \| TTAA/);
+  assert.match(ttaaVerificationSeo().title, /Official Document Verification \| TTAA/);
 });
 
 test("TTAA page escapes document data and changes from pending to embedded PDF", () => {

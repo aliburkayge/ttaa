@@ -1,5 +1,7 @@
 import { verificationStyle } from "./ay-verification-page";
+import { ayVerificationArticleStyle } from "./ay-verification-article";
 import { verificationLandingWidget } from "./verification-landing-widget";
+import { ttaaVerificationArticleHtml } from "./ttaa-verification-article";
 
 const ttaaLayoutStyle = `<style>
 body:has(main.ttaa-verification) .content_wrap:has(main.ttaa-verification) > .sidebar{display:none!important}
@@ -38,8 +40,8 @@ function contactSection() {
 
 export function ttaaVerificationSeo(documentNumber?: string, hasFile = true) {
   if (!documentNumber) return {
-    title: "Document Verification | TTAA",
-    description: "Verify QR-coded documents issued by Turkish Translation and Attestation Agency. Contact our Ankara or Istanbul offices for assistance.",
+    title: "Official Document Verification | TTAA",
+    description: "Verify a TTAA translation or document record by QR code or document number. Compare details and any available PDF, with guidance on attestation and apostille files.",
   };
   return {
     title: `Document ${documentNumber.slice(0, 24)} Verification | TTAA`,
@@ -50,7 +52,7 @@ export function ttaaVerificationSeo(documentNumber?: string, hasFile = true) {
 }
 
 export function ttaaVerificationLandingHtml() {
-  return `${verificationStyle}${ttaaLayoutStyle}<main class="ayv ttaa-verification" lang="en"><header class="ayv-hero"><div class="ayv-hero-top"><div class="ayv-brand"><span>TTAA</span><strong>Document security</strong></div></div><div class="ayv-hero-body"><span class="ayv-kicker">OFFICIAL VERIFICATION AREA</span><h1>Document verification</h1><p class="ayv-lead">Verify a document prepared by Turkish Translation & Attestation Agency with its QR code or document number.</p></div></header>${verificationLandingWidget("ttaa")}${contactSection()}</main>`;
+  return `${verificationStyle}${ayVerificationArticleStyle}${ttaaLayoutStyle}<main class="ayv ttaa-verification" lang="en"><header class="ayv-hero"><div class="ayv-hero-top"><div class="ayv-brand"><span>TTAA</span><strong>Document security</strong></div></div><div class="ayv-hero-body"><span class="ayv-kicker">OFFICIAL VERIFICATION AREA</span><h1>Document verification</h1><p class="ayv-lead">Verify a document prepared by Turkish Translation & Attestation Agency with its QR code or document number.</p></div></header>${verificationLandingWidget("ttaa")}${ttaaVerificationArticleHtml}${contactSection()}</main>`;
 }
 
 export function ttaaVerificationDocumentHtml(document: TtaaVerificationDocument, marker: string) {
