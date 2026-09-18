@@ -50,9 +50,15 @@ export function dedupeAyLinks(links: ResearchedLink[]) {
 
 export function getAyCuratedLinks(brief: AyLinkBrief): ResearchedLink[] {
   const haystack = `${brief.topic} ${brief.audience} ${brief.country} ${brief.documentType}`.toLocaleLowerCase("tr-TR");
+  const topical: ResearchedLink[] = [];
+  if (/teknik|mühendis|kılavuz|yazılım|imalat/.test(haystack)) topical.push(
+    internal("çeviri hizmetlerinde ISO 17100 kalite standardı", "/iso-171002015-ceviri-hizmetleri-standardi/", "AY Tercüme çeviri kalite standardı rehberi"),
+  );
   const links: ResearchedLink[] = [
+    ...topical,
     internal("tercüme hizmetleri", "/hizmetlerimiz/", "AY Tercüme hizmetler sayfası"),
-    internal("yeminli tercüme", "/yeminli-tercume/", "AY Tercüme yeminli tercüme hizmeti"),
+    internal("belge inceleme ve teklif", "/iletisim/", "AY Tercüme belge inceleme ve iletişim sayfası"),
+    internal("yeminli tercüme", "/yeminli-tercume-burosu/", "AY Tercüme yeminli tercüme rehberi"),
     internal("noter onaylı tercüme", "/noter-onayli-tercume/", "AY Tercüme noter onayı süreci"),
     { anchor: "belgenizi incelemeye gönderin", url: buildAyContactUrl(brief.topic), reason: "Belge inceleme ve teklif için AY Tercüme iletişim kanalı", source: "internal" },
     OFFICIAL.iso17100,
@@ -67,7 +73,6 @@ export function getAyCuratedLinks(brief: AyLinkBrief): ResearchedLink[] {
   if (/diploma|transkript|öğrenci|akademik|üniversite/.test(haystack)) links.push(internal("akademik belge tercümesi", "/akademik-tercume/", "Diploma, transkript ve akademik belge hizmeti"));
   if (/hukuk|hukuki|mahkeme|vekalet|sözleşme|dava/.test(haystack)) links.push(internal("hukuki tercüme", "/hukuki-tercume/", "AY Tercüme hukuki belge hizmeti"));
   if (/ticari|şirket|ticaret|imza sirküleri|faaliyet belgesi/.test(haystack)) links.push(internal("ticari tercüme", "/ticari-tercume/", "AY Tercüme ticari belge hizmeti"));
-  if (/teknik|mühendis|kılavuz|yazılım|imalat/.test(haystack)) links.push(internal("teknik tercüme", "/teknik-tercume/", "AY Tercüme teknik doküman hizmeti"));
   if (/medikal|sağlık|rapor|reçete|tıbbi/.test(haystack)) links.push(internal("medikal tercüme", "/medikal-tercume/", "AY Tercüme sağlık belgesi hizmeti"));
   if (/sözlü|tercüman|toplantı|konferans|randevu/.test(haystack)) links.push(internal("sözlü tercüme", "/sozlu-tercume/", "AY Tercüme sözlü iletişim desteği"));
   if (/acil|hızlı|ekspres/.test(haystack)) links.push(internal("acil tercüme", "/acil-tercume/", "AY Tercüme acil talep değerlendirmesi"));

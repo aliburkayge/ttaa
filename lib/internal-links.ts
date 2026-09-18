@@ -6,6 +6,16 @@ type WordPressSearchItem = {
   title?: string;
   url?: string;
   subtype?: string;
+  excerpt?: string;
+};
+
+type WordPressContentItem = {
+  id?: number;
+  link?: string;
+  slug?: string;
+  status?: string;
+  title?: { rendered?: string };
+  excerpt?: { rendered?: string };
 };
 
 export type InternalLinkBrief = {
@@ -49,6 +59,10 @@ function sameHost(left: URL, right: URL) {
   return left.hostname.replace(/^www\./, "").toLowerCase() === right.hostname.replace(/^www\./, "").toLowerCase();
 }
 
+function plainText(value: string) {
+  return decodeTitle(value.replace(/<[^>]+>/g, " ").replace(/\s+/g, " "));
+}
+
 const SEARCH_STOP_WORDS = new Set([
   "about", "after", "and", "before", "for", "from", "guide", "into", "need", "one", "service", "services", "the", "translation", "what", "which", "with", "you", "your",
   "bir", "bu", "hangi", "hakkinda", "icin", "ile", "nasil", "nedir", "rehberi", "sureci", "tercume", "ceviri", "hizmeti", "hizmetleri",
@@ -78,13 +92,15 @@ export function wordpressSearchQueries(brief: InternalLinkBrief) {
 function relevanceScore(item: WordPressSearchItem, brief: InternalLinkBrief, rank: number) {
   let path = item.url || "";
   try { path = new URL(path).pathname; } catch { /* Keep the supplied path. */ }
-  const target = searchTokens(`${item.title || ""} ${path}`);
+  const target = searchTokens(`${item.title || ""} ${path} ${item.excerpt || ""}`);
   const wanted = searchTokens(`${brief.topic} ${brief.country || ""} ${brief.documentType || ""}`);
   const targetSet = new Set(target);
   const overlap = wanted.reduce((score, token) => score + (targetSet.has(token) ? 6 : 0), 0);
   const topicPhrase = searchTokens(brief.topic).join(" ");
   const targetPhrase = target.join(" ");
-  return overlap + (topicPhrase && targetPhrase.includes(topicPhrase) ? 18 : 0) + Math.max(0, 5 - rank);
+  const title = (item.title || "").toLocaleLowerCase("tr-TR").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, " ");
+  const looksLikeGenericLocation = /tercume burosu/.test(title) && !wanted.some((token) => targetSet.has(token) && title.includes(token));
+  return overlap + (topicPhrase && targetPhrase.includes(topicPhrase) ? 18 : 0) + Math.max(0, 5 - rank) - (looksLikeGenericLocation ? 30 : 0);
 }
 
 export function selectInternalLinks(links: ResearchedLink[], suggestions: string[], minimum = 3, maximum = 6) {
@@ -114,16 +130,27 @@ export async function fetchBrandInternalLinks(brand: JobBrand, brief: InternalLi
   const base = brandBaseUrl(brand);
   try {
     const queries = wordpressSearchQueries(brief);
-    const responses = await Promise.all(queries.map(async (search) => {
-      const params = new URLSearchParams({ search, per_page: "20", type: "post", subtype: "post,page" });
-      const response = await fetch(`${base}/wp-json/wp/v2/search?${params}`, {
+    const requests = queries.flatMap((search, queryIndex) => (["posts", "pages"] as const).map(async (resource) => {
+      const params = new URLSearchParams({ search, per_page: "100", status: "publish", _fields: "id,link,slug,status,title,excerpt" });
+      const response = await fetch(`${base}/wp-json/wp/v2/${resource}?${params}`, {
         headers: { Accept: "application/json" }, cache: "no-store", signal: AbortSignal.timeout(15_000),
       });
-      if (!response.ok) return [] as WordPressSearchItem[];
-      return response.json() as Promise<WordPressSearchItem[]>;
+      if (!response.ok) return [] as Array<{ item: WordPressSearchItem; rank: number }>;
+      const items = await response.json() as WordPressContentItem[];
+      return items.map((item, rank) => ({
+        item: {
+          id: item.id,
+          title: decodeTitle(item.title?.rendered || ""),
+          url: item.link || "",
+          subtype: resource === "posts" ? "post" : "page",
+          excerpt: plainText(item.excerpt?.rendered || ""),
+        },
+        rank: rank + queryIndex,
+      }));
     }));
+    const responses = await Promise.all(requests);
     const ranked = new Map<string, { item: WordPressSearchItem; score: number }>();
-    responses.flatMap((items, queryIndex) => items.map((item, rank) => ({ item, rank: rank + queryIndex }))).forEach(({ item, rank }) => {
+    responses.flat().forEach(({ item, rank }) => {
       if (!item.url) return;
       const score = relevanceScore(item, brief, rank);
       const previous = ranked.get(item.url);

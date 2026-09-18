@@ -26,11 +26,12 @@ test("WordPress REST results are ranked and verified for both posts and pages", 
   const searches: string[] = [];
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
     const url = String(input);
-    if (url.includes("/wp-json/wp/v2/search?")) {
+    if (url.includes("/wp-json/wp/v2/posts?") || url.includes("/wp-json/wp/v2/pages?")) {
       searches.push(url);
       const query = new URL(url).searchParams.get("search");
-      if (query === "diploma") return Response.json([{ id: 1, title: "Diploma Translation Services", url: internal[0].url, subtype: "page" }]);
-      if (query === "apostille") return Response.json([{ id: 2, title: "Apostille and Legalization", url: internal[1].url, subtype: "post" }]);
+      const isPages = url.includes("/pages?");
+      if (query === "diploma" && isPages) return Response.json([{ id: 1, title: { rendered: "Diploma Translation Services" }, link: internal[0].url, excerpt: { rendered: "Diploma records and translation." } }]);
+      if (query === "apostille" && !isPages) return Response.json([{ id: 2, title: { rendered: "Apostille and Legalization" }, link: internal[1].url, excerpt: { rendered: "Apostille guidance." } }]);
       return Response.json([]);
     }
     return new Response("<html></html>", { status: 200, headers: { "Content-Type": "text/html" } });
@@ -39,6 +40,26 @@ test("WordPress REST results are ranked and verified for both posts and pages", 
   assert.ok(searches.length >= 3);
   assert.deepEqual(new Set(links.map((link) => link.url)), new Set([internal[0].url, internal[1].url]));
   assert.ok(links.every((link) => link.validation?.status === "verified"));
+});
+
+test("AY discovery reads published content excerpts and ignores generic location noise", async (t) => {
+  const old = process.env.AY_WP_URL;
+  process.env.AY_WP_URL = "https://aytercume.com";
+  t.after(() => { if (old === undefined) delete process.env.AY_WP_URL; else process.env.AY_WP_URL = old; });
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.includes("/wp-json/wp/v2/posts?")) return Response.json([
+      { id: 1, title: { rendered: "İvedik Tercüme Bürosu" }, link: "https://aytercume.com/ivedik-tercume-burosu/", excerpt: { rendered: "Teknik belgeler için yerel hizmet." } },
+      { id: 2, title: { rendered: "Tercüme Ne Demek? Anlamı ve Çeşitleri" }, link: "https://aytercume.com/tercume-ne-demek-anlami-ve-cesitleri/", excerpt: { rendered: "Teknik tercüme ve terminoloji yönetimi." } },
+    ]);
+    if (url.includes("/wp-json/wp/v2/pages?")) return Response.json([
+      { id: 3, title: { rendered: "Hizmetlerimiz" }, link: "https://aytercume.com/hizmetlerimiz/", excerpt: { rendered: "Teknik tercüme, kalite kontrol ve uzman çevirmen." } },
+    ]);
+    return new Response("<html></html>", { status: 200, headers: { "Content-Type": "text/html" } });
+  });
+  const links = await fetchBrandInternalLinks("ay-tercume", { topic: "Teknik Tercüme Hizmetleri", documentType: "Teknik doküman" });
+  assert.deepEqual(links.map((link) => link.anchor).sort(), ["Hizmetlerimiz", "Tercüme Ne Demek? Anlamı ve Çeşitleri"].sort());
+  assert.ok(!links.some((link) => link.anchor.includes("İvedik")));
 });
 
 test("internal link selection fills model omissions deterministically", () => {
