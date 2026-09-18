@@ -97,10 +97,22 @@ function buildHtml(article: GeneratedArticle, links: ResearchedLink[], options: 
   const paragraphs = (value: string) => value.split(/\n\s*\n/).map((item) => item.trim()).filter(Boolean).map((item) => `<p>${linkedText(item, links, used)}</p>`).join("");
   const heading = options.includeH1 ? `<h1 class="ayc-title">${escapeHtml(article.title)}</h1>` : `<div class="ayc-title" role="heading" aria-level="2">${escapeHtml(article.title)}</div>`;
   const breadcrumb = options.visibleBreadcrumb ? `<nav class="ayc-breadcrumb" aria-label="Breadcrumb"><a href="/">Ana Sayfa</a><span aria-hidden="true">›</span><a href="/hizmetler/">Hizmetler</a><span aria-hidden="true">›</span><span aria-current="page">${escapeHtml(article.title)}</span></nav>` : "";
-  const sections = article.sections.map((section, index) => `<section class="ayc-section" aria-labelledby="ayc-section-${index + 1}">
+  const nextContextLink = (source: ResearchedLink["source"]) => {
+    const link = links.find((item) => item.source === source && !used.has(item.url));
+    if (!link) return "";
+    used.add(link.url);
+    const label = source === "internal" ? "İlgili AY Tercüme rehberi" : "Resmî kaynak";
+    return `<p class="ayc-related-reading"><strong>${label}:</strong> <a class="ayc-context-link ayc-link-${source}" href="${escapeHtml(link.url)}"${source === "official" ? ' target="_blank" rel="noopener noreferrer"' : ""}>${escapeHtml(link.anchor)}</a></p>`;
+  };
+  const sections = article.sections.map((section, index) => {
+    const body = paragraphs(section.body);
+    const items = section.items.length ? `<ul class="ayc-list">${section.items.map((item) => `<li><span class="ayc-check" aria-hidden="true">✓</span><span>${linkedText(item, links, used)}</span></li>`).join("")}</ul>` : "";
+    const related = nextContextLink("internal") + (index % 2 === 1 ? nextContextLink("official") : "");
+    return `<section class="ayc-section" aria-labelledby="ayc-section-${index + 1}">
   <div class="ayc-section-heading"><span class="ayc-section-line" aria-hidden="true"></span><div><span class="ayc-section-label">BÖLÜM ${String(index + 1).padStart(2, "0")}</span><h2 id="ayc-section-${index + 1}">${escapeHtml(section.title)}</h2></div></div>
-  <div class="ayc-content-card">${paragraphs(section.body)}${section.items.length ? `<ul class="ayc-list">${section.items.map((item) => `<li><span class="ayc-check" aria-hidden="true">✓</span><span>${linkedText(item, links, used)}</span></li>`).join("")}</ul>` : ""}</div>
-</section>${index === 1 ? "\n<!-- AY_INLINE_IMAGE -->" : ""}`).join("\n");
+  <div class="ayc-content-card">${body}${items}${related}</div>
+</section>${index === 1 ? "\n<!-- AY_INLINE_IMAGE -->" : ""}`;
+  }).join("\n");
   const faqs = article.faqs.map((faq) => `<article class="ayc-faq-item"><h3>${escapeHtml(faq.question)}</h3><p>${linkedText(faq.answer, links, used)}</p></article>`).join("");
   const internal = links.filter((link) => link.source === "internal").slice(0, 6);
   const official = links.filter((link) => link.source === "official").slice(0, 5);

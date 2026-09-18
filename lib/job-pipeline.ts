@@ -14,7 +14,7 @@ import { loadGeneratedImage, storeContentPackage, storeGeneratedImage } from "./
 import { buildTtaaContentPackage, type TtaaContentPackage, type TtaaRenderOptions } from "./ttaa-render";
 import { integerEnv } from "./upstream";
 import { attachWordPressMedia, createWordPressDraft, deleteWordPressMedia, uploadWordPressMedia, type WordPressMedia, type WordPressScope } from "./wordpress";
-import { fetchBrandInternalLinks, validatePackageLinks } from "./internal-links";
+import { assertPackageLinkCoverage, fetchBrandInternalLinks, selectInternalLinks, validatePackageLinks } from "./internal-links";
 import { upsertProjectFromCompletedJob } from "./projects";
 
 type BinaryImage = GeneratedImageBinary | AyGeneratedImageBinary;
@@ -186,18 +186,16 @@ export async function runContentJob(initialJob: ContentJob, workerId: string) {
     deadlineCheck();
     if (isAy(job)) {
       const brief = job.brief as unknown as AyGenerationBrief;
-      const official = getAyCuratedLinks(brief).filter((link) => link.source === "official");
-      const internal = await fetchBrandInternalLinks("ay-tercume", `${brief.topic} ${brief.country}`.trim());
-      const links = dedupeAyLinks([...internal, ...official]).slice(0, 14);
+      const curated = getAyCuratedLinks(brief);
+      const internal = await fetchBrandInternalLinks("ay-tercume", brief);
+      const links = await validatePackageLinks("ay-tercume", dedupeAyLinks([...internal, ...curated]).slice(0, 18));
       cp.research = { links, mode: "verified-ay-wordpress-plus-official-sources", researchedAt: new Date().toISOString() };
     } else {
       const brief = job.brief as unknown as GenerationBrief;
       const research = await researchBrief(brief);
-      const official = research.links.filter((link) => link.source === "official");
-      const internal = await fetchBrandInternalLinks("ttaa", `${brief.topic} ${brief.country}`.trim());
       cp.research = {
         ...research,
-        links: dedupeLinks([...internal, ...official]).slice(0, 14),
+        links: research.links,
         mode: "verified-ttaa-wordpress-plus-official-sources",
       };
     }
@@ -214,12 +212,12 @@ export async function runContentJob(initialJob: ContentJob, workerId: string) {
     if (isAy(job)) {
       const brief = job.brief as unknown as AyGenerationBrief & AyRenderOptions;
       const generated = await generateAyArticle(withoutWordPressTarget(brief), cp.research.links, { jobId: job.id, responseIds: cp.responseIds, onResponseId });
-      const selected = new Set(generated.article.internalLinkSuggestions.map((anchor) => anchor.toLocaleLowerCase("tr-TR")));
-      const internal = cp.research.links.filter((link) => link.source === "internal" && selected.has(link.anchor.toLocaleLowerCase("tr-TR"))).slice(0, 6);
+      const internal = selectInternalLinks(cp.research.links, generated.article.internalLinkSuggestions);
       const official = cp.research.links.filter((link) => link.source === "official");
       const known = new Set(official.map((link) => canonicalLinkHost(link.url)));
       const discovered = generated.discoveredSources.filter((link) => !known.has(canonicalLinkHost(link.url)));
       const links = await validatePackageLinks("ay-tercume", dedupeAyLinks([...internal, ...official, ...discovered]).slice(0, 14), generated.article.slug);
+      assertPackageLinkCoverage("ay-tercume", links);
       cp.package = buildAyContentPackage(generated.article, links, {
         includeH1: brief.includeH1 ?? true,
         visibleBreadcrumb: brief.visibleBreadcrumb ?? true,
@@ -229,8 +227,7 @@ export async function runContentJob(initialJob: ContentJob, workerId: string) {
     } else {
       const brief = job.brief as unknown as GenerationBrief & TtaaRenderOptions;
       const generated = await generateAndEditArticle(withoutWordPressTarget(brief), cp.research.links, { jobId: job.id, responseIds: cp.responseIds, onResponseId });
-      const selected = new Set(generated.article.internalLinkSuggestions.map((anchor) => anchor.toLowerCase()));
-      const internal = cp.research.links.filter((link) => link.source === "internal" && selected.has(link.anchor.toLowerCase())).slice(0, 6);
+      const internal = selectInternalLinks(cp.research.links, generated.article.internalLinkSuggestions);
       const official = cp.research.links.filter((link) => link.source === "official");
       const known = new Set(official.map((link) => canonicalLinkHost(link.url)));
       const discoveredHosts = new Set<string>();
@@ -241,6 +238,7 @@ export async function runContentJob(initialJob: ContentJob, workerId: string) {
         return true;
       });
       const links = await validatePackageLinks("ttaa", dedupeLinks([...internal, ...official, ...discovered]).slice(0, 14), generated.article.slug);
+      assertPackageLinkCoverage("ttaa", links);
       cp.package = buildTtaaContentPackage(generated.article, links, {
         includeH1: brief.includeH1 ?? true,
         visibleBreadcrumb: brief.visibleBreadcrumb ?? true,

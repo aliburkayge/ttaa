@@ -91,7 +91,7 @@ export function dedupeLinks(links: ResearchedLink[]) {
 export function getCuratedLinks(brief: LinkBrief): ResearchedLink[] {
   const haystack = `${brief.topic} ${brief.audience} ${brief.country} ${brief.documentType}`.toLowerCase();
   const topicSpecificWhatsApp = { ...INTERNAL.order, url: buildTtaaWhatsAppUrl(brief.topic) };
-  const links: ResearchedLink[] = [INTERNAL.translation, topicSpecificWhatsApp, INTERNAL.check, INTERNAL.deliver, INTERNAL.contacts];
+  const links: ResearchedLink[] = [INTERNAL.translation, topicSpecificWhatsApp, INTERNAL.check, INTERNAL.deliver, INTERNAL.contacts, OFFICIAL.iso17100];
 
   if (/apostille|legalization|attestation|embassy|consulate/.test(haystack)) links.push(INTERNAL.apostille, OFFICIAL.hcch);
   if (/personal|birth|marriage|degree|diploma|certificate|passport|police/.test(haystack)) links.push(INTERNAL.personal);

@@ -2,9 +2,16 @@ import type { JobBrand } from "./jobs";
 import type { ResearchedLink } from "./link-catalog";
 
 type WordPressSearchItem = {
+  id?: number;
   title?: string;
   url?: string;
   subtype?: string;
+};
+
+export type InternalLinkBrief = {
+  topic: string;
+  country?: string;
+  documentType?: string;
 };
 
 export type VerifiedLink = ResearchedLink & {
@@ -42,23 +49,90 @@ function sameHost(left: URL, right: URL) {
   return left.hostname.replace(/^www\./, "").toLowerCase() === right.hostname.replace(/^www\./, "").toLowerCase();
 }
 
-export async function fetchBrandInternalLinks(brand: JobBrand, topic: string): Promise<VerifiedLink[]> {
+const SEARCH_STOP_WORDS = new Set([
+  "about", "after", "and", "before", "for", "from", "guide", "into", "need", "one", "service", "services", "the", "translation", "what", "which", "with", "you", "your",
+  "bir", "bu", "hangi", "hakkinda", "icin", "ile", "nasil", "nedir", "rehberi", "sureci", "tercume", "ceviri", "hizmeti", "hizmetleri",
+]);
+
+function searchTokens(value: string) {
+  return value.toLocaleLowerCase("tr-TR")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(/\s+/)
+    .filter((token) => token.length >= 3 && !SEARCH_STOP_WORDS.has(token));
+}
+
+export function wordpressSearchQueries(brief: InternalLinkBrief) {
+  const topic = brief.topic.trim();
+  const tokens = searchTokens(`${brief.topic} ${brief.country || ""} ${brief.documentType || ""}`);
+  const values = [
+    topic,
+    brief.documentType?.trim() || "",
+    brief.country?.trim() || "",
+    ...tokens.slice(0, 6),
+  ].filter(Boolean);
+  return [...new Set(values.map((value) => value.toLocaleLowerCase("tr-TR")))].slice(0, 8);
+}
+
+function relevanceScore(item: WordPressSearchItem, brief: InternalLinkBrief, rank: number) {
+  let path = item.url || "";
+  try { path = new URL(path).pathname; } catch { /* Keep the supplied path. */ }
+  const target = searchTokens(`${item.title || ""} ${path}`);
+  const wanted = searchTokens(`${brief.topic} ${brief.country || ""} ${brief.documentType || ""}`);
+  const targetSet = new Set(target);
+  const overlap = wanted.reduce((score, token) => score + (targetSet.has(token) ? 6 : 0), 0);
+  const topicPhrase = searchTokens(brief.topic).join(" ");
+  const targetPhrase = target.join(" ");
+  return overlap + (topicPhrase && targetPhrase.includes(topicPhrase) ? 18 : 0) + Math.max(0, 5 - rank);
+}
+
+export function selectInternalLinks(links: ResearchedLink[], suggestions: string[], minimum = 3, maximum = 6) {
+  const internal = links.filter((link) => link.source === "internal" && !/^https:\/\/(?:api\.)?whatsapp\.com/i.test(link.url));
+  const requested = new Set(suggestions.map((anchor) => anchor.toLocaleLowerCase("tr-TR")));
+  const selected = internal.filter((link) => requested.has(link.anchor.toLocaleLowerCase("tr-TR")));
+  const live = internal.filter((link) => /^Published |^Yayımlanmış /i.test(link.reason));
+  const curated = internal.filter((link) => !live.includes(link));
+  const candidates = [...live.slice(0, 2), ...curated, ...live.slice(2)];
+  for (const link of candidates) {
+    if (selected.length >= Math.max(minimum, Math.min(maximum, internal.length))) break;
+    if (!selected.some((item) => item.url === link.url)) selected.push(link);
+  }
+  return selected.slice(0, maximum);
+}
+
+export function assertPackageLinkCoverage(brand: JobBrand, links: ResearchedLink[]) {
+  const internalCount = links.filter((link) => link.source === "internal" && !/^https:\/\/(?:api\.)?whatsapp\.com/i.test(link.url)).length;
+  const officialCount = links.filter((link) => link.source === "official").length;
+  if (internalCount < 3 || officialCount < 1) {
+    const label = brand === "ay-tercume" ? "AY Tercüme" : "TTAA";
+    throw new Error(`${label} link denetimi başarısız: en az 3 doğrulanmış site içi bağlantı ve 1 resmî dış kaynak gerekir.`);
+  }
+}
+
+export async function fetchBrandInternalLinks(brand: JobBrand, brief: InternalLinkBrief, currentSlug?: string): Promise<VerifiedLink[]> {
   const base = brandBaseUrl(brand);
-  const params = new URLSearchParams({
-    search: topic.trim(),
-    per_page: "30",
-    type: "post",
-    subtype: "post,page",
-  });
   try {
-    const response = await fetch(`${base}/wp-json/wp/v2/search?${params}`, {
-      headers: { Accept: "application/json" },
-      cache: "no-store",
-      signal: AbortSignal.timeout(15_000),
+    const queries = wordpressSearchQueries(brief);
+    const responses = await Promise.all(queries.map(async (search) => {
+      const params = new URLSearchParams({ search, per_page: "20", type: "post", subtype: "post,page" });
+      const response = await fetch(`${base}/wp-json/wp/v2/search?${params}`, {
+        headers: { Accept: "application/json" }, cache: "no-store", signal: AbortSignal.timeout(15_000),
+      });
+      if (!response.ok) return [] as WordPressSearchItem[];
+      return response.json() as Promise<WordPressSearchItem[]>;
+    }));
+    const ranked = new Map<string, { item: WordPressSearchItem; score: number }>();
+    responses.flatMap((items, queryIndex) => items.map((item, rank) => ({ item, rank: rank + queryIndex }))).forEach(({ item, rank }) => {
+      if (!item.url) return;
+      const score = relevanceScore(item, brief, rank);
+      const previous = ranked.get(item.url);
+      if (!previous || score > previous.score) ranked.set(item.url, { item, score });
     });
-    if (!response.ok) return [];
-    const items = await response.json() as WordPressSearchItem[];
-    const candidates = items
+    const candidates = [...ranked.values()]
+      .filter(({ score }) => score >= 6)
+      .sort((left, right) => right.score - left.score)
+      .map(({ item }) => item)
       .filter((item) => item.subtype === "post" || item.subtype === "page")
       .filter((item) => Boolean(item.title && item.url))
       .map((item) => ({
@@ -66,8 +140,9 @@ export async function fetchBrandInternalLinks(brand: JobBrand, topic: string): P
         url: item.url || "",
         reason: `Published ${brand === "ay-tercume" ? "AY Tercüme" : "TTAA"} ${item.subtype}`,
         source: "internal" as const,
-      }));
-    return validateInternalLinks(brand, candidates);
+      }))
+      .slice(0, 12);
+    return validateInternalLinks(brand, candidates, currentSlug);
   } catch {
     return [];
   }

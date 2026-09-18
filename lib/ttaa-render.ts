@@ -70,10 +70,22 @@ function buildHtml(article: GeneratedArticle, links: ResearchedLink[], options: 
     ? `<div class="ttaa-title" role="heading" aria-level="2">${escapeHtml(article.title)}</div>`
     : `<h1 class="ttaa-title">${escapeHtml(article.title)}</h1>`;
   const breadcrumb = options.visibleBreadcrumb === false ? "" : `<nav class="ttaa-breadcrumb" aria-label="Breadcrumb"><a href="/">Home</a><span aria-hidden="true">›</span><a href="/services/translation/">Translation Services</a><span aria-hidden="true">›</span><span aria-current="page">${escapeHtml(article.title)}</span></nav>`;
-  const sections = article.sections.map((section, index) => `<section class="ttaa-section" aria-labelledby="ttaa-section-${index + 1}">
+  const nextContextLink = (source: ResearchedLink["source"]) => {
+    const link = links.find((item) => item.source === source && !used.has(item.url));
+    if (!link) return "";
+    used.add(link.url);
+    const label = source === "internal" ? "Related TTAA guidance" : "Official reference";
+    return `<p class="ttaa-related-reading"><strong>${label}:</strong> <a class="ttaa-context-link ttaa-link-${source}" href="${escapeHtml(link.url)}"${source === "official" ? ' target="_blank" rel="noopener noreferrer"' : ""}>${escapeHtml(link.anchor)}</a></p>`;
+  };
+  const sections = article.sections.map((section, index) => {
+    const body = paragraphs(section.body);
+    const items = section.items.length ? `<ul class="ttaa-list">${section.items.map((item) => `<li><span class="ttaa-check" aria-hidden="true">✓</span><span>${linkedText(item, links, used)}</span></li>`).join("")}</ul>` : "";
+    const related = nextContextLink("internal") + (index % 2 === 1 ? nextContextLink("official") : "");
+    return `<section class="ttaa-section" aria-labelledby="ttaa-section-${index + 1}">
   <div class="ttaa-section-heading"><span class="ttaa-section-line" aria-hidden="true"></span><div><span class="ttaa-section-label">SECTION ${String(index + 1).padStart(2, "0")}</span><h2 id="ttaa-section-${index + 1}">${escapeHtml(section.title)}</h2></div></div>
-  <div class="ttaa-content-card">${paragraphs(section.body)}${section.items.length ? `<ul class="ttaa-list">${section.items.map((item) => `<li><span class="ttaa-check" aria-hidden="true">✓</span><span>${linkedText(item, links, used)}</span></li>`).join("")}</ul>` : ""}</div>
-</section>${index === 1 ? "\n<!-- TTAA_INLINE_IMAGE -->" : ""}`).join("\n");
+  <div class="ttaa-content-card">${body}${items}${related}</div>
+</section>${index === 1 ? "\n<!-- TTAA_INLINE_IMAGE -->" : ""}`;
+  }).join("\n");
   const faqs = article.faqs.map((faq) => `<article class="ttaa-faq-item"><h3>${escapeHtml(faq.question)}</h3><p>${linkedText(faq.answer, links, used)}</p></article>`).join("");
   const internal = links.filter((link) => link.source === "internal").slice(0, 6);
   const official = links.filter((link) => link.source === "official").slice(0, 5);

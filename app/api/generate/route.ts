@@ -7,6 +7,7 @@ import { researchBrief } from "../../../lib/research";
 import { classifyJobError } from "../../../lib/job-errors";
 import { newRequestId } from "../../../lib/observability";
 import { withDeadline } from "../../../lib/deadline";
+import { assertPackageLinkCoverage, selectInternalLinks } from "../../../lib/internal-links";
 
 export const runtime = "nodejs";
 export const maxDuration = 840;
@@ -48,8 +49,7 @@ export async function POST(request: Request) {
 
     const research = await researchBrief(normalizedBrief);
     const generated = await generateAndEditArticle(withoutWordPressTarget(normalizedBrief), research.links);
-    const selectedInternalAnchors = new Set(generated.article.internalLinkSuggestions.map((anchor) => anchor.toLowerCase()));
-    const selectedInternalLinks = research.links.filter((link) => link.source === "internal" && selectedInternalAnchors.has(link.anchor.toLowerCase())).slice(0, 6);
+    const selectedInternalLinks = selectInternalLinks(research.links, generated.article.internalLinkSuggestions);
     const officialLinks = research.links.filter((link) => link.source === "official");
     const curatedOfficialHosts = new Set(officialLinks.map((link) => canonicalLinkHost(link.url)));
     const discoveredHosts = new Set<string>();
@@ -60,6 +60,7 @@ export async function POST(request: Request) {
       return true;
     });
     const links = dedupeLinks([...selectedInternalLinks, ...officialLinks, ...uniqueDiscoveredSources]).slice(0, 14);
+    assertPackageLinkCoverage("ttaa", links);
 
     return NextResponse.json({
       article: generated.article,

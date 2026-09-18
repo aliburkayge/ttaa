@@ -8,7 +8,7 @@ export type AyLinkBrief = {
 };
 
 function ayBaseUrl() {
-  return (process.env.AY_WP_URL || process.env.AY_SITE_URL || "").trim().replace(/\/$/, "");
+  return (process.env.AY_WP_URL || process.env.AY_SITE_URL || "https://aytercume.com").trim().replace(/\/$/, "");
 }
 
 function internalUrl(path: string) {
@@ -51,9 +51,11 @@ export function dedupeAyLinks(links: ResearchedLink[]) {
 export function getAyCuratedLinks(brief: AyLinkBrief): ResearchedLink[] {
   const haystack = `${brief.topic} ${brief.audience} ${brief.country} ${brief.documentType}`.toLocaleLowerCase("tr-TR");
   const links: ResearchedLink[] = [
+    internal("tercüme hizmetleri", "/hizmetlerimiz/", "AY Tercüme hizmetler sayfası"),
     internal("yeminli tercüme", "/yeminli-tercume/", "AY Tercüme yeminli tercüme hizmeti"),
     internal("noter onaylı tercüme", "/noter-onayli-tercume/", "AY Tercüme noter onayı süreci"),
     { anchor: "belgenizi incelemeye gönderin", url: buildAyContactUrl(brief.topic), reason: "Belge inceleme ve teklif için AY Tercüme iletişim kanalı", source: "internal" },
+    OFFICIAL.iso17100,
   ];
 
   if (/apostil|apostille|tasdik|legalizasyon|legalization|elçilik|konsolosluk/.test(haystack)) {

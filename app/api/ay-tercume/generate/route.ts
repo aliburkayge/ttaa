@@ -8,6 +8,7 @@ import { canonicalLinkHost, type ResearchedLink } from "../../../../lib/link-cat
 import { classifyJobError } from "../../../../lib/job-errors";
 import { newRequestId } from "../../../../lib/observability";
 import { withDeadline } from "../../../../lib/deadline";
+import { assertPackageLinkCoverage, fetchBrandInternalLinks, selectInternalLinks, validatePackageLinks } from "../../../../lib/internal-links";
 
 export const runtime = "nodejs";
 export const maxDuration = 840;
@@ -23,22 +24,8 @@ function validateBrief(brief: GenerateRequest) {
   if ((brief.sourceText?.length || 0) > 50_000) throw new Error("Kaynak metin 50.000 karakterden kısa olmalıdır.");
 }
 
-function plainText(value: string) {
-  return value.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&#8217;/g, "’").replace(/&#038;/g, "&").trim();
-}
-
 async function liveAyLinks(brief: GenerateRequest): Promise<ResearchedLink[]> {
-  const base = process.env.AY_WP_URL?.trim().replace(/\/$/, "");
-  if (!base) return [];
-  try {
-    const query = new URLSearchParams({ search: `${brief.topic} ${brief.country}`.trim(), per_page: "8", type: "post" });
-    const response = await fetch(`${base}/wp-json/wp/v2/search?${query}`, { headers: { Accept: "application/json" }, cache: "no-store", signal: AbortSignal.timeout(15_000) });
-    if (!response.ok) return [];
-    const results = (await response.json()) as Array<{ title?: string; url?: string; subtype?: string }>;
-    return results.filter((item) => item.url?.startsWith(base) && item.title).map((item) => ({ anchor: plainText(item.title || ""), url: item.url || "", reason: `İlgili AY Tercüme ${item.subtype || "içerik"} sayfası`, source: "internal" as const }));
-  } catch {
-    return [];
-  }
+  return fetchBrandInternalLinks("ay-tercume", brief);
 }
 
 export async function POST(request: Request) {
@@ -68,10 +55,9 @@ export async function POST(request: Request) {
     };
     const live = await liveAyLinks(normalized);
     const researchedAt = new Date().toISOString();
-    const approved = dedupeAyLinks([...getAyCuratedLinks(normalized), ...live]).slice(0, 14);
+    const approved = await validatePackageLinks("ay-tercume", dedupeAyLinks([...live, ...getAyCuratedLinks(normalized)]).slice(0, 18));
     const generated = await generateAyArticle(withoutWordPressTarget(normalized), approved);
-    const selectedAnchors = new Set(generated.article.internalLinkSuggestions.map((anchor) => anchor.toLocaleLowerCase("tr-TR")));
-    const selectedInternal = approved.filter((link) => link.source === "internal" && selectedAnchors.has(link.anchor.toLocaleLowerCase("tr-TR"))).slice(0, 6);
+    const selectedInternal = selectInternalLinks(approved, generated.article.internalLinkSuggestions);
     const official = approved.filter((link) => link.source === "official");
     const knownHosts = new Set(official.map((link) => canonicalLinkHost(link.url)));
     const discoveredHosts = new Set<string>();
@@ -82,6 +68,7 @@ export async function POST(request: Request) {
       return true;
     });
     const links = dedupeAyLinks([...selectedInternal, ...official, ...discovered]).slice(0, 14);
+    assertPackageLinkCoverage("ay-tercume", links);
     const research = { mode: process.env.AY_WP_URL ? "live-ay-wordpress-plus-official-web-search" : "curated-ay-links-plus-official-web-search", researchedAt };
     const contentPackage = buildAyContentPackage(generated.article, links, normalized, generated.trace, research);
     return NextResponse.json({ package: { ...contentPackage, wordpressTarget: target } });
