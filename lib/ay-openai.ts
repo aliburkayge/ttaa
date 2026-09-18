@@ -252,6 +252,25 @@ function occurrences(text: string, phrase: string) {
   return (` ${fold(text)} `.match(new RegExp(` ${needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} `, "g")) || []).length;
 }
 
+export function isAySubmissionFaqQuestion(question: string) {
+  const normalized = fold(question);
+  const mentionsMaterial = /\b(?:belge|evrak|dosya|dokuman|metin)\w*/.test(normalized);
+  const mentionsSubmission = /\b(?:gonder|paylas|ilet|yukle|sun)\w*/.test(normalized);
+  return mentionsMaterial && mentionsSubmission;
+}
+
+export function ensureAySubmissionFaq(article: GeneratedArticle): GeneratedArticle {
+  if (article.faqs.some((faq) => isAySubmissionFaqQuestion(faq.question))) return article;
+  const requiredFaq = {
+    question: "İnceleme veya teklif için hangi dosyaları göndermeliyim?",
+    answer: "Çevrilecek belgenin okunaklı taramasını veya dosyasını, kaynak ve hedef dili, belgenin kullanılacağı ülke ya da kurumu, istenen teslim süresini ve varsa noter, apostil veya tasdik talebini paylaşın. Belgenin tüm sayfalarının eksiksiz ve okunaklı olması ilk değerlendirmeyi hızlandırır. Dosya incelendikten sonra kapsam, uygun işlem sırası ve teklif netleştirilir.",
+  };
+  const faqs = article.faqs.length >= 10
+    ? [...article.faqs.slice(0, 9), requiredFaq]
+    : [...article.faqs, requiredFaq];
+  return { ...article, faqs };
+}
+
 function deterministicGate(pkg: { article: GeneratedArticle; topicLock: TopicLock; audit: TopicAudit }, brief: AyGenerationBrief) {
   const issues = [...auditKeywordPolicy(pkg.article, brief).issues];
   const text = visibleText(pkg.article);
@@ -268,7 +287,7 @@ function deterministicGate(pkg: { article: GeneratedArticle; topicLock: TopicLoc
   const questions = pkg.article.faqs.map((faq) => fold(faq.question));
   if (!questions[0]?.includes("ay tercume") || !/(nasil|yardim|destek)/.test(questions[0])) issues.push("İlk FAQ, AY Tercüme'nin bu konuda nasıl yardımcı olduğunu açıklamalı.");
   if (questions.filter((question) => question.includes("ay tercume")).length < 2) issues.push("En az iki FAQ sorusu AY Tercüme'yi açıkça anmalı.");
-  if (!questions.some((question) => /(belge|evrak).*(gonder|paylas)|(teklif|fiyat).*(icin|almak)/.test(question))) issues.push("Bir FAQ, inceleme veya teklif için ne gönderileceğini açıklamalı.");
+  if (!pkg.article.faqs.some((faq) => isAySubmissionFaqQuestion(faq.question))) issues.push("Bir FAQ sorusunda inceleme veya teklif için hangi belge, evrak ya da dosyanın gönderileceği açıkça sorulmalı.");
   if (new Set(questions).size !== questions.length) issues.push("FAQ soruları benzersiz olmalı.");
   if (pkg.article.imageSuggestions.length !== 2) issues.push("Bir featured ve bir içerik görsel planı olmalı.");
   if (/\bofis/.test(fold(text))) issues.push("Blog metninde ofis veya fiziksel lokasyon karşılaştırması yapılamaz; hizmet erişimi doğrudan ve doğal anlatılmalı.");
@@ -289,7 +308,7 @@ function parsePackage(response: OpenAIResponse, approvedLinks: ResearchedLink[],
   const normalizedFocus = fold(focusKeyword);
   const secondaryKeywords = parsed.secondaryKeywords.map((item) => item.trim()).filter((item, index, list) => Boolean(item) && fold(item) !== normalizedFocus && list.findIndex((candidate) => fold(candidate) === fold(item)) === index).slice(0, 5);
   const imageSuggestions = parsed.imageSuggestions.slice(0, 2);
-  const article: GeneratedArticle = {
+  const article = ensureAySubmissionFaq({
     eyebrow: parsed.eyebrow,
     title: parsed.title,
     intro: parsed.intro,
@@ -305,7 +324,7 @@ function parsePackage(response: OpenAIResponse, approvedLinks: ResearchedLink[],
     imagePrompt: imageSuggestions[0]?.imagePrompt || "",
     imageSuggestions,
     internalLinkSuggestions: selectedAnchors,
-  };
+  } satisfies GeneratedArticle);
   return { article, topicLock: parsed.topicLock, audit: parsed.audit };
 }
 

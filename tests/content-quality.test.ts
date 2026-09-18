@@ -3,6 +3,7 @@ import test from "node:test";
 import { auditFaqIntents } from "../lib/faq-policy";
 import { classifyJobError } from "../lib/job-errors";
 import { faqGate, generateAndEditArticle } from "../lib/openai";
+import { ensureAySubmissionFaq, isAySubmissionFaqQuestion } from "../lib/ay-openai";
 
 const topic = "QVP Verification for KSA Work Visa";
 const answer = "Send clear scans of the relevant qualification documents and the receiving institution's instructions for review. Include the requested language and intended use so the team can assess the translation scope. Requirements depend on the receiving institution, which makes the final acceptance decision.";
@@ -98,6 +99,27 @@ test("quotation is a quality error while real quota and billing errors retain th
     assert.equal(classifyJobError(new Error(message)).code, "BILLING_OR_QUOTA");
   }
   assert.equal(classifyJobError(new Error("Too many requests HTTP 429")).code, "RATE_LIMITED");
+});
+
+test("AY submission FAQ recognizes natural Turkish wording and adds a safe fallback", () => {
+  for (const question of [
+    "Teklif için hangi dosyaları göndermeliyim?",
+    "İnceleme amacıyla hangi belgeleri iletmeliyim?",
+    "Teknik tercüme için evrakları nasıl paylaşabilirim?",
+  ]) assert.equal(isAySubmissionFaqQuestion(question), true, question);
+
+  for (const question of [
+    "Teknik tercüme fiyatı nasıl belirlenir?",
+    "Dosya biçimleri nelerdir?",
+    "Teklif ne zaman hazırlanır?",
+  ]) assert.equal(isAySubmissionFaqQuestion(question), false, question);
+
+  const article = { faqs: Array.from({ length: 10 }, (_, index) => ({ question: `Soru ${index + 1}`, answer: "Yanıt" })) } as Parameters<typeof ensureAySubmissionFaq>[0];
+  const repaired = ensureAySubmissionFaq(article);
+  assert.equal(repaired.faqs.length, 10);
+  assert.equal(repaired.faqs[0].question, "Soru 1");
+  assert.equal(isAySubmissionFaqQuestion(repaired.faqs[9].question), true);
+  assert.match(repaired.faqs[9].answer, /kaynak ve hedef dili/);
 });
 
 function modelArticle(valid: boolean) {
