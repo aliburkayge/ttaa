@@ -6,6 +6,7 @@ import { isSameOriginPanelRequest } from "../../../../../lib/qr-request-origin";
 import { validatePrototypeDetails } from "../../../../../lib/qr-prototype";
 import { attachWordPressMedia, deleteWordPressMedia, uploadWordPressMedia } from "../../../../../lib/wordpress";
 import { getTtaaQrRecord, loadTtaaQrPdf } from "../../../../../lib/ttaa-qr-records";
+import { generateVerificationDocumentNumber } from "../../../../../lib/verification-document-number";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -120,8 +121,19 @@ export async function POST(request: Request) {
 
     const legacy = mode === "import" ? await getTtaaQrRecord(String(data.get("documentNumber") || "")) : null;
     if (mode === "import" && !legacy) return json({ error: "Aktarılacak eski TTAA kaydı bulunamadı." }, 404);
+    let generatedNumber = "";
+    let generatedToken = "";
+    if (!legacy) {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        generatedNumber = generateVerificationDocumentNumber("ttaa");
+        generatedToken = documentToken(generatedNumber);
+        if (!await findTtaaVerificationDocument(generatedToken)) break;
+        generatedNumber = "";
+      }
+      if (!generatedNumber) throw new Error("Benzersiz belge numarası üretilemedi. Lütfen yeniden deneyin.");
+    }
     const details = validatePrototypeDetails(legacy?.details || {
-      documentNumber: String(data.get("documentNumber") || ""),
+      documentNumber: generatedNumber,
       customer: String(data.get("customer") || ""),
       documentType: String(data.get("documentType") || ""),
       documentDate: String(data.get("documentDate") || ""),
@@ -129,7 +141,7 @@ export async function POST(request: Request) {
     });
     const sourcePdf = legacy?.pdfPath ? await loadTtaaQrPdf(details.documentNumber) : null;
     const uploadFile = sourcePdf ? new File([sourcePdf.bytes], sourcePdf.name, { type: "application/pdf" }) : file;
-    const token = documentToken(details.documentNumber);
+    const token = legacy ? documentToken(details.documentNumber) : generatedToken;
     const previous = await findTtaaVerificationDocument(token);
     if (previous?.status === "publish") return json({ error: previous.hasFile ? "Bu belge numarası için sayfa ve PDF zaten var." : "Bu belge numarası için sayfa hazır. Aşağıdaki ‘Mevcut belgeye PDF ekle’ alanını kullanın.", url: previous.url, hasFile: previous.hasFile }, 409);
     let media;

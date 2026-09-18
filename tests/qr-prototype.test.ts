@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createAyVerificationLabel, createPrototypeLabel, prototypeQrText, validatePrototypeDetails, type PrototypeDetails } from "../lib/qr-prototype.ts";
+import { generateVerificationDocumentNumber } from "../lib/verification-document-number.ts";
 
 const details: PrototypeDetails = {
   documentNumber: "TEST-001",
@@ -49,4 +50,19 @@ test("form rejects malformed dates and Drive links", () => {
   assert.throws(() => validatePrototypeDetails({ ...details, driveLink: "https://drive.google.com.evil.test/file" }), /Drive/);
   assert.throws(() => validatePrototypeDetails({ ...details, driveLink: "http://drive.google.com/file" }), /Drive/);
   assert.throws(() => validatePrototypeDetails({ ...details, documentNumber: "A\nB" }), /Belge numarası/);
+});
+
+test("new verification document numbers are branded, mixed-case and unpredictable", () => {
+  const generated = Array.from({ length: 100 }, () => generateVerificationDocumentNumber("ay-tercume"));
+  const ttaa = generateVerificationDocumentNumber("ttaa");
+  assert.equal(new Set(generated).size, generated.length);
+  for (const number of [...generated, ttaa]) {
+    const randomPart = number.replace(/^(AY|TTAA)-/, "").replaceAll("-", "");
+    assert.match(randomPart, /^[A-Za-z2-9]{16}$/);
+    assert.match(randomPart, /[A-Z]/);
+    assert.match(randomPart, /[a-z]/);
+    assert.match(randomPart, /[2-9]/);
+  }
+  assert.match(generated[0], /^AY-/);
+  assert.match(ttaa, /^TTAA-/);
 });

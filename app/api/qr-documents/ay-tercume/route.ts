@@ -5,6 +5,7 @@ import { ayVerificationToken } from "../../../../lib/ay-verification-token";
 import { isSameOriginPanelRequest } from "../../../../lib/qr-request-origin";
 import { validatePrototypeDetails } from "../../../../lib/qr-prototype";
 import { attachWordPressMedia, deleteWordPressMedia, uploadWordPressMedia } from "../../../../lib/wordpress";
+import { generateVerificationDocumentNumber } from "../../../../lib/verification-document-number";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -116,16 +117,22 @@ export async function POST(request: Request) {
       return json({ pageId: page.id, url: page.url, mediaId: media.id, hasFile: true, details: page.document, warning });
     }
 
+    let documentNumber = "";
+    let token = "";
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      documentNumber = generateVerificationDocumentNumber("ay-tercume");
+      token = documentToken(documentNumber);
+      if (!await findAyVerificationDocument(token)) break;
+      documentNumber = "";
+    }
+    if (!documentNumber) throw new Error("Benzersiz belge numarası üretilemedi. Lütfen yeniden deneyin.");
     const details = validatePrototypeDetails({
-      documentNumber: String(data.get("documentNumber") || ""),
+      documentNumber,
       customer: String(data.get("customer") || ""),
       documentType: String(data.get("documentType") || ""),
       documentDate: String(data.get("documentDate") || ""),
       driveLink: "",
     });
-    const token = documentToken(details.documentNumber);
-    const previous = await findAyVerificationDocument(token);
-    if (previous?.status === "publish") return json({ error: previous.hasFile ? "Bu belge numarası için sayfa ve PDF zaten var." : "Bu belge numarası için sayfa hazır. Aşağıdaki ‘Mevcut belgeye PDF ekle’ alanını kullanın.", url: previous.url, hasFile: previous.hasFile }, 409);
     let media;
     if (file) {
       try { media = await uploadPdf(file, token, details.documentNumber); }
@@ -149,7 +156,7 @@ export async function POST(request: Request) {
       throw error;
     }
     const attachment = media ? await attachWordPressMedia([media.id], page.id, "ay-tercume") : null;
-    return json({ pageId: page.id, url: page.url, mediaId: media?.id || null, hasFile: Boolean(media), reused: page.reused, warning: attachment?.warning || null }, 201);
+    return json({ pageId: page.id, url: page.url, mediaId: media?.id || null, hasFile: Boolean(media), details, reused: page.reused, warning: attachment?.warning || null }, 201);
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "Ay Tercüme doğrulama sayfası oluşturulamadı." }, 500);
   }

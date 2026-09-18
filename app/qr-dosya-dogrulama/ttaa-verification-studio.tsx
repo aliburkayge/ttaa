@@ -144,21 +144,22 @@ export default function TtaaVerificationStudio({ today }: { today: string }) {
     if (busy) return;
     setError(""); setExistingUrl(""); setNotice("");
     try {
-      const details = validatePrototypeDetails(form);
+      const submittedDetails = validatePrototypeDetails({ ...form, documentNumber: "AUTO-a2" });
       if (file && (!/\.pdf$/i.test(file.name) || !file.size || file.size > 8 * 1024 * 1024)) throw new Error("En fazla 8 MB boyutunda bir PDF seçin.");
       if (!confirmed) throw new Error("Belgenin doğrulandığını ve bilgilerin herkese açık gösterileceğini onaylayın.");
       const data = new FormData();
-      for (const key of ["documentNumber", "customer", "documentType", "documentDate"] as const) data.set(key, details[key]);
+      for (const key of ["customer", "documentType", "documentDate"] as const) data.set(key, submittedDetails[key]);
       data.set("mode", "create");
       if (file) data.set("file", file);
       data.set("confirmed", "true");
       setBusy(true);
       const response = await fetch("/api/qr-documents/ttaa/verification", { method: "POST", body: data });
-      const payload = await response.json() as { error?: string; url?: string; warning?: string | null; hasFile?: boolean };
-      if (!response.ok || !payload.url) {
+      const payload = await response.json() as { error?: string; url?: string; warning?: string | null; hasFile?: boolean; details?: PrototypeDetails };
+      if (!response.ok || !payload.url || !payload.details) {
         setExistingUrl(payload.url || "");
         throw new Error(payload.error || "WordPress doğrulama sayfası oluşturulamadı.");
       }
+      const details = validatePrototypeDetails({ ...payload.details, driveLink: "" });
       const label = await createTtaaVerificationLabel(details, payload.url);
       setForm(details);
       setResult({ details, file, label, pageUrl: payload.url, hasFile: Boolean(payload.hasFile) });
@@ -272,7 +273,7 @@ export default function TtaaVerificationStudio({ today }: { today: string }) {
         <form onSubmit={generate}>
           <fieldset disabled={busy}>
             <div className="qr-fields-two">
-              <label>Belge numarası <span>*</span><input ref={numberInput} value={form.documentNumber} onChange={(event) => change("documentNumber", event.target.value)} required maxLength={64} placeholder="Örn. TTAA2026009" autoComplete="off" /></label>
+              <label>Belge / dosya numarası <em>Otomatik</em><input ref={numberInput} value={form.documentNumber} readOnly placeholder="Kayıt sırasında güvenli numara atanır" /><small>Büyük/küçük harf ve rakamlardan oluşur; elle değiştirilemez.</small></label>
               <label>Belge tarihi <span>*</span><input type="date" value={form.documentDate} onChange={(event) => change("documentDate", event.target.value)} required /></label>
             </div>
             <label>Müşteri <span>*</span><input value={form.customer} onChange={(event) => change("customer", event.target.value)} required maxLength={120} placeholder="Müşteri adı veya firma unvanı" autoComplete="off" /><small>Doğrulama sayfasında herkese açık görünür.</small></label>
@@ -304,7 +305,7 @@ export default function TtaaVerificationStudio({ today }: { today: string }) {
     {legacyRecords.length || legacyError ? <section className="qr-demo-list" aria-labelledby="ttaa-legacy-title"><div className="qr-list-heading"><div><h2 id="ttaa-legacy-title">Önceki özel TTAA kayıtları <span>{legacyRecords.length}</span></h2><p>Bu kayıtlar silinmedi. Resmî doğrulama bağlantısı için aktarın ve yeni QR etiketini yazdırın.</p></div></div>{legacyError ? <p className="qr-form-error" role="alert">{legacyError}</p> : null}{legacyRecords.length ? <div className="qr-table-scroll"><table><thead><tr><th>Belge no</th><th>Müşteri</th><th>Özel PDF</th><th>İşlem</th></tr></thead><tbody>{legacyRecords.map((entry) => <tr key={entry.id}><td><strong>{entry.details.documentNumber}</strong></td><td>{entry.details.customer}</td><td>{entry.hasFile ? "PDF mevcut" : "PDF yok"}</td><td><button type="button" className="qr-text-button" disabled={Boolean(legacyBusyId)} onClick={() => void importLegacy(entry)}>{legacyBusyId === entry.id ? "Aktarılıyor…" : "Resmî sayfaya taşı / aç"}</button></td></tr>)}</tbody></table></div> : null}</section> : null}
 
     <section className="qr-update-card" aria-labelledby="qr-update-title"><div className="qr-panel-heading"><div><small>03 · PDF YÖNETİMİ</small><h2 id="qr-update-title">Kayıtlı belgenin PDF’si</h2></div></div><p className="qr-update-intro">Listeden bir kayıt açın veya belge numarasıyla arayın. PDF ekleyebilir, değiştirebilir veya kaldırabilirsiniz; basılmış QR adresi aynı kalır.</p>
-      <form className="qr-update-search" onSubmit={lookupDocument}><label>Belge numarası<input value={lookupNumber} onChange={(event) => { setLookupNumber(event.target.value); setFound(null); setLookupError(""); setLookupNotice(""); }} required maxLength={64} placeholder="Örn. TTAA2026009" /></label><button type="submit" className="qr-secondary-button" disabled={lookupBusy || attachBusy}>{lookupBusy ? "Aranıyor…" : "Kaydı bul"}</button></form>
+      <form className="qr-update-search" onSubmit={lookupDocument}><label>Belge numarası<input value={lookupNumber} onChange={(event) => { setLookupNumber(event.target.value); setFound(null); setLookupError(""); setLookupNotice(""); }} required maxLength={64} placeholder="Örn. TTAA-f3Kp-9YxQ-a7Mn-2RvB" /></label><button type="submit" className="qr-secondary-button" disabled={lookupBusy || attachBusy}>{lookupBusy ? "Aranıyor…" : "Kaydı bul"}</button></form>
       {found ? <div className="qr-found-record"><div><small>MEVCUT WORDPRESS SAYFASI</small><strong>{found.details.documentNumber} · {found.details.customer}</strong><span>{found.details.documentDate.split("-").reverse().join(".")} · {found.details.documentType}</span><a href={found.url} target="_blank" rel="noopener noreferrer">Doğrulama sayfasını aç ↗</a><button type="button" className="qr-text-button" disabled={designBusy || attachBusy} onClick={() => void refreshDesign()}>{designBusy ? "Tasarım güncelleniyor…" : "Sayfa tasarımını yenile"}</button></div><span className={`qr-record-status${found.hasFile ? " is-complete" : ""}`}>{found.hasFile ? "PDF yüklü" : "PDF bekleniyor"}</span></div> : null}
       {found ? <form className="qr-attach-form" onSubmit={attachDocument}><label>{found.hasFile ? "Yerine yüklenecek yeni PDF" : "Bu kayda eklenecek PDF"} <span>*</span><input ref={lookupFileInput} className="qr-file-input" type="file" accept=".pdf,application/pdf" required onChange={(event) => { setLookupFile(event.target.files?.[0] || null); setLookupError(""); }} /><small>En fazla 8 MB. Dosya herkese açık doğrulama sayfasında gösterilir.</small></label><label className="qr-confirm"><input type="checkbox" checked={attachConfirmed} onChange={(event) => setAttachConfirmed(event.target.checked)} required /><span>Bu PDF’nin doğru belgeye ait olduğunu kontrol ettim ve herkese açık yayımlanacağını kabul ediyorum.</span></label><div className="qr-form-actions"><button type="submit" className="qr-primary-button" disabled={attachBusy}>{attachBusy ? "PDF kaydediliyor…" : found.hasFile ? "PDF’yi değiştir" : "PDF ekle"}</button>{found.hasFile ? <button type="button" className="qr-danger-button" disabled={attachBusy} onClick={() => void removeDocument()}>PDF’yi kaldır</button> : null}</div></form> : null}
       {lookupError ? <p className="qr-form-error" role="alert">{lookupError}</p> : null}{lookupNotice ? <p className="qr-update-success" role="status">{lookupNotice}</p> : null}
