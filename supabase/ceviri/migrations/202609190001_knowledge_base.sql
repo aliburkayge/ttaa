@@ -1,5 +1,11 @@
-create extension if not exists pgcrypto;
-create extension if not exists pg_trgm;
+create schema if not exists extensions;
+
+-- Uzantılar açıkça `extensions` şemasına kuruluyor; `public`'e bırakılırsa
+-- Supabase linter'ı extension_in_public uyarısı verir (fonksiyonlar public
+-- usage'a sahip her role'den erişilebilir hale gelir). Bunu "sadeleştirip"
+-- şema belirtmeden yazmayın.
+create extension if not exists pgcrypto with schema extensions;
+create extension if not exists pg_trgm with schema extensions;
 
 -- Kapsam --------------------------------------------------------------
 
@@ -101,7 +107,7 @@ create index if not exists tm_segments_exact_idx
 
 -- Bulanık eşleşme
 create index if not exists tm_segments_trgm_idx
-  on public.tm_segments using gin (source_normalized gin_trgm_ops);
+  on public.tm_segments using gin (source_normalized extensions.gin_trgm_ops);
 
 -- Erişim: yalnızca service-role -----------------------------------------
 
