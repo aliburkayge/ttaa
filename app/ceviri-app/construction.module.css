@@ -1,0 +1,70 @@
+.shell { min-height: 100vh; background: #f8fcfe; }
+.back { color: var(--tt-navy); text-decoration: none; font-size: 12px; font-weight: 650; white-space: nowrap; }
+.back:hover { color: var(--tt-blue-dark); }
+.main { display: flex; flex-direction: column; align-items: center; padding: 55px 20px 32px; overflow: hidden; }
+.copy { position: relative; z-index: 1; text-align: center; }
+.label { color: var(--tt-blue-dark); font-size: 14px; font-weight: 750; }
+.copy h1 { margin: 16px 0 18px; font-size: 44px; line-height: 1.16; letter-spacing: 0; font-weight: 800; }
+.copy h1 span { color: var(--tt-blue-dark); }
+.copy p { margin: 0; color: var(--tt-muted); font-size: 14px; line-height: 1.85; }
+.scene { position: relative; width: min(820px, 100%); height: 300px; margin-top: 22px; overflow: hidden; }
+.skyline { position: absolute; inset: 100px 7% 41px; display: flex; align-items: end; justify-content: space-between; gap: 20px; opacity: .6; }
+.skyline i { width: 15%; height: 80%; background: #e5f1f6; border: 1px solid #daeaf1; }
+.skyline i:nth-child(2n) { height: 55%; }
+.skyline i:nth-child(3) { height: 100%; }
+.crane { position: absolute; bottom: 42px; left: 20%; width: 230px; height: 240px; color: var(--tt-blue); }
+.mast { position: absolute; left: 44px; bottom: 0; width: 20px; height: 222px; border: 3px solid currentColor; background: repeating-linear-gradient(45deg, transparent 0 12px, currentColor 13px 15px, transparent 16px 27px); }
+.jib { position: absolute; top: 15px; left: 0; width: 224px; height: 17px; border: 3px solid currentColor; background: repeating-linear-gradient(45deg, transparent 0 10px, currentColor 11px 13px, transparent 14px 22px); }
+.jib::before { content: ""; position: absolute; width: 150px; height: 32px; left: 43px; bottom: 13px; border-top: 2px solid currentColor; transform: rotate(12deg); transform-origin: left bottom; }
+.jib b { position: absolute; left: 0; top: 15px; width: 27px; height: 24px; border-radius: 2px; background: var(--tt-navy); }
+.cabin { position: absolute; top: 31px; left: 62px; width: 25px; height: 24px; background: #d0f1ff; border: 5px solid currentColor; border-radius: 2px; }
+.base { position: absolute; bottom: 0; left: 26px; width: 57px; height: 10px; background: var(--tt-navy); border-radius: 3px 3px 0 0; }
+.hoist { position: absolute; left: 159px; top: 32px; width: 38px; animation: trolley 9s ease-in-out infinite alternate; }
+.cable { width: 2px; height: 99px; margin: auto; background: var(--tt-navy); animation: lift 6s ease-in-out infinite alternate; }
+.load { display: flex; align-items: center; justify-content: center; gap: 3px; width: 42px; height: 35px; border: 2px solid var(--tt-blue); border-radius: 5px; background: white; color: var(--tt-navy); font-size: 17px; font-weight: 750; }
+.load span { color: var(--tt-blue-dark); font-size: 12px; }
+.secondary { left: 68%; bottom: 42px; transform: scale(-.73, .73); transform-origin: bottom left; color: #5e9bad; }
+.secondary .load { transform: scaleX(-1); }
+.secondary .hoist, .secondary .cable { animation-delay: -3s; }
+.building { position: absolute; bottom: 42px; left: 43%; width: 130px; height: 115px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; padding: 10px; border: 6px solid #b2d6e5; border-top: 8px solid var(--tt-blue-dark); background: #edf7fb; }
+.building i { border: 2px solid #c1dfe9; background: #f8fcfe; }
+.materials { position: absolute; left: 13%; bottom: 42px; display: grid; gap: 3px; }
+.materials i { width: 47px; height: 9px; background: #80c5dd; border-right: 8px solid #479bb8; }
+.barrier { position: absolute; right: 12%; bottom: 42px; width: 64px; height: 35px; border-top: 14px solid transparent; border-image: repeating-linear-gradient(120deg, #008fc9 0 9px, #e3f6fd 9px 18px) 14; }
+.barrier i { position: absolute; top: 0; left: 7px; height: 21px; width: 4px; background: var(--tt-navy); }
+.barrier i + i { left: auto; right: 7px; }
+.road { position: absolute; bottom: 0; width: 100%; height: 43px; border-top: 2px solid #bddbe7; background: #edf5f8; }
+.road::after { content: ""; position: absolute; top: 24px; width: 100%; border-top: 2px dashed #c4dce6; }
+.truckLane { position: absolute; bottom: 27px; left: 0; width: 100%; height: 51px; animation: drive 17s linear infinite; }
+.truck { position: relative; width: 94px; height: 51px; }
+.truckBed { position: absolute; left: 2px; top: 7px; width: 56px; height: 28px; display: flex; justify-content: space-evenly; padding: 5px; background: var(--tt-blue); border-bottom: 5px solid var(--tt-blue-dark); border-radius: 2px 2px 4px 8px; }
+.truckBed i { width: 2px; height: 13px; background: #80dcff; }
+.truckCab { position: absolute; right: 0; top: 13px; width: 29px; height: 26px; background: var(--tt-navy); border-radius: 3px 10px 2px 0; }
+.truckCab i { position: absolute; top: 4px; right: 5px; width: 17px; height: 10px; background: #b4eaff; border-radius: 1px 5px 1px 1px; }
+.chassis { position: absolute; left: 0; bottom: 10px; width: 94px; height: 7px; background: var(--tt-navy); }
+.wheel { position: absolute; bottom: 0; left: 13px; width: 20px; height: 20px; border: 5px solid #214c60; border-radius: 50%; background: #d8eaf1; }
+.frontWheel { left: 68px; }
+.reverse { bottom: 5px; animation: drive 23s linear -12s infinite reverse; }
+.reverse .truck { transform: scaleX(-.8) scaleY(.8); transform-origin: bottom center; }
+.reverse .truckBed { background: #6a9eac; border-color: #487c90; }
+.status { display: flex; align-items: center; gap: 8px; margin-top: 25px; color: var(--tt-muted); font-size: 11px; }
+.status i { width: 6px; height: 6px; background: var(--tt-blue); border-radius: 50%; }
+@keyframes drive { from { transform: translateX(-110px); } to { transform: translateX(calc(100% + 10px)); } }
+@keyframes trolley { from { transform: translateX(-35px); } to { transform: translateX(0); } }
+@keyframes lift { from { height: 65px; } to { height: 118px; } }
+@media (max-width: 600px) {
+  .main { padding: 46px 16px 28px; }
+  .copy h1 { font-size: 32px; }
+  .copy p { font-size: 13px; }
+  .scene { height: 270px; margin-top: 32px; }
+  .crane { left: 5%; transform: scale(.8); transform-origin: bottom left; }
+  .secondary { left: 87%; transform: scale(-.58, .58); }
+  .building { left: 40%; width: 95px; height: 91px; gap: 6px; padding: 6px; }
+  .materials { left: 3%; }
+  .barrier { right: 4%; width: 45px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hoist, .cable, .truckLane { animation: none; }
+  .truckLane { left: 16%; }
+  .reverse { left: 65%; }
+}

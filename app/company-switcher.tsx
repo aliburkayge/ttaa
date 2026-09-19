@@ -5,15 +5,16 @@ import Link from "next/link";
 import QrIcon from "./qr-icon";
 
 type CompanySwitcherProps = {
-  current: "ttaa" | "ay-tercume" | "billing" | "ttaa-qr" | "ay-tercume-qr";
+  current: "ttaa" | "ay-tercume" | "billing" | "ttaa-qr" | "ay-tercume-qr" | "translation";
 };
 
 export default function CompanySwitcher({ current }: CompanySwitcherProps) {
   const isTtaa = current === "ttaa";
   const isAyTercume = current === "ay-tercume";
   const isBilling = current === "billing";
+  const isTranslation = current === "translation";
   const isQr = current === "ttaa-qr" || current === "ay-tercume-qr";
-  const isTtaaBrand = isTtaa || current === "ttaa-qr";
+  const isTtaaBrand = isTtaa || current === "ttaa-qr" || isTranslation;
   const isAyBrand = isAyTercume || current === "ay-tercume-qr";
 
   return (
@@ -25,7 +26,7 @@ export default function CompanySwitcher({ current }: CompanySwitcherProps) {
             ? <img className="ay-brand-logo-image" src="/ay-tercume-logo.jpg" alt="Ay Tercüme" />
             : <span className="billing-summary-icon" aria-hidden="true">₺</span>}
         <div>
-          <strong>{isQr ? "Dosya Doğrulama" : isTtaa ? "Content Studio" : isAyTercume ? "Ay Tercüme" : "Faturalandırma"}</strong>
+          <strong>{isTranslation ? "Çeviri APP" : isQr ? "Dosya Doğrulama" : isTtaa ? "Content Studio" : isAyTercume ? "Ay Tercüme" : "Faturalandırma"}</strong>
           <span>{isTtaaBrand ? "TTAA çalışma alanı" : isAyBrand ? "Ay Tercüme çalışma alanı" : "Ödeme takvimi ve partnerlik"}</span>
         </div>
         <b aria-hidden="true">⌄</b>
@@ -92,6 +93,11 @@ export default function CompanySwitcher({ current }: CompanySwitcherProps) {
         <Link href="/faturalandirma-ve-partnerlik" className={`billing-partnership-item${isBilling ? " active" : ""}`} role="menuitem">
           <span className="billing-partnership-icon" aria-hidden="true">₺</span>
           <span><strong>Faturalandırma ve Partnerlik</strong><small>Ödeme takvimi ve iş ortaklığı</small></span>
+        </Link>
+        <div className="company-menu-divider" />
+        <Link href="/ceviri-app" className={`billing-partnership-item${isTranslation ? " active" : ""}`} aria-current={isTranslation ? "page" : undefined} role="menuitem">
+          <span className="qr-menu-icon" style={{ fontSize: 10, fontWeight: 700, lineHeight: 1, whiteSpace: "nowrap" }} aria-hidden="true">A文</span>
+          <span><strong>Çeviri APP</strong><small>Yakında kullanıma açılacak</small></span>
         </Link>
       </div>
     </details>
