@@ -90,7 +90,9 @@ export function suspiciousTarget(source: string, target: string): string | null 
  * these are listed for the model and checked again afterwards.
  */
 const PROTECTED = [
-  /\b[A-Z]{2,4}\s?\d{2,4}\s?\d{2}\s?\d{2}\s?[A-Z]?\b/g, // BAS 216 17 F
+  // Registration codes as they appear in the customer's own files:
+  // "BAS 216 17 F", "BAS 555 00 F", "BASF 216 17 F", "BAS 480 031".
+  /\b[A-Z]{2,4}\s+\d{2,4}(?:\s+\d{1,3}){1,2}(?:\s+[A-Z])?\b/g,
   /\b\d+[.,]?\d*\s?(?:g\/l|g\/kg|mg\/kg|ml|L|kg|g|mm|cm|%)\b/gi,
   /\b\d{1,3}-\d{2,3}-\d\b/g, // CAS
   /\b[\w.+-]+@[\w-]+\.[\w.]+\b/g,
