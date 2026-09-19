@@ -38,9 +38,14 @@ function sharedStrings(files: Record<string, Uint8Array>): string[] {
       .map((t) => decode(t.replace(/<[^>]+>/g, ""))).join(""));
 }
 
-function sheetRows(xml: string, shared: string[]): string[][] {
-  const rows: string[][] = [];
-  for (const rowXml of xml.match(/<row\b[^>]*>[\s\S]*?<\/row>/g) ?? []) {
+type SheetRow = { number: number; cells: string[] };
+
+function sheetRows(xml: string, shared: string[]): SheetRow[] {
+  const rows: SheetRow[] = [];
+  const rowXmls = xml.match(/<row\b[^>]*>[\s\S]*?<\/row>/g) ?? [];
+  rowXmls.forEach((rowXml, i) => {
+    const rowAttr = (rowXml.match(/^<row\b[^>]*\br="(\d+)"/) ?? [])[1];
+    const number = rowAttr ? Number(rowAttr) : i + 1;
     const cells: string[] = [];
     for (const cell of rowXml.match(/<c\b[^>]*(?:\/>|>[\s\S]*?<\/c>)/g) ?? []) {
       const ref = (cell.match(/\br="([A-Z]+\d+)"/) ?? [])[1];
@@ -53,8 +58,8 @@ function sheetRows(xml: string, shared: string[]): string[][] {
       else if (value) text = type === "s" ? (shared[Number(value[1])] ?? "") : decode(value[1]);
       cells[columnIndex(ref)] = text;
     }
-    rows.push(cells);
-  }
+    rows.push({ number, cells });
+  });
   return rows;
 }
 
@@ -66,6 +71,19 @@ function orNull(value: string): string | null {
   return value === "" ? null : value;
 }
 
+/**
+ * Interprets the Forbidden column. Excel writes native booleans (t="b", <v>1</v>/<v>0</v>)
+ * once someone edits the termbase there, so this must recognise those alongside the literal
+ * "true"/"false" text the customer's export currently uses. Anything else throws rather than
+ * silently defaulting to "not forbidden" — a forbidden term must never slip through as permitted.
+ */
+export function parseForbidden(value: string, rowNumber: number): boolean {
+  const normalised = value.trim().toLowerCase();
+  if (normalised === "true" || normalised === "1") return true;
+  if (normalised === "false" || normalised === "0" || normalised === "") return false;
+  throw new Error(`Unrecognised Forbidden value "${value}" in row ${rowNumber} — expected true/false/1/0 or empty.`);
+}
+
 export function parseTermbase(file: Uint8Array): { locales: string[]; rows: TermRow[] } {
   const files = unzipSync(file);
   const sheetKey = Object.keys(files).find((name) => /^xl\/worksheets\/sheet\d+\.xml$/.test(name));
@@ -74,7 +92,7 @@ export function parseTermbase(file: Uint8Array): { locales: string[]; rows: Term
   const raw = sheetRows(strFromU8(files[sheetKey]), sharedStrings(files));
   if (raw.length === 0) return { locales: [], rows: [] };
 
-  const header = raw[0];
+  const header = raw[0].cells;
   const locales: string[] = [];
   for (let c = FIXED_COLUMNS; c < header.length; c += LOCALE_STRIDE) {
     const name = cell(header, c);
@@ -86,16 +104,16 @@ export function parseTermbase(file: Uint8Array): { locales: string[]; rows: Term
     const entries: TermEntry[] = [];
     locales.forEach((lang, i) => {
       const base = FIXED_COLUMNS + i * LOCALE_STRIDE;
-      const text = cell(row, base);
+      const text = cell(row.cells, base);
       if (!text) return;
-      entries.push({ lang, text, notes: orNull(cell(row, base + 1)), example: orNull(cell(row, base + 2)) });
+      entries.push({ lang, text, notes: orNull(cell(row.cells, base + 1)), example: orNull(cell(row.cells, base + 2)) });
     });
     if (entries.length === 0) continue;
     rows.push({
-      forbidden: cell(row, 0).toLowerCase() === "true",
-      domain: orNull(cell(row, 1)),
-      subdomain: orNull(cell(row, 2)),
-      definition: orNull(cell(row, 3)),
+      forbidden: parseForbidden(cell(row.cells, 0), row.number),
+      domain: orNull(cell(row.cells, 1)),
+      subdomain: orNull(cell(row.cells, 2)),
+      definition: orNull(cell(row.cells, 3)),
       entries,
     });
   }
