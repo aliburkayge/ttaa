@@ -44,6 +44,7 @@ export default function Lingua() {
   const [sourceLang, setSourceLang] = useState("en-US");
   const [targetLang, setTargetLang] = useState("tr-TR");
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
+  const [ocrWarning, setOcrWarning] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<HTMLDivElement>(null);
 
@@ -64,6 +65,7 @@ export default function Lingua() {
         const payload = await res.json();
         if (!res.ok) throw new Error(payload.error ?? "Yükleme başarısız.");
         setDoc(payload.document as Doc);
+        setOcrWarning(typeof payload.ocrWarning === "string" ? payload.ocrWarning : null);
         setSavedIds(new Set());
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : "Yükleme başarısız.");
@@ -153,7 +155,7 @@ export default function Lingua() {
               </p>
               <div className={styles.chips}>
                 <button className={styles.chip} type="button" onClick={() => fileRef.current?.click()}>
-                  Word belgesi yükle
+                  Belge yükle
                 </button>
                 <Link className={styles.chip} href="/ceviri-app/bellek">Bellekte ara</Link>
               </div>
@@ -179,6 +181,13 @@ export default function Lingua() {
               <div className={`${styles.turn} ${styles.turnBot}`}>
                 <span className={styles.avatar} />
                 <div className={styles.botBody}>
+                  {ocrWarning && (
+                    <div className={styles.ocrWarn}>
+                      <b>OCR bağlı değil</b>
+                      <span className={styles.demoTag}>DEMO</span>
+                      <div>{ocrWarning}</div>
+                    </div>
+                  )}
                   <p className={styles.botText}>
                     Belgeyi okudum. <b>{total}</b> çevrilecek segment buldum
                     {doc.stats.tables > 0 && <> — bunların <b>{doc.stats.tableCells}</b> tanesi tablo hücresi</>}.
@@ -226,7 +235,7 @@ export default function Lingua() {
                         <button
                           className={styles.secondary}
                           type="button"
-                          onClick={() => { setDoc(null); setError(null); }}
+                          onClick={() => { setDoc(null); setError(null); setOcrWarning(null); }}
                           disabled={busy !== null}
                         >
                           Yeni belge
@@ -319,13 +328,13 @@ export default function Lingua() {
             }}
           >
             <div className={styles.composerText}>
-              {busy ?? "Word belgesi bırakın veya ataç simgesine basın"}
+              {busy ?? "Word (.docx) veya PDF bırakın, ya da ataç simgesine basın"}
             </div>
             <div className={styles.composerBar}>
               <input
                 ref={fileRef}
                 type="file"
-                accept=".docx"
+                accept=".docx,.pdf"
                 hidden
                 onChange={(event) => onPick(event.target.files?.[0])}
               />

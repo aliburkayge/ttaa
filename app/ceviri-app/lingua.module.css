@@ -279,3 +279,10 @@
   .segSrc { border-right: 0; border-bottom: 1px solid var(--line-soft); }
   .streamInner, .dockInner { padding-left: 14px; padding-right: 14px; }
 }
+
+.ocrWarn {
+  margin-top: 4px; background: #fff8e8; border-radius: 14px; padding: 12px 15px;
+  font-size: 13px; color: #7a5208; line-height: 1.55;
+}
+.ocrWarn b { color: #5f4006; }
+.ocrWarn > div { margin-top: 5px; }

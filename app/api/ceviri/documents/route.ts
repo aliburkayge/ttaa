@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { requireAdminSession } from "../../../../lib/auth";
 import { getCeviriSupabase, CEVIRI_DOCS_BUCKET } from "../../../../lib/ceviri/supabase";
 import { parseDocx } from "../../../../lib/ceviri/docx";
+import { activeOcrProvider, isPdf, ocrToSegments } from "../../../../lib/ceviri/ocr";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -24,9 +25,10 @@ export async function POST(request: Request) {
     if (file.size > MAX_BYTES) {
       return NextResponse.json({ error: "Dosya 25 MB sınırını aşıyor." }, { status: 400 });
     }
-    if (!file.name.toLowerCase().endsWith(".docx")) {
+    const name = file.name.toLowerCase();
+    if (!name.endsWith(".docx") && !name.endsWith(".pdf")) {
       return NextResponse.json(
-        { error: "Şimdilik yalnızca .docx destekleniyor. PDF ve taranmış belgeler için OCR servisi henüz bağlanmadı." },
+        { error: "Yalnızca .docx ve .pdf kabul ediliyor." },
         { status: 415 },
       );
     }
@@ -34,25 +36,56 @@ export async function POST(request: Request) {
     const bytes = new Uint8Array(await file.arrayBuffer());
     const fileHash = createHash("sha256").update(bytes).digest("hex");
 
-    let parsed;
-    try {
-      parsed = parseDocx(bytes);
-    } catch (cause) {
-      return NextResponse.json(
-        { error: cause instanceof Error ? cause.message : "Belge okunamadı." },
-        { status: 422 },
-      );
+    let parsed: {
+      segments: Array<{ id: string; text: string; kind: "paragraph" | "table-cell"; order: number }>;
+      stats: Record<string, number>;
+    };
+    let ocrWarning: string | null = null;
+    let ocrProvider: string | null = null;
+
+    if (isPdf(bytes)) {
+      // PDF yolu OCR sağlayıcısına bağlıdır. Hiçbiri yapılandırılmamışsa demo
+      // sağlayıcı devreye girer ve METİN ÇIKARMAZ — yer tutucu döner, uyarı
+      // arayüzde gösterilir. Uydurulmuş metin gerçek sanılmasın diye böyle.
+      const provider = activeOcrProvider();
+      const result = await provider.run(bytes, { lang: sourceLang });
+      const segments = ocrToSegments(result);
+      parsed = {
+        segments: segments.map(({ id, text, kind, order }) => ({ id, text, kind, order })),
+        stats: {
+          paragraphs: segments.length,
+          tableCells: 0,
+          tables: 0,
+          images: 0,
+          words: segments.reduce((total, s) => total + (s.text.match(/S+/g) ?? []).length, 0),
+          pages: result.pages ?? 0,
+        },
+      };
+      ocrWarning = result.warning;
+      ocrProvider = provider.label;
+    } else {
+      try {
+        parsed = parseDocx(bytes);
+      } catch (cause) {
+        return NextResponse.json(
+          { error: cause instanceof Error ? cause.message : "Belge okunamadı." },
+          { status: 422 },
+        );
+      }
     }
+
     if (parsed.segments.length === 0) {
       return NextResponse.json({ error: "Belgede çevrilecek metin bulunamadı." }, { status: 422 });
     }
 
     const supabase = getCeviriSupabase();
-    const storagePath = `${fileHash.slice(0, 2)}/${fileHash}.docx`;
+    const storagePath = `${fileHash.slice(0, 2)}/${fileHash}${isPdf(bytes) ? ".pdf" : ".docx"}`;
     const { error: uploadError } = await supabase.storage
       .from(CEVIRI_DOCS_BUCKET)
       .upload(storagePath, bytes, {
-        contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        contentType: isPdf(bytes)
+          ? "application/pdf"
+          : "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         upsert: true,
       });
     if (uploadError) throw new Error(`Depolama hatası: ${uploadError.message}`);
@@ -81,7 +114,7 @@ export async function POST(request: Request) {
       .single();
     if (error) throw new Error(error.message);
 
-    return NextResponse.json({ document: data });
+    return NextResponse.json({ document: data, ocrWarning, ocrProvider });
   } catch (error) {
     if (error instanceof Error && error.message === "UNAUTHORIZED") {
       return NextResponse.json({ error: "Oturumunuz sona erdi." }, { status: 401 });
