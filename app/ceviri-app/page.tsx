@@ -1,57 +1,86 @@
 import Link from "next/link";
 import CompanySwitcher from "../company-switcher";
-import styles from "./construction.module.css";
+import { getCeviriSupabase } from "../../lib/ceviri/supabase";
+import SearchClient from "./search-client";
+import styles from "./ceviri.module.css";
 
 export const metadata = { title: "Çeviri APP | TTAA" };
+export const dynamic = "force-dynamic";
 
-function Crane({ secondary = false }: { secondary?: boolean }) {
-  return (
-    <div className={`${styles.crane} ${secondary ? styles.secondary : ""}`}>
-      <div className={styles.mast} />
-      <div className={styles.jib}><i /><b /></div>
-      <div className={styles.cabin} />
-      <div className={styles.hoist}><div className={styles.cable} /><div className={styles.load}>A<span>文</span></div></div>
-      <div className={styles.base} />
-    </div>
-  );
+type Stats = {
+  segments: number;
+  multiProject: number;
+  concepts: number;
+  variants: number;
+  languages: number;
+};
+
+async function loadStats(): Promise<Stats | null> {
+  try {
+    // Counted in one SQL call: array_length() has no PostgREST filter equivalent,
+    // so the multi-project figure cannot be derived client side.
+    const { data, error } = await getCeviriSupabase().rpc("ceviri_stats");
+    if (error || !data?.[0]) return null;
+    const row = data[0] as Record<string, number>;
+    return {
+      segments: Number(row.segments),
+      multiProject: Number(row.multi_project),
+      concepts: Number(row.concepts),
+      variants: Number(row.variants),
+      languages: Number(row.languages),
+    };
+  } catch {
+    return null;
+  }
 }
 
-function Truck({ reverse = false }: { reverse?: boolean }) {
-  return (
-    <div className={`${styles.truckLane} ${reverse ? styles.reverse : ""}`}>
-      <div className={styles.truck}>
-        <div className={styles.truckBed}><i /><i /><i /></div>
-        <div className={styles.truckCab}><i /></div>
-        <div className={styles.chassis} />
-        <i className={styles.wheel} /><i className={`${styles.wheel} ${styles.frontWheel}`} />
-      </div>
-    </div>
-  );
+function tr(value: number) {
+  return value.toLocaleString("tr-TR");
 }
 
-export default function TranslationAppPage() {
+export default async function TranslationAppPage() {
+  const stats = await loadStats();
+
   return (
     <div className={styles.shell} lang="tr">
       <header className="studio-header">
         <CompanySwitcher current="translation" />
         <Link href="/" className={styles.back}>← Panele dön</Link>
       </header>
+
       <main className={styles.main}>
-        <div className={styles.copy}>
-          <span className={styles.label}>Çeviri APP</span>
-          <h1>Şu Anda Burası<br /><span>İnşa Ediliyor</span></h1>
-          <p>Beklediğiniz için teşekkürler.<br />En yakın zamanda kullanıma açılacaktır.</p>
+        <div className={styles.intro}>
+          <span className={styles.eyebrow}>Çeviri APP · Bilgi tabanı</span>
+          <h1>Daha önce nasıl çevirdiğinizi<br />bir saniyede görün</h1>
+          <p>
+            Geçmiş çevirileriniz ve terminolojiniz tek yerde. Bir cümle yazın; sistem belleğinizde
+            aynısını veya benzerini arar, hangi projelerde nasıl çevrildiğini ve aralarında
+            tutarsızlık olup olmadığını gösterir.
+          </p>
         </div>
-        <div className={styles.scene} role="img" aria-label="TTAA renklerinde çalışan iki vinç ve hareket eden inşaat kamyonları">
-          <div className={styles.skyline}><i /><i /><i /><i /><i /></div>
-          <div className={styles.building}><i /><i /><i /><i /><i /><i /></div>
-          <Crane /><Crane secondary />
-          <div className={styles.materials}><i /><i /><i /></div>
-          <div className={styles.barrier}><i /><i /></div>
-          <div className={styles.road} />
-          <Truck /><Truck reverse />
-        </div>
-        <div className={styles.status}><i /> Çalışmalar devam ediyor</div>
+
+        {stats && (
+          <div className={styles.stats}>
+            <div className={styles.stat}>
+              <div className={styles.statValue}>{tr(stats.segments)}</div>
+              <div className={styles.statLabel}>çeviri belleği segmenti</div>
+            </div>
+            <div className={styles.stat}>
+              <div className={styles.statValue}>{tr(stats.multiProject)}</div>
+              <div className={styles.statLabel}>birden fazla projede geçen</div>
+            </div>
+            <div className={styles.stat}>
+              <div className={styles.statValue}>{tr(stats.concepts)}</div>
+              <div className={styles.statLabel}>terim kavramı</div>
+            </div>
+            <div className={styles.stat}>
+              <div className={styles.statValue}>{tr(stats.variants)}</div>
+              <div className={styles.statLabel}>{stats.languages} dilde karşılık</div>
+            </div>
+          </div>
+        )}
+
+        <SearchClient />
       </main>
     </div>
   );

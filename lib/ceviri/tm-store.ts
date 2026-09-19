@@ -96,3 +96,47 @@ export async function insertTmRows(
   const result = (data as { inserted_count: number; merged_count: number }[] | null)?.[0];
   return { inserted: result?.inserted_count ?? 0, merged: result?.merged_count ?? 0 };
 }
+
+export type TmMatch = {
+  id: string;
+  source_text: string;
+  target_text: string;
+  score: number;
+  origin: string;
+  quality: string;
+  project_names: string[];
+};
+
+export const EXACT_THRESHOLD = 0.95;
+export const FUZZY_THRESHOLD = 0.75;
+
+/** Which cascade branch a score falls into (spec 6.1). */
+export function matchTier(score: number): "exact" | "fuzzy" | "none" {
+  if (score >= EXACT_THRESHOLD) return "exact";
+  if (score >= FUZZY_THRESHOLD) return "fuzzy";
+  return "none";
+}
+
+export async function searchTm(query: {
+  sourceText: string;
+  sourceLang: string;
+  targetLang: string;
+  clientId?: string | null;
+  sectorId?: string | null;
+  limit?: number;
+  minScore?: number;
+}): Promise<TmMatch[]> {
+  const { data, error } = await getCeviriSupabase().rpc("search_tm", {
+    p_source_normalized: normalizeForMatch(query.sourceText, query.sourceLang),
+    p_source_hash: segmentHash(query.sourceText, query.sourceLang),
+    p_source_lang: query.sourceLang,
+    p_target_lang: query.targetLang,
+    p_client_id: query.clientId ?? null,
+    p_sector_id: query.sectorId ?? null,
+    p_min_score: query.minScore ?? FUZZY_THRESHOLD,
+    p_limit: query.limit ?? 10,
+  });
+
+  if (error) throw new Error(`search_tm failed: ${error.message}`);
+  return (data ?? []) as TmMatch[];
+}
