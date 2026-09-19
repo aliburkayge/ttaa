@@ -3,9 +3,20 @@ import test from "node:test";
 import { ceviriCredentials } from "../lib/ceviri/supabase.ts";
 
 function withEnv(values: Record<string, string | undefined>, run: () => void) {
-  const previous = { ...process.env };
-  Object.assign(process.env, values);
-  try { run(); } finally { process.env = previous; }
+  const previous = new Map<string, string | undefined>();
+  for (const key of Object.keys(values)) previous.set(key, process.env[key]);
+  try {
+    for (const [key, value] of Object.entries(values)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    run();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 }
 
 test("returns both credentials when configured", () => {
