@@ -1045,7 +1045,7 @@ export function toTmRow(unit: TmxUnit): TmRow | null {
 }
 
 function dedupeKey(row: TmRow): string {
-  return [row.source_lang, row.target_lang, row.source_hash, row.target_hash].join(" ");
+  return [row.source_lang, row.target_lang, row.source_hash, row.target_hash].join("\u0000");
 }
 
 /** Collapses duplicates inside one batch, merging their project tags. */
