@@ -1223,22 +1223,28 @@ main().catch((error) => {
 
 - [ ] **Step 6: Import one real archive and check the numbers**
 
-Önce müşteri ve sektör kaydı oluşturun (Supabase SQL Editor):
+> **ÖNEMLİ — kapsam etiketi kullanılmayacak.** Planın ilk hali bu adımı
+> `--client basf` ile çalıştırıyordu. Ölçüm bunun yanlış olduğunu gösterdi: TMX
+> arşivleri tek müşteriye ait değil. 38.795 proje adı etiketli segmentin dağılımı —
+> Syngenta %25 (9.675), BASF %8 (3.048), `MATECAT_PROJ-*` yani müşterisi belirsiz %35
+> (13.483), diğer adlandırılmış %32 (12.589); toplam 168 farklı proje adı.
+> Her şeyi BASF diye etiketlemek belleğin %92'sini yanlış müşteriye yazardı.
+>
+> Bu yüzden içe aktarma **kapsam etiketi olmadan** yapılır: `client_id` ve `sector_id`
+> `null` kalır, köken bilgisini yalnızca `project_names` taşır. Kapsamın proje adından
+> geriye doğru doldurulması ayrı bir iştir ve kullanıcı eşleştirmeyi verdikten sonra
+> yapılır (bkz. spec bölüm 9, madde 2).
 
-```sql
-insert into public.sectors (name, slug) values ('Zirai ilaç', 'zirai-ilac')
-  on conflict (slug) do nothing;
-insert into public.clients (name, slug, default_sector_id)
-  select 'BASF', 'basf', id from public.sectors where slug = 'zirai-ilac'
-  on conflict (slug) do nothing;
-```
+Kapsam satırları zaten oluşturulmuştur (kontrolör tarafından, bağlayıcı üzerinden):
+`sectors` içinde `zirai-ilac`, `clients` içinde `basf`, `syngenta`, `nase`. Bu görevde
+kullanılmayacaklar, ama `--client` bayrağının çalıştığını doğrulamak isterseniz oradalar.
 
 En küçük arşivle başlayın:
 
 ```bash
 mkdir -p /tmp/tmx1 && cd /tmp/tmx1 && unzip -o "$HOME/Downloads/8b91bc58739147e10dde-.zip"
 cd -
-npm run ceviri:import-tmx -- /tmp/tmx1 --client basf --sector zirai-ilac
+npm run ceviri:import-tmx -- /tmp/tmx1
 ```
 
 Expected: `english__turkish.tmx: 4983 okundu, ~4983 yazıldı, 0 boş`
@@ -1249,11 +1255,25 @@ Expected: `english__turkish.tmx: 4983 okundu, ~4983 yazıldı, 0 boş`
 ```bash
 mkdir -p /tmp/tmx2 && cd /tmp/tmx2 && unzip -o "$HOME/Downloads/bcdff8705521eb59adfc-.zip"
 cd -
-npm run ceviri:import-tmx -- /tmp/tmx2/english__turkish.tmx --client basf --sector zirai-ilac
+npm run ceviri:import-tmx -- /tmp/tmx2/english__turkish.tmx
 ```
 
 Expected: 33817 okundu, yazılan sayı 33817'den **belirgin biçimde az**, kalanı `tekrar`.
 Tekrar sayısı sıfırsa tekilleştirme çalışmıyordur — devam etmeden inceleyin.
+
+Son olarak `project_names` alanının gerçekten dolduğunu doğrulayın:
+
+```bash
+node --import tsx -e '
+import nextEnv from "@next/env"; nextEnv.loadEnvConfig(process.cwd());
+const { getCeviriSupabase } = await import("./lib/ceviri/supabase.ts");
+const { data } = await getCeviriSupabase().from("tm_segments")
+  .select("project_names").not("project_names", "eq", "{}").limit(5);
+console.log(data);
+'
+```
+
+Expected: proje adları dolu diziler olarak görünür (örn. `["basf 11-08"]`).
 
 - [ ] **Step 7: Commit**
 
