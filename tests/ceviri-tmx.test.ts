@@ -83,9 +83,10 @@ test("throws when a <tu> exceeds the size limit without a closing tag", async ()
   }
 
   await assert.rejects(async () => {
-    for await (const _unit of parseTmxUnits(oneChunk())) {
-      // draining is enough to trigger the guard
-    }
+    const iterator = parseTmxUnits(oneChunk());
+    // Drain without binding a per-item variable — reaching the guard is all
+    // this test needs; the rejection itself is the assertion.
+    while (!(await iterator.next()).done);
   }, /exceeds 4 MB without a closing <\/tu>/);
 });
 
