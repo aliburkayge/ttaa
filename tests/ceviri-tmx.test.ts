@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseTmxUnits, segText } from "../lib/ceviri/tmx.ts";
+import { parseTmxUnits, segText, TMX_MAX_UNIT_BYTES } from "../lib/ceviri/tmx.ts";
 
 const TMX = `<?xml version="1.0" ?><tmx version="1.4"><header srclang="en-US"/><body>` +
   `<tu tuid="1" srclang="en-US">` +
@@ -62,4 +62,54 @@ test("produces identical results regardless of chunk boundaries", async () => {
 test("skips units that lack two language variants", async () => {
   const broken = `<tmx><header srclang="en-US"/><body><tu><tuv xml:lang="en-US"><seg>only</seg></tuv></tu></body></tmx>`;
   assert.deepEqual(await collect(broken), []);
+});
+
+test("yields correct units despite large trailing content after the last </tu> (buffer trimming)", async () => {
+  const trailing = "z".repeat(50_000);
+  const units = await collect(TMX + trailing, 11);
+  assert.equal(units.length, 2);
+  assert.equal(units[0].sourceText, "Trade name");
+  assert.equal(units[1].sourceText, "2-chloro- N-(4'-chlorobiphenyl)");
+});
+
+test("throws when a <tu> exceeds the size limit without a closing tag", async () => {
+  const oversized = "x".repeat(TMX_MAX_UNIT_BYTES + 1);
+  const broken =
+    `<tmx><header srclang="en-US"/><body>` +
+    `<tu tuid="1"><tuv xml:lang="en-US"><seg>${oversized}</seg></tuv>`;
+
+  async function* oneChunk() {
+    yield broken;
+  }
+
+  await assert.rejects(async () => {
+    for await (const _unit of parseTmxUnits(oneChunk())) {
+      // draining is enough to trigger the guard
+    }
+  }, /exceeds 4 MB without a closing <\/tu>/);
+});
+
+test("reports a skip reason via onSkip instead of silently dropping a unit", async () => {
+  const broken = `<tmx><header srclang="en-US"/><body><tu><tuv xml:lang="en-US"><seg>only</seg></tuv></tu></body></tmx>`;
+  const reasons: string[] = [];
+  const units = [];
+  for await (const unit of parseTmxUnits(feed(broken, 5), "", { onSkip: (reason) => reasons.push(reason) })) {
+    units.push(unit);
+  }
+  assert.deepEqual(units, []);
+  assert.deepEqual(reasons, ["too-few-variants"]);
+});
+
+test("keeps a unit whose two tuv blocks are byte-identical (index-based target selection)", async () => {
+  // Content equality would make these two tuvs look like "the same one" and
+  // silently drop the unit; index-based exclusion keeps it.
+  const doc =
+    `<tmx><header srclang="en-US"/><body><tu>` +
+    `<tuv xml:lang="en-US"><seg>same</seg></tuv>` +
+    `<tuv xml:lang="en-US"><seg>same</seg></tuv>` +
+    `</tu></body></tmx>`;
+  const units = await collect(doc, 5);
+  assert.equal(units.length, 1);
+  assert.equal(units[0].sourceText, "same");
+  assert.equal(units[0].targetText, "same");
 });
