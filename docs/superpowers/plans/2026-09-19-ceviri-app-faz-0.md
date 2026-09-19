@@ -300,7 +300,13 @@ function parseUnit(tuXml: string, fallbackSourceLang: string): TmxUnit | null {
   };
 }
 
-/** Streams <tu> units out of TMX text chunks without holding the whole file. */
+/**
+ * Streams <tu> units out of TMX text chunks without holding the whole file.
+ *
+ * Only "<tu " and "<tu>" open a unit. Searching for the bare prefix "<tu"
+ * would also hit "<tuv", which opens a language variant INSIDE a unit —
+ * trimming the buffer there would cut the unit's own opening tag away.
+ */
 export async function* parseTmxUnits(
   chunks: AsyncIterable<string>,
   fallbackSourceLang = "",
@@ -308,6 +314,14 @@ export async function* parseTmxUnits(
   let buffer = "";
   let headerLang = fallbackSourceLang;
   let sawHeader = false;
+
+  const unitOpening = () => {
+    const spaced = buffer.indexOf("<tu ");
+    const bare = buffer.indexOf("<tu>");
+    if (spaced === -1) return bare;
+    if (bare === -1) return spaced;
+    return Math.min(spaced, bare);
+  };
 
   for await (const chunk of chunks) {
     buffer += chunk;
@@ -320,21 +334,19 @@ export async function* parseTmxUnits(
       }
     }
 
-    let end = buffer.indexOf("</tu>");
-    while (end !== -1) {
-      const start = buffer.lastIndexOf("<tu ", end) === -1
-        ? buffer.indexOf("<tu>")
-        : buffer.lastIndexOf("<tu ", end);
+    for (;;) {
+      const start = unitOpening();
       if (start === -1) break;
+      const end = buffer.indexOf("</tu>", start);
+      if (end === -1) break;
       const unit = parseUnit(buffer.slice(start, end + 5), headerLang);
       if (unit) yield unit;
       buffer = buffer.slice(end + 5);
-      end = buffer.indexOf("</tu>");
     }
 
-    // Keep the tail short: nothing before the last "<tu" can still be needed.
-    const keep = buffer.lastIndexOf("<tu");
-    if (keep > 0) buffer = buffer.slice(keep);
+    // Nothing before the next unit opening can still be needed.
+    const next = unitOpening();
+    if (next > 0) buffer = buffer.slice(next);
   }
 }
 ```
