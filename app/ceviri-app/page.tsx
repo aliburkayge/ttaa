@@ -1,7 +1,7 @@
 import Link from "next/link";
 import CompanySwitcher from "../company-switcher";
 import { getCeviriSupabase } from "../../lib/ceviri/supabase";
-import SearchClient from "./search-client";
+import Workspace from "./workspace";
 import styles from "./ceviri.module.css";
 
 export const metadata = { title: "Çeviri APP | TTAA" };
@@ -50,12 +50,14 @@ export default async function TranslationAppPage() {
 
       <main className={styles.main}>
         <div className={styles.intro}>
-          <span className={styles.eyebrow}>Çeviri APP · Bilgi tabanı</span>
-          <h1>Daha önce nasıl çevirdiğinizi<br />bir saniyede görün</h1>
+          <span className={styles.eyebrow}>Çeviri APP</span>
+          <h1>Belgeyi bırakın,<br />çevirisi Word olarak insin</h1>
           <p>
-            Geçmiş çevirileriniz ve terminolojiniz tek yerde. Bir cümle yazın; sistem belleğinizde
-            aynısını veya benzerini arar, hangi projelerde nasıl çevrildiğini ve aralarında
-            tutarsızlık olup olmadığını gösterir.
+            Biçim, tablolar ve logolar olduğu gibi kalır. Her cümle önce çeviri belleğinizde
+            aranır — daha önce çevrilmişse birebir aynısı kullanılır; yalnızca gerçekten yeni
+            cümleler motora gider ve oraya da terminolojiniz ve geçmiş çevirileriniz birlikte
+            iletilir.{" "}
+            <Link href="/ceviri-app/bellek" className={styles.back}>Bellekte arama yap →</Link>
           </p>
         </div>
 
@@ -80,7 +82,7 @@ export default async function TranslationAppPage() {
           </div>
         )}
 
-        <SearchClient />
+        <Workspace />
       </main>
     </div>
   );

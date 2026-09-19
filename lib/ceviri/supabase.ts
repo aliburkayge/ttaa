@@ -24,3 +24,5 @@ export function getCeviriSupabase() {
     },
   });
 }
+
+export const CEVIRI_DOCS_BUCKET = "ceviri-belgeler";
