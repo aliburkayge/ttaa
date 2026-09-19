@@ -50,13 +50,16 @@ async function importFile(path: string, clientId: string | null, sectorId: strin
   const importId = imp.id as string;
 
   let seen = 0;
-  let stored = 0;
+  let inserted = 0;
+  let merged = 0;
   let skipped = 0;
   let batch: TmRow[] = [];
 
   const flush = async () => {
     if (batch.length === 0) return;
-    stored += await insertTmRows(batch, { importId, clientId, sectorId });
+    const result = await insertTmRows(batch, { importId, clientId, sectorId });
+    inserted += result.inserted;
+    merged += result.merged;
     batch = [];
   };
 
@@ -71,13 +74,24 @@ async function importFile(path: string, clientId: string | null, sectorId: strin
     }
     await flush();
 
+    // "tekrar" bir üst kümedir: hem RPC'nin var olan bir satırla eşleştirip
+    // proje etiketini birleştirdiği satırları (merged) hem de aynı partide
+    // dedupeRows tarafından zaten tek satıra indirgenmiş, RPC'ye hiç tekil
+    // ulaşmamış satırları kapsar. Hiçbiri artık sessizce atılmıyor — eskiden
+    // ignoreDuplicates: true (ON CONFLICT DO NOTHING) bir çakışmadaki
+    // project_names'i tamamen kaybediyordu; şimdi merged sayısı bunun yerine
+    // kaç satırın köken bilgisinin gerçekten korunduğunu gösteriyor.
+    const duplicates = seen - skipped - inserted;
+
     await supabase.from("imports").update({
       status: "succeeded",
-      stats: { seen, stored, skipped, duplicates: seen - skipped - stored },
+      stats: { seen, inserted, merged, skipped, duplicates },
       finished_at: new Date().toISOString(),
     }).eq("id", importId);
 
-    console.log(`${basename(path)}: ${seen} okundu, ${stored} yazıldı, ${skipped} boş, ${seen - skipped - stored} tekrar`);
+    console.log(
+      `${basename(path)}: ${seen} okundu, ${inserted} eklendi, ${merged} birleşti, ${skipped} boş, ${duplicates} tekrar`,
+    );
   } catch (error) {
     await supabase.from("imports").update({
       status: "failed",

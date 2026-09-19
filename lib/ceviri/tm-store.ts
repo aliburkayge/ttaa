@@ -60,15 +60,28 @@ export function dedupeRows(rows: TmRow[]): TmRow[] {
   return [...byKey.values()];
 }
 
+export type InsertTmRowsResult = { inserted: number; merged: number };
+
 /**
- * Writes a batch, ignoring rows that already exist under the dedupe key.
- * Returns how many rows the database actually stored.
+ * Writes a batch through the `upsert_tm_segments` RPC (see
+ * supabase/ceviri/migrations/202609190004_upsert_tm_segments.sql), which
+ * merges `project_names` on conflict instead of discarding the incoming row.
+ * A plain `.upsert(..., { ignoreDuplicates: true })` (ON CONFLICT DO NOTHING)
+ * would silently drop the project tag of every row that lands on an existing
+ * key — the RPC's ON CONFLICT DO UPDATE keeps the distinct union instead.
+ *
+ * `dedupeRows` collapsing the batch first is load-bearing here, not just an
+ * efficiency nicety: ON CONFLICT DO UPDATE raises "cannot affect row a
+ * second time" if one statement carries two rows with the same conflict key.
+ *
+ * Returns how many rows were freshly inserted vs. matched an existing row
+ * (and had their project tags merged into it).
  */
 export async function insertTmRows(
   rows: TmRow[],
   context: { importId: string; clientId?: string | null; sectorId?: string | null },
-): Promise<number> {
-  if (rows.length === 0) return 0;
+): Promise<InsertTmRowsResult> {
+  if (rows.length === 0) return { inserted: 0, merged: 0 };
   const supabase = getCeviriSupabase();
   const payload = dedupeRows(rows).map((row) => ({
     ...row,
@@ -77,14 +90,9 @@ export async function insertTmRows(
     sector_id: context.sectorId ?? null,
   }));
 
-  const { data, error } = await supabase
-    .from("tm_segments")
-    .upsert(payload, {
-      onConflict: "source_lang,target_lang,source_hash,target_hash",
-      ignoreDuplicates: true,
-    })
-    .select("id");
+  const { data, error } = await supabase.rpc("upsert_tm_segments", { p_rows: payload });
+  if (error) throw new Error(`upsert_tm_segments failed: ${error.message}`);
 
-  if (error) throw new Error(`tm_segments upsert failed: ${error.message}`);
-  return data?.length ?? 0;
+  const result = (data as { inserted_count: number; merged_count: number }[] | null)?.[0];
+  return { inserted: result?.inserted_count ?? 0, merged: result?.merged_count ?? 0 };
 }

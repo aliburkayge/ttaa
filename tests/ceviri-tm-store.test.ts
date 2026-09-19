@@ -63,3 +63,26 @@ test("keeps rows apart when the language pair differs", () => {
   ]);
   assert.equal(rows.length, 2);
 });
+
+// upsert_tm_segments (202609190004_upsert_tm_segments.sql) does
+// ON CONFLICT (source_lang, target_lang, source_hash, target_hash) DO UPDATE,
+// which Postgres refuses with "cannot affect row a second time" if a single
+// statement carries two rows under the same conflict key. dedupeRows is what
+// guarantees that never happens, for any input — not just the handful of
+// cases above — so it is covered here as its own invariant.
+test("dedupeRows never returns two rows sharing a (lang pair, hashes) key", () => {
+  const rows = dedupeRows([
+    toTmRow(unit({ projectName: "a" }))!,
+    toTmRow(unit({ projectName: "b" }))!,
+    toTmRow(unit({ sourceText: "  trade name  ", projectName: "c" }))!,
+    toTmRow(unit({ targetText: "Ticaret unvanı", projectName: "d" }))!,
+    toTmRow(unit({ targetText: "Ticaret unvanı", projectName: "e" }))!,
+    toTmRow(unit({ targetLang: "de-DE", targetText: "Handelsname", projectName: "f" }))!,
+  ]);
+
+  const keys = rows.map((r) => [r.source_lang, r.target_lang, r.source_hash, r.target_hash].join("\u0000"));
+  assert.equal(new Set(keys).size, keys.length);
+  // Three distinct segments in the input above: the base text, the "Ticaret
+  // unvanı" target variant, and the de-DE pair.
+  assert.equal(rows.length, 3);
+});
