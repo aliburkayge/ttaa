@@ -29,7 +29,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
     const { data: doc, error } = await supabase
       .from("ceviri_documents")
-      .select("id, source_lang, target_lang, segments, status")
+      .select("id, source_lang, target_lang, segments, status, instructions")
       .eq("id", id)
       .maybeSingle();
     if (error) throw new Error(error.message);
@@ -49,6 +49,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           sourceLang: doc.source_lang,
           targetLang: doc.target_lang,
           model,
+          instructions: (doc as { instructions?: string | null }).instructions ?? null,
         }).catch((cause): TranslatedSegment => ({
           id: segment.id,
           text: segment.text,

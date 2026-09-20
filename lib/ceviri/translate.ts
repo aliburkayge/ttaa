@@ -23,7 +23,7 @@ function outputText(body: ResponsesBody): string {
  * rather than through the project's background-polling helper — polling a
  * job queue per sentence would take minutes for a single page.
  */
-async function askOpenAI(prompt: string, model: string): Promise<string> {
+export async function askOpenAI(prompt: string, model: string): Promise<string> {
   const key = process.env.OPENAI_API_KEY?.trim();
   if (!key) throw new Error("OPENAI_API_KEY sunucu ortamında tanımlı değil.");
 
@@ -126,6 +126,7 @@ function buildPrompt(input: {
   terms: TermHit[];
   forbidden: TermHit[];
   similar: Array<{ source_text: string; target_text: string; score: number }>;
+  instructions: string | null;
 }): string {
   const lines: string[] = [];
   lines.push(
@@ -157,6 +158,14 @@ function buildPrompt(input: {
     }
   }
 
+  if (input.instructions?.trim()) {
+    lines.push(
+      "",
+      "Standing instructions the customer gave for this document. Follow them, except where they contradict the required terminology above:",
+      input.instructions.trim(),
+    );
+  }
+
   lines.push("", "Segment:", input.text);
   return lines.join("\n");
 }
@@ -168,7 +177,18 @@ function buildPrompt(input: {
  */
 export async function translateSegment(
   segment: { id: string; text: string },
-  options: { sourceLang: string; targetLang: string; model: string },
+  options: {
+    sourceLang: string;
+    targetLang: string;
+    model: string;
+    /**
+     * Free-text instructions the customer typed for this document. They reach
+     * the engine prompt only. A verbatim memory hit is text that was already
+     * delivered and approved, so an instruction does not rewrite it — the chat
+     * reply says so explicitly rather than letting the user assume otherwise.
+     */
+    instructions?: string | null;
+  },
 ): Promise<TranslatedSegment> {
   const query = {
     sourceText: segment.text,
@@ -207,6 +227,7 @@ export async function translateSegment(
     terms: termHits.preferred,
     forbidden: termHits.forbidden,
     similar: matches.slice(0, 3),
+    instructions: options.instructions ?? null,
   });
 
   const translation = await askOpenAI(prompt, options.model);

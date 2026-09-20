@@ -17,6 +17,8 @@ type Segment = {
   edited?: boolean;
 };
 
+type ChatMessage = { role: "user" | "assistant"; content: string; at: string };
+
 type Doc = {
   id: string;
   filename: string;
@@ -24,9 +26,24 @@ type Doc = {
   target_lang: string;
   stats: { paragraphs: number; tableCells: number; tables: number; images: number; words: number };
   segments: Segment[];
+  instructions?: string | null;
+  chat?: ChatMessage[] | null;
 };
 
 const LANGS = ["en-US", "tr-TR", "de-DE", "ru-RU", "es-ES", "it-IT", "el-GR", "pl-PL"];
+
+/**
+ * Hangi motorun gerçekten çalıştığı. Bu şerit süs değil: resmi bir evrakın
+ * hangi kaynaktan çıktığı sorulduğunda cevabı ekranda durmalı. DeepL ve Gemini
+ * adaptörleri yazıldı ama anahtarları yok, o yüzden "bağlı değil" yazıyor.
+ */
+const ENGINES = [
+  { label: "Çeviri belleği", on: true },
+  { label: "Terminoloji", on: true },
+  { label: "OpenAI", on: true },
+  { label: "DeepL", on: false },
+  { label: "Gemini", on: false },
+];
 
 function tagFor(source: string | null) {
   if (source === "tm-exact" || source === "tm-fuzzy") return { label: "BELLEK", cls: styles.tagTm };
@@ -38,7 +55,11 @@ function tagFor(source: string | null) {
 
 export default function Lingua() {
   const [doc, setDoc] = useState<Doc | null>(null);
+  const [chat, setChat] = useState<ChatMessage[]>([]);
+  const [instructions, setInstructions] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  const [thinking, setThinking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [sourceLang, setSourceLang] = useState("en-US");
@@ -46,11 +67,17 @@ export default function Lingua() {
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [ocrWarning, setOcrWarning] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const streamRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     streamRef.current?.scrollTo({ top: streamRef.current.scrollHeight, behavior: "smooth" });
-  }, [doc?.segments.length, busy]);
+  }, [doc?.segments.length, chat.length, busy, thinking]);
+
+  function grow(element: HTMLTextAreaElement) {
+    element.style.height = "auto";
+    element.style.height = `${Math.min(element.scrollHeight, 168)}px`;
+  }
 
   const upload = useCallback(
     async (file: File) => {
@@ -64,7 +91,10 @@ export default function Lingua() {
         const res = await fetch("/api/ceviri/documents", { method: "POST", body: form });
         const payload = await res.json();
         if (!res.ok) throw new Error(payload.error ?? "Yükleme başarısız.");
-        setDoc(payload.document as Doc);
+        const uploaded = payload.document as Doc;
+        setDoc(uploaded);
+        setChat(uploaded.chat ?? []);
+        setInstructions(uploaded.instructions ?? null);
         setOcrWarning(typeof payload.ocrWarning === "string" ? payload.ocrWarning : null);
         setSavedIds(new Set());
       } catch (cause) {
@@ -97,6 +127,60 @@ export default function Lingua() {
     }
   }
 
+  /**
+   * Serbest metin mesajı. Belge yoksa sunucuya hiç gitmez — cevap zaten
+   * bellidir ve bir API çağrısına gerek yoktur.
+   */
+  async function send() {
+    const message = draft.trim();
+    if (!message || thinking) return;
+    const now = new Date().toISOString();
+    setDraft("");
+    if (inputRef.current) inputRef.current.style.height = "auto";
+
+    if (!doc) {
+      setChat((previous) => [
+        ...previous,
+        { role: "user", content: message, at: now },
+        {
+          role: "assistant",
+          content:
+            "Önce bir belge yükleyin — ataç simgesine basın ya da .docx / .pdf dosyasını buraya bırakın. " +
+            "Belge geldikten sonra nasıl çevrileceğini buradan anlatabilirsiniz.",
+          at: now,
+        },
+      ]);
+      return;
+    }
+
+    setChat((previous) => [...previous, { role: "user", content: message, at: now }]);
+    setThinking(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/ceviri/documents/${doc.id}/chat`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message }),
+      });
+      const payload = await res.json();
+      if (!res.ok) throw new Error(payload.error ?? "Sohbet başarısız.");
+
+      setChat((previous) => [
+        ...previous,
+        { role: "assistant", content: String(payload.reply), at: new Date().toISOString() },
+      ]);
+      if (typeof payload.instructions === "string") setInstructions(payload.instructions);
+
+      const next = { ...doc, segments: payload.segments as Segment[] };
+      setDoc(next);
+      if (payload.retranslate && payload.cleared > 0) await translate(next);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Sohbet başarısız.");
+    } finally {
+      setThinking(false);
+    }
+  }
+
   async function saveSegment(segmentId: string, translation: string) {
     if (!doc) return;
     try {
@@ -124,6 +208,14 @@ export default function Lingua() {
     if (file) void upload(file);
   }
 
+  function reset() {
+    setDoc(null);
+    setChat([]);
+    setInstructions(null);
+    setError(null);
+    setOcrWarning(null);
+  }
+
   const translated = doc ? doc.segments.filter((s) => s.translation !== null).length : 0;
   const total = doc?.segments.length ?? 0;
   const fromMemory = doc
@@ -131,6 +223,7 @@ export default function Lingua() {
     : 0;
   const flagged = doc ? doc.segments.filter((s) => s.warning !== null).length : 0;
   const complete = total > 0 && translated === total;
+  const working = busy !== null || thinking;
 
   return (
     <div className={styles.app} lang="tr">
@@ -151,7 +244,9 @@ export default function Lingua() {
               <div className={styles.orb} />
               <p className={styles.helloTitle}>Merhaba, ben Lingua</p>
               <p className={styles.helloText}>
-                Bir belge bırakın; çevirisini kendi belleğinizden ve terminolojinizden üreteyim.
+                Bir belge bırakın. Önce kendi çeviri belleğinize ve terminolojinize bakarım;
+                bellekte olmayan cümleleri OpenAI&apos;ye sorarım. Sonrasında nasıl çevrilmesini
+                istediğinizi buradan anlatabilirsiniz.
               </p>
               <div className={styles.chips}>
                 <button className={styles.chip} type="button" onClick={() => fileRef.current?.click()}>
@@ -193,6 +288,21 @@ export default function Lingua() {
                     {doc.stats.tables > 0 && <> — bunların <b>{doc.stats.tableCells}</b> tanesi tablo hücresi</>}.
                     Biçim, {doc.stats.tables} tablo ve {doc.stats.images} görsel olduğu gibi korunacak.
                   </p>
+                  <p className={styles.botMuted}>
+                    Çeviriyi başlatabilir ya da önce nasıl çevrilmesini istediğinizi yazabilirsiniz.
+                  </p>
+
+                  <div className={styles.engines}>
+                    {ENGINES.map((engine) => (
+                      <span
+                        key={engine.label}
+                        className={engine.on ? styles.engineOn : styles.engineOff}
+                      >
+                        {engine.on ? "●" : "○"} {engine.label}
+                        {!engine.on && " · anahtar yok"}
+                      </span>
+                    ))}
+                  </div>
 
                   <div className={styles.card}>
                     <div className={styles.cardPad}>
@@ -222,7 +332,7 @@ export default function Lingua() {
                             className={styles.primary}
                             type="button"
                             onClick={() => void translate(doc)}
-                            disabled={busy !== null}
+                            disabled={working}
                           >
                             {busy ?? "Çeviriyi başlat"}
                           </button>
@@ -235,14 +345,21 @@ export default function Lingua() {
                         <button
                           className={styles.secondary}
                           type="button"
-                          onClick={() => { setDoc(null); setError(null); setOcrWarning(null); }}
-                          disabled={busy !== null}
+                          onClick={reset}
+                          disabled={working}
                         >
                           Yeni belge
                         </button>
                       </div>
                     </div>
                   </div>
+
+                  {instructions && (
+                    <div className={styles.instruction}>
+                      <span className={styles.instructionHead}>BU BELGE İÇİN TALİMATINIZ</span>
+                      {instructions}
+                    </div>
+                  )}
 
                   {translated > 0 && (
                     <>
@@ -282,6 +399,7 @@ export default function Lingua() {
                                   ) : (
                                     <textarea
                                       className={styles.editable}
+                                      key={`${segment.id}-${segment.translation}`}
                                       defaultValue={segment.translation}
                                       rows={1}
                                       onBlur={(event) => {
@@ -306,11 +424,42 @@ export default function Lingua() {
                       </div>
                     </>
                   )}
-
-                  {error && <div className={styles.err}>{error}</div>}
                 </div>
               </div>
             </>
+          )}
+
+          {chat.map((message, index) =>
+            message.role === "user" ? (
+              <div className={`${styles.turn} ${styles.turnUser}`} key={`${message.at}-${index}`}>
+                <div className={styles.bubbleUser}>{message.content}</div>
+              </div>
+            ) : (
+              <div className={`${styles.turn} ${styles.turnBot}`} key={`${message.at}-${index}`}>
+                <span className={styles.avatar} />
+                <div className={styles.botBody}>
+                  <p className={styles.chatText}>{message.content}</p>
+                </div>
+              </div>
+            ),
+          )}
+
+          {thinking && (
+            <div className={`${styles.turn} ${styles.turnBot}`}>
+              <span className={styles.avatar} />
+              <div className={styles.botBody}>
+                <p className={styles.typing}>Düşünüyorum…</p>
+              </div>
+            </div>
+          )}
+
+          {error && (
+            <div className={`${styles.turn} ${styles.turnBot}`}>
+              <span className={styles.avatar} />
+              <div className={styles.botBody}>
+                <div className={styles.err}>{error}</div>
+              </div>
+            </div>
           )}
         </div>
       </div>
@@ -327,9 +476,25 @@ export default function Lingua() {
               onPick(event.dataTransfer.files?.[0]);
             }}
           >
-            <div className={styles.composerText}>
-              {busy ?? "Word (.docx) veya PDF bırakın, ya da ataç simgesine basın"}
-            </div>
+            {busy && <div className={styles.busyLine}>{busy}</div>}
+            <textarea
+              ref={inputRef}
+              className={styles.input}
+              rows={1}
+              value={draft}
+              placeholder={
+                doc
+                  ? "Nasıl çevrilmesini istersiniz? Ya da belge hakkında bir şey sorun…"
+                  : "Word (.docx) veya PDF bırakın, ya da ataç simgesine basın…"
+              }
+              onChange={(event) => { setDraft(event.target.value); grow(event.target); }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  void send();
+                }
+              }}
+            />
             <div className={styles.composerBar}>
               <input
                 ref={fileRef}
@@ -343,7 +508,7 @@ export default function Lingua() {
                 type="button"
                 title="Belge ekle"
                 onClick={() => fileRef.current?.click()}
-                disabled={busy !== null}
+                disabled={working}
               >
                 📎
               </button>
@@ -366,15 +531,15 @@ export default function Lingua() {
               >
                 {LANGS.map((lang) => <option key={lang} value={lang}>{lang}</option>)}
               </select>
-              <span className={styles.model}>
-                Bellek + OpenAI
+              <span className={styles.model} title="Önce çeviri belleği, sonra OpenAI. DeepL ve Gemini için anahtar yok.">
+                Bellek → OpenAI
               </span>
               <button
                 className={styles.send}
                 type="button"
-                title="Belge seç"
-                onClick={() => fileRef.current?.click()}
-                disabled={busy !== null}
+                title={draft.trim() ? "Gönder" : "Belge seç"}
+                onClick={() => (draft.trim() ? void send() : fileRef.current?.click())}
+                disabled={working}
               />
             </div>
           </div>

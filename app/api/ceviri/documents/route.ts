@@ -110,7 +110,7 @@ export async function POST(request: Request) {
         stats: parsed.stats,
         segments,
       })
-      .select("id, filename, stats, segments, source_lang, target_lang, status")
+      .select("id, filename, stats, segments, source_lang, target_lang, status, instructions, chat")
       .single();
     if (error) throw new Error(error.message);
 
