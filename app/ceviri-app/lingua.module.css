@@ -335,3 +335,83 @@
 
 .chatText { margin: 2px 0 0; color: var(--ink); white-space: pre-wrap; }
 .typing { color: var(--ink-mute); font-size: 13.5px; margin: 2px 0 0; }
+
+/* ---------- bellek: istatistik şeridi ---------- */
+
+.statStrip {
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 26px;
+}
+.statPill {
+  display: inline-flex; align-items: baseline; gap: 6px;
+  border: 1px solid var(--line); border-radius: 999px; padding: 7px 14px;
+  font-size: 13px; color: var(--ink-mute); background: var(--surface);
+}
+.statPill b { font-size: 13.5px; font-weight: 600; color: var(--ink-soft); }
+
+/* ---------- bellek: bölüm başlığı ---------- */
+
+.sectionHead {
+  display: flex; align-items: baseline; gap: 8px;
+  margin: 18px 0 0; font-size: 11px; font-weight: 700;
+  letter-spacing: .07em; color: var(--ink-mute);
+}
+.sectionCount { margin-left: auto; font-weight: 500; letter-spacing: 0; font-size: 12px; }
+.empty {
+  margin-top: 10px; background: var(--line-soft); border-radius: 14px;
+  padding: 13px 15px; font-size: 13.5px; color: var(--ink-mute);
+}
+
+/* ---------- bellek: terimler ---------- */
+
+.termList { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+.term {
+  display: inline-flex; align-items: center; gap: 7px;
+  border: 1px solid var(--line); border-radius: 999px; padding: 6px 13px;
+  font-size: 13px; color: var(--ink-soft); background: var(--surface);
+}
+.termArrow { color: var(--ink-mute); }
+.termTarget { font-weight: 600; color: var(--ink); }
+.termForbidden { border-color: #f3d6d8; background: #fdf1f1; color: #ad2b31; }
+.termForbidden .termTarget { color: #ad2b31; text-decoration: line-through; }
+.forbiddenTag {
+  font-size: 9.5px; font-weight: 700; letter-spacing: .06em;
+  background: #ad2b31; color: #fff; border-radius: 999px; padding: 2px 6px;
+}
+
+/* ---------- bellek: eşleşme grupları ---------- */
+
+.group { margin-top: 10px; }
+.groupHead { padding: 14px 18px 0; }
+.groupSource { font-size: 14px; line-height: 1.5; color: var(--ink); }
+.conflict {
+  margin-top: 9px; background: #fff8ec; border-radius: 12px;
+  padding: 9px 12px; font-size: 12.5px; color: #8a5a10;
+}
+.variant {
+  display: flex; gap: 12px; padding: 13px 18px;
+  border-top: 1px solid var(--line-soft);
+}
+.variant:first-of-type { border-top: 0; margin-top: 4px; }
+.score {
+  flex: 0 0 auto; align-self: flex-start;
+  font-size: 10.5px; font-weight: 700; letter-spacing: .02em;
+  border-radius: 999px; padding: 3px 8px; margin-top: 1px;
+}
+.exact { background: #eef6f1; color: #16794a; }
+.fuzzy { background: #fff4e3; color: #8a5a10; }
+.weak { background: var(--line-soft); color: var(--ink-mute); }
+.variantBody { flex: 1; min-width: 0; }
+.target { font-size: 14px; line-height: 1.5; color: var(--ink); }
+.dominant {
+  margin-left: 8px; font-size: 9.5px; font-weight: 700; letter-spacing: .06em;
+  background: var(--line-soft); color: var(--ink-soft); border-radius: 999px; padding: 2px 7px;
+  white-space: nowrap;
+}
+.projects { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
+.usage { font-size: 11.5px; color: var(--ink-mute); }
+.project {
+  font-size: 11px; background: var(--line-soft); color: var(--ink-soft);
+  border-radius: 999px; padding: 3px 8px; max-width: 220px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.more { font-size: 11px; color: var(--ink-mute); }
