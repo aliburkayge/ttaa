@@ -49,6 +49,8 @@ export async function POST(request: Request) {
         ocrWarning?: string | null;
         /** Çeviri orijinal konumuna yazılamayacaksa nedeni. */
         placement?: string | null;
+        /** Yazılabilir ama çıktıya bakılmalı (ör. harfe değen aynı renkte mühür). */
+        caution?: string | null;
       }>;
       stats: Record<string, number>;
     };
@@ -76,6 +78,9 @@ export async function POST(request: Request) {
         }
       }
       const unplaced = new Map(overlay?.unplaced.map((entry) => [entry.id, entry.reason]) ?? []);
+      const cautions = new Map(
+        overlay?.items.flatMap((item) => (item.caution ? item.lineIds.map((id) => [id, item.caution]) : [])) ?? [],
+      );
 
       const segments = ocrToSegments(result);
       parsed = {
@@ -87,6 +92,7 @@ export async function POST(request: Request) {
           page,
           ocrWarning: warning,
           placement: unplaced.get(id) ?? overlayError,
+          caution: cautions.get(id) ?? null,
         })),
         stats: layoutStats(result.blocks, result.pages),
       };

@@ -280,7 +280,9 @@ test("finds the printed lines inside a stamp block and ignores the blue ink", as
   const title = itemFor(plan, TITLE_LINE.id)!;
   assert.ok(name.area.v0 < title.area.v0, "lines out of order");
   for (const item of [name, title]) {
-    assert.equal(item.patch, true, "a solid box would erase the stamp's ring");
+    assert.ok(item.masks.length > 0, "a solid box would erase the stamp's ring");
+    assert.equal(item.erase.length, 0);
+    assert.equal(item.caution, null, "blue stamp and black text are separable by colour");
     assert.ok(Math.abs(item.area.u0 - SIGNATORY.x0) < 1.5, `starts at ${item.area.u0.toFixed(1)}, text starts at ${SIGNATORY.x0}`);
     for (const rect of item.erase) assert.ok(rect.u0 > STAMP.cx, "erases into the stamp");
   }
@@ -301,9 +303,81 @@ test("draws a pixel patch, not a box, over text inside a stamp", async () => {
     [TITLE_LINE.id, { source: TITLE_LINE.text, translation: "Tedarik Müdürü" }],
   ]);
   const out = await PDFDocument.load(await renderOverlay(pdf, plan, texts));
-  const images = [...out.context.enumerateIndirectObjects()].filter(
-    ([, object]) => object instanceof PDFRawStream && String(object.dict.get(PDFName.of("Subtype"))) === "/Image",
+  const patches = [...out.context.enumerateIndirectObjects()].filter(
+    ([, object]) => object instanceof PDFRawStream && object.dict.has(PDFName.of("SMask")),
   );
-  // The scan itself, plus exactly one patch for the one changed line.
-  assert.equal(images.length, 2);
+  // Exactly one see-through patch, for the one changed line; the unchanged
+  // name line and the stamp get nothing.
+  assert.equal(patches.length, 1);
+});
+
+/**
+ * Colour is not the rule, it is a hint: a stamp can be black like the text.
+ * A black ring with small black letters around it, next to a black
+ * signatory line — once clear of the text, once touching it.
+ */
+function blackStampSvg(textStart: number): string {
+  const px = (value: number) => value * PX;
+  const ringLetters = [0, 40, 80, 120, 160, 200, 240, 280, 320]
+    .map((deg) => {
+      const rad = (deg * Math.PI) / 180;
+      const x = STAMP.cx + (STAMP.r - 4) * Math.cos(rad);
+      const y = STAMP.cy + (STAMP.r - 4) * Math.sin(rad);
+      return `<rect x="${px(x - 1)}" y="${px(y - 1.5)}" width="${px(2)}" height="${px(3)}" fill="#141414"/>`;
+    })
+    .join("");
+  return [
+    `<circle cx="${px(STAMP.cx)}" cy="${px(STAMP.cy)}" r="${px(STAMP.r)}" fill="none" stroke="#141414" stroke-width="${px(1.6)}"/>`,
+    ringLetters,
+    bar(textStart, SIGNATORY.name[0], 90, SIGNATORY.name[1]),
+    bar(textStart, SIGNATORY.title[0], 120, SIGNATORY.title[1]),
+  ].join("");
+}
+
+function overlapsRing(rect: Rect): boolean {
+  // Does the rectangle reach the ring's stroke (radius ±1 pt)?
+  const nearest = (value: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, value));
+  const x = nearest(STAMP.cx, rect.u0, rect.u1);
+  const y = nearest(STAMP.cy, rect.v0, rect.v1);
+  const closest = Math.hypot(x - STAMP.cx, y - STAMP.cy);
+  const corners = [
+    [rect.u0, rect.v0], [rect.u1, rect.v0], [rect.u0, rect.v1], [rect.u1, rect.v1],
+  ].map(([u, v]) => Math.hypot(u - STAMP.cx, v - STAMP.cy));
+  return closest <= STAMP.r + 1 && Math.max(...corners) >= STAMP.r - 1;
+}
+
+test("keeps a black stamp and its black letters when the text stands clear of it", async () => {
+  const start = STAMP.cx + STAMP.r + 3; // 3 pt clear of the ring
+  const plan = await planOverlay(await scannedPdf({ extra: blackStampSvg(start) }), STAMP_BLOCKS);
+  assert.deepEqual(plan.unplaced, []);
+  for (const id of [NAME.id, TITLE_LINE.id]) {
+    const item = itemFor(plan, id)!;
+    assert.ok(Math.abs(item.area.u0 - start) < 1.5, `starts at ${item.area.u0.toFixed(1)}, text at ${start}`);
+    assert.equal(item.caution, null);
+    for (const rect of item.erase) assert.equal(overlapsRing(rect), false, "box reaches the black ring");
+    for (const mask of item.masks) assert.ok(mask.rect.u0 > STAMP.cx, "mask reaches into the stamp");
+  }
+});
+
+test("protects a black stamp that touches the text and says so", async () => {
+  const start = STAMP.cx + STAMP.r - 1; // first strokes run into the ring
+  const plan = await planOverlay(await scannedPdf({ extra: blackStampSvg(start) }), STAMP_BLOCKS);
+  const title = itemFor(plan, TITLE_LINE.id);
+  assert.ok(title, "line was not placed");
+  assert.match(String(title.caution), /aynı renkte/);
+  // Whatever is erased must stay off the ring: the letters fused with it are
+  // left in place (hence the caution), the ring itself is never cut.
+  for (const rect of title.erase) assert.equal(overlapsRing(rect), false, "box cuts the black ring");
+  for (const mask of title.masks) assert.ok(mask.rect.u0 > STAMP.cx, "mask reaches into the stamp");
+});
+
+test("erases a printed line but not the red initials written over it", async () => {
+  const px = (value: number) => value * PX;
+  const initials = `<rect x="${px(62)}" y="${px(22)}" width="${px(5)}" height="${px(6)}" fill="#c8202a"/>`;
+  const plan = await planOverlay(await scannedPdf({ extra: initials }), BLOCKS);
+  const title = itemFor(plan, LINES.title.id)!;
+  assert.equal(title.caution, null);
+  // The red mark sits beside the title's line: the title must be cut out
+  // pixel by pixel, never with a box that would take the initials too.
+  for (const rect of title.erase) assert.ok(rect.u1 < 62 || rect.u0 > 67 || rect.v1 < 22 || rect.v0 > 28);
 });

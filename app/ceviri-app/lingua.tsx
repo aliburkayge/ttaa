@@ -21,14 +21,16 @@ type Segment = {
   ocrWarning?: string | null;
   /** Çeviri orijinal PDF'te bu satırın yerine yazılamayacaksa nedeni. */
   placement?: string | null;
+  /** Yerine yazılır ama çıktıya bakılmalı (ör. harfe değen aynı renkte mühür). */
+  caution?: string | null;
   edited?: boolean;
 };
 
 /** Yerleşim uyarısı yalnızca metni gerçekten değişecek satırda anlamlıdır. */
 function placementWarning(segment: Segment): string | null {
-  if (!segment.placement || !segment.translation) return null;
-  if (segment.translation.trim() === segment.text.trim()) return null;
-  return `Çeviri PDF'te bu satırın yerine yazılamayacak: ${segment.placement}`;
+  if (!segment.translation || segment.translation.trim() === segment.text.trim()) return null;
+  if (segment.placement) return `Çeviri PDF'te bu satırın yerine yazılamayacak: ${segment.placement}`;
+  return segment.caution ?? null;
 }
 
 type EngineStatus = { id: string; label: string; on: boolean };
