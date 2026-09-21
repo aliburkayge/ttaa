@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { degrees, PDFArray, PDFDocument, PDFRawStream } from "pdf-lib";
+import { degrees, PDFArray, PDFDocument, PDFName, PDFRawStream } from "pdf-lib";
 import sharp from "sharp";
 import type { LayoutBlock, OcrLine } from "../lib/ceviri/ocr-layout.ts";
 import { planOverlay, renderOverlay, type OverlayPlan, type Rect } from "../lib/ceviri/pdf-overlay.ts";
@@ -28,7 +28,7 @@ function bar(x0: number, y0: number, x1: number, y1: number) {
   return strokes.join("");
 }
 
-function scanSvg(skewDegrees: number): string {
+function scanSvg(skewDegrees: number, extra = ""): string {
   const line = (x0: number, y0: number, x1: number, y1: number) =>
     `<line x1="${x0 * PX}" y1="${y0 * PX}" x2="${x1 * PX}" y2="${y1 * PX}" stroke="#000" stroke-width="${0.8 * PX}"/>`;
   const t = TABLE;
@@ -53,12 +53,12 @@ function scanSvg(skewDegrees: number): string {
   const cy = (PAGE.height * PX) / 2;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${PAGE.width * PX}" height="${PAGE.height * PX}">
 <rect width="100%" height="100%" fill="#fbfaf7"/>
-<g transform="rotate(${skewDegrees} ${cx} ${cy})">${parts.join("")}</g></svg>`;
+<g transform="rotate(${skewDegrees} ${cx} ${cy})">${parts.join("")}${extra}</g></svg>`;
 }
 
 /** `rotated`: stored landscape and shown upright through /Rotate 270, like the customer's scans. */
-async function scannedPdf(options: { skew?: number; rotated?: boolean } = {}): Promise<Uint8Array> {
-  let image = sharp(Buffer.from(scanSvg(options.skew ?? 0)));
+async function scannedPdf(options: { skew?: number; rotated?: boolean; extra?: string } = {}): Promise<Uint8Array> {
+  let image = sharp(Buffer.from(scanSvg(options.skew ?? 0, options.extra)));
   if (options.rotated) image = image.rotate(90);
   const jpeg = await image.jpeg({ quality: 92 }).toBuffer();
 
@@ -247,4 +247,63 @@ test("writes a translation onto the page, keeping page count and size", async ()
   assert.deepEqual(out.getPages()[0].getSize(), original.getPages()[0].getSize());
   assert.equal(out.getPages()[0].getRotation().angle, 270);
   assert.ok(contentStreams(out) > contentStreams(original), "nothing was drawn");
+});
+
+/**
+ * The signatory block from the customer's form: a blue stamp, and printed
+ * black name/title lines whose first letters touch the stamp's ring. Inside
+ * the ring sits a small dark patch whose blue JPEG has faded towards grey.
+ */
+const STAMP = { cx: 40, cy: 212, r: 16 };
+const SIGNATORY = { x0: 52, name: [203, 209], title: [211, 217] };
+
+function stampSvg(): string {
+  const px = (value: number) => value * PX;
+  return [
+    `<circle cx="${px(STAMP.cx)}" cy="${px(STAMP.cy)}" r="${px(STAMP.r)}" fill="none" stroke="#3a64d8" stroke-width="${px(2)}"/>`,
+    `<rect x="${px(34)}" y="${px(211)}" width="${px(6)}" height="${px(4)}" fill="#40424a"/>`,
+    bar(SIGNATORY.x0, SIGNATORY.name[0], 90, SIGNATORY.name[1]),
+    bar(SIGNATORY.x0, SIGNATORY.title[0], 120, SIGNATORY.title[1]),
+  ].join("");
+}
+
+const NAME = line("Jane Example");
+const TITLE_LINE = line("Head of Supply");
+const STAMP_BLOCKS: LayoutBlock[] = [
+  { kind: "image", page: 1, image: "signature_stamp", lines: [NAME, TITLE_LINE], frame: frame(22, 196, 125, 219) },
+];
+
+test("finds the printed lines inside a stamp block and ignores the blue ink", async () => {
+  const plan = await planOverlay(await scannedPdf({ extra: stampSvg() }), STAMP_BLOCKS);
+  assert.deepEqual(plan.unplaced, []);
+  const name = itemFor(plan, NAME.id)!;
+  const title = itemFor(plan, TITLE_LINE.id)!;
+  assert.ok(name.area.v0 < title.area.v0, "lines out of order");
+  for (const item of [name, title]) {
+    assert.equal(item.patch, true, "a solid box would erase the stamp's ring");
+    assert.ok(Math.abs(item.area.u0 - SIGNATORY.x0) < 1.5, `starts at ${item.area.u0.toFixed(1)}, text starts at ${SIGNATORY.x0}`);
+    for (const rect of item.erase) assert.ok(rect.u0 > STAMP.cx, "erases into the stamp");
+  }
+});
+
+test("lets a longer translation run on into blank space to the right", async () => {
+  const plan = await planOverlay(await scannedPdf({ extra: stampSvg() }), STAMP_BLOCKS);
+  const title = itemFor(plan, TITLE_LINE.id)!;
+  assert.ok(title.area.u1 > 200, `area ends at ${title.area.u1.toFixed(1)}`);
+  assert.ok(title.area.u1 <= PAGE.width - 25);
+});
+
+test("draws a pixel patch, not a box, over text inside a stamp", async () => {
+  const pdf = await scannedPdf({ extra: stampSvg() });
+  const plan = await planOverlay(pdf, STAMP_BLOCKS);
+  const texts = new Map([
+    [NAME.id, { source: NAME.text, translation: NAME.text }],
+    [TITLE_LINE.id, { source: TITLE_LINE.text, translation: "Tedarik Müdürü" }],
+  ]);
+  const out = await PDFDocument.load(await renderOverlay(pdf, plan, texts));
+  const images = [...out.context.enumerateIndirectObjects()].filter(
+    ([, object]) => object instanceof PDFRawStream && String(object.dict.get(PDFName.of("Subtype"))) === "/Image",
+  );
+  // The scan itself, plus exactly one patch for the one changed line.
+  assert.equal(images.length, 2);
 });

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import fontkit from "@pdf-lib/fontkit";
 import { degrees, PDFDocument, rgb, type PDFFont } from "pdf-lib";
+import sharp from "sharp";
 import type { Box, LayoutBlock, OcrLine } from "./ocr-layout";
 import { displayToPage, loadScanPages, type ScanPage } from "./pdf-scan";
 
@@ -35,6 +36,12 @@ export type OverlayItem = {
   area: Rect;
   /** Kapatılacak orijinal yazı şeritleri. */
   erase: Rect[];
+  /**
+   * true ise şerit düz renkle kapatılmaz: taramadan kesilen parçada yalnızca
+   * siyah yazı pikselleri zemin rengine çevrilir, mavi mühür ve imza
+   * pikselleri olduğu gibi kalır.
+   */
+  patch: boolean;
   align: "left" | "center" | "right";
   fontSize: number;
   leading: number;
@@ -140,9 +147,31 @@ export function estimateSkew(page: ScanPage): number {
 /** Bundan yüksek şerit yazı değil görseldir (fotoğraf, logo); asla silinmez. */
 const MAX_TEXT_BAND_PT = 20;
 
-type Grid = { p0: number; q0: number; step: number; w: number; h: number; lum: Float32Array };
+type Grid = {
+  p0: number;
+  q0: number;
+  step: number;
+  w: number;
+  h: number;
+  lum: Float32Array;
+  /** true ise renkli mürekkep (mavi mühür, imza) beyaz sayılmıştır. */
+  neutral: boolean;
+};
 
-function sample(frame: Frame, rect: Rect): Grid {
+/**
+ * Renkli mi? Basılı yazı siyah/gri; mühür ve imza mürekkebi mavi. Kanallar
+ * arası fark taramanın gürültüsünden belirgin şekilde büyükse renklidir.
+ */
+export function isColored([r, g, b]: Color): boolean {
+  return Math.max(r, g, b) - Math.min(r, g, b) > 60;
+}
+
+/**
+ * `neutral`: yalnızca siyah/gri mürekkep yazı sayılır. Mühür ve imza
+ * alanında kullanılır — mührün halkası ya da imzanın karalaması yazı şeridi
+ * sanılmasın.
+ */
+function sample(frame: Frame, rect: Rect, neutral = false): Grid {
   const step = 1 / frame.page.pixelsPerPoint;
   const w = Math.max(1, Math.ceil((rect.u1 - rect.u0) / step));
   const h = Math.max(1, Math.ceil((rect.v1 - rect.v0) / step));
@@ -151,10 +180,15 @@ function sample(frame: Frame, rect: Rect): Grid {
     const q = rect.v0 + (y + 0.5) * step;
     for (let x = 0; x < w; x++) {
       const { u, v } = frame.toDisplay(rect.u0 + (x + 0.5) * step, q);
-      lum[y * w + x] = frame.page.luminance(u, v) ?? 255;
+      if (neutral) {
+        const color = frame.page.rgb(u, v);
+        lum[y * w + x] = !color || isColored(color) ? 255 : 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2];
+      } else {
+        lum[y * w + x] = frame.page.luminance(u, v) ?? 255;
+      }
     }
   }
-  return { p0: rect.u0, q0: rect.v0, step, w, h, lum };
+  return { p0: rect.u0, q0: rect.v0, step, w, h, lum, neutral };
 }
 
 type Run = { from: number; to: number };
@@ -215,6 +249,34 @@ function bands(grid: Grid): Band[] {
         }
       }
     }
+    if (grid.neutral) {
+      // Mühür alanında satırın kapsamı mürekkep kümesinden alınır: mührün
+      // koyu, rengi JPEG'de solmuş kırıntıları yazı sanılıp satır başını mührün
+      // içine kaydırıyordu (DELAN SC: unvan 50 punto sola kaymıştı). Yazı,
+      // kelime boşluklarıyla bitişik tek kümedir; 6 puntodan büyük boşlukla
+      // ayrılan parçalar başka şeydir.
+      const columns: number[] = [];
+      for (let x = 0; x < grid.w; x++) {
+        let dark = 0;
+        for (let y = run.from; y <= run.to; y++) if (grid.lum[y * grid.w + x] < DARK) dark++;
+        columns.push(dark);
+      }
+      const clusters = runs(columns.map((count) => count > 0), Math.round(6 / grid.step));
+      let best: Run | null = null;
+      let bestInk = -1;
+      for (const cluster of clusters) {
+        let ink = 0;
+        for (let x = cluster.from; x <= cluster.to; x++) ink += columns[x];
+        if (ink > bestInk) {
+          bestInk = ink;
+          best = cluster;
+        }
+      }
+      if (best) {
+        minX = best.from;
+        maxX = best.to;
+      }
+    }
     return {
       v0: grid.q0 + run.from * grid.step,
       v1: grid.q0 + (run.to + 1) * grid.step,
@@ -241,7 +303,8 @@ function colors(grid: Grid, frame: Frame): { background: Color; ink: Color } {
       if (lum > 200 || lum < 110) {
         const { u, v } = frame.toDisplay(grid.p0 + (x + 0.5) * grid.step, grid.q0 + (y + 0.5) * grid.step);
         const color = frame.page.rgb(u, v);
-        if (color) (lum > 200 ? light : dark).push(color);
+        // Mühür alanında mavi mürekkep ne zemindir ne yazı.
+        if (color && !(grid.neutral && isColored(color))) (lum > 200 ? light : dark).push(color);
       }
     }
   }
@@ -360,9 +423,18 @@ function measure(
     column: string | null;
     /** Paragraf: şeritler OCR satır sayısına uydurulur, merkezi kutu dışındakiler atılır. */
     within?: Rect;
+    /** Mühür/imza alanı: yalnızca siyah yazı ölçülür ve silinir, mavi mürekkep kalır. */
+    neutral?: boolean;
+    /**
+     * Sola dayalı satırda çeviri, sağı boş kaldığı sürece sağa uzayabilir.
+     * Türkçe çoğu zaman daha uzundur ("Head of Global Supply Chain &
+     * Sourcing" → "Küresel Tedarik Zinciri ve Kaynak Kullanımı Müdürü");
+     * yalnızca eski yazının genişliğine sıkıştırmak yazıyı gereksiz küçültür.
+     */
+    extend?: boolean;
   },
 ): Measured | string {
-  const grid = sample(frame, region);
+  const grid = sample(frame, region, options.neutral);
   const found = bands(grid);
   const tall = (band: Band) => band.v1 - band.v0 > MAX_TEXT_BAND_PT;
 
@@ -451,11 +523,29 @@ function measure(
         ? { u0: region.u0, v0: first.v0, u1: inkRight, v1: bottom }
         : { u0: region.u0, v0: first.v0, u1: region.u1, v1: bottom };
 
+  if (options.extend && align === "left") {
+    // Sağdaki boşluk: herhangi bir mürekkep (mavi imza dahil) görülene ya da
+    // sayfa kenar payına gelene kadar.
+    const last = text[text.length - 1];
+    const limit = frame.page.width - 25;
+    const start = area.u1;
+    while (area.u1 + 1 <= limit) {
+      const strip = sample(frame, { u0: area.u1, v0: first.v0 - 0.5, u1: area.u1 + 1, v1: last.v1 + 0.5 });
+      if (strip.lum.some((lum) => lum < 200)) {
+        // Komşu yazıya yapışmasın: yan sütundan birkaç punto önce dur.
+        area.u1 = Math.max(start, area.u1 - 4);
+        break;
+      }
+      area.u1 += 1;
+    }
+  }
+
   const pad = 0.8;
   return {
     page: pageNo,
     lineIds: lines.map((line) => line.id),
     area,
+    patch: Boolean(options.neutral),
     erase: text.map((band) => ({
       u0: Math.max(region.u0, band.u0 - pad),
       v0: Math.max(region.v0, band.v0 - pad),
@@ -508,7 +598,35 @@ export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): 
     if (!allLines.length) return;
 
     if (block.kind === "image") {
-      skip(allLines, "İmza/mühür görselinin içinde; mührü bozmamak için yerinde çevrilmedi.");
+      // Mühürlü bloğun içindeki basılı yazı (imzacı adı, unvanı). Mühür ve imza
+      // mavi, yazı siyah: yalnızca siyah şeritler ölçülür ve her satır kendi
+      // başına çevrilir ki değişmeyen isim satırına hiç dokunulmasın.
+      if (!frame || !block.frame) {
+        skip(allLines, "Satırın sayfadaki konumu bilinmiyor.");
+        return;
+      }
+      const box = toFrame(block.frame.box, block.frame, frame);
+      const inkBands = bands(sample(frame, grow(box, 1, 1), true)).filter(
+        (band) => band.v1 - band.v0 <= MAX_TEXT_BAND_PT && band.v1 - band.v0 >= 1.5 && band.u1 - band.u0 >= 2,
+      );
+      const found = fitToLines(inkBands, block.lines.length);
+      if (found.length !== block.lines.length) {
+        skip(allLines, "Mühür/imza alanındaki yazı satırları ayırt edilemedi; yerinde çevrilmedi.");
+        return;
+      }
+      block.lines.forEach((line, index) => {
+        const band = found[index];
+        const bandBox = { u0: band.u0, v0: band.v0, u1: box.u1, v1: band.v1 };
+        const result = measure(frame, block.page, grow(bandBox, 1.5, 1), [line], {
+          align: "left",
+          column: null,
+          within: bandBox,
+          neutral: true,
+          extend: true,
+        });
+        if (typeof result === "string") skip([line], result);
+        else measured.push(result);
+      });
       return;
     }
     if (!frame || !block.frame) {
@@ -573,6 +691,7 @@ export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): 
       align,
       column: null,
       within: box,
+      extend: true,
     });
     if (typeof result === "string") skip(block.lines, result);
     else measured.push(result);
@@ -615,6 +734,29 @@ function wrap(text: string, font: PDFFont, size: number, width: number): string[
   return lines.length ? lines : [""];
 }
 
+/**
+ * Taramadan kesilmiş, yazısı alınmış bir parça: siyah/gri (renksiz) koyu
+ * pikseller kağıt rengine döner; mavi mühür ve imza pikselleri ile kağıdın
+ * kendisi olduğu gibi kalır. Düz renkli kutu mührün halkasını da silerdi.
+ */
+async function textlessPatch(scan: ScanPage, skew: number, rect: Rect, paper: Color): Promise<Uint8Array> {
+  const straight = frameFor(scan, skew);
+  const step = 1 / scan.pixelsPerPoint;
+  const w = Math.max(1, Math.round((rect.u1 - rect.u0) / step));
+  const h = Math.max(1, Math.round((rect.v1 - rect.v0) / step));
+  const raw = Buffer.alloc(w * h * 3);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const { u, v } = straight.toDisplay(rect.u0 + (x + 0.5) * step, rect.v0 + (y + 0.5) * step);
+      let color = scan.rgb(u, v) ?? paper;
+      const lum = 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2];
+      if (!isColored(color) && lum < 230) color = paper;
+      raw.set(color, (y * w + x) * 3);
+    }
+  }
+  return new Uint8Array(await sharp(raw, { raw: { width: w, height: h, channels: 3 } }).png().toBuffer());
+}
+
 function toColor([r, g, b]: Color) {
   return rgb(r / 255, g / 255, b / 255);
 }
@@ -633,6 +775,8 @@ export async function renderOverlay(
   const regular = await doc.embedFont(readFileSync(path.join(FONT_DIR, "Tinos-Regular.ttf")));
   const bold = await doc.embedFont(readFileSync(path.join(FONT_DIR, "Tinos-Bold.ttf")));
   const pdfPages = doc.getPages();
+  // Taramanın pikselleri yalnızca mühür alanı gibi parça gereken yerlerde lazım.
+  let scans: ScanPage[] | null = null;
 
   for (const item of plan.items) {
     const page = pdfPages[item.page - 1];
@@ -661,11 +805,20 @@ export async function renderOverlay(
 
     for (const rect of item.erase) {
       const corner = place(rect.u0, rect.v1);
+      const size = { width: rect.u1 - rect.u0, height: rect.v1 - rect.v0 };
+      if (item.patch) {
+        scans ??= (await loadScanPages(pdfBytes)).pages;
+        const scan = scans[item.page - 1];
+        if (scan) {
+          const png = await textlessPatch(scan, plan.pages[item.page - 1]?.skew ?? 0, rect, item.background);
+          page.drawImage(await doc.embedPng(png), { x: corner.x, y: corner.y, ...size, rotate });
+          continue;
+        }
+      }
       page.drawRectangle({
         x: corner.x,
         y: corner.y,
-        width: rect.u1 - rect.u0,
-        height: rect.v1 - rect.v0,
+        ...size,
         rotate,
         color: toColor(item.background),
         borderWidth: 0,
