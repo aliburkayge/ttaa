@@ -4,9 +4,11 @@ import { requireAdminSession } from "../../../../lib/auth";
 import { getCeviriSupabase, CEVIRI_DOCS_BUCKET } from "../../../../lib/ceviri/supabase";
 import { parseDocx } from "../../../../lib/ceviri/docx";
 import { activeOcrProvider, isPdf, ocrToSegments } from "../../../../lib/ceviri/ocr";
+import { layoutStats, type LayoutBlock } from "../../../../lib/ceviri/ocr-layout";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+// Taranmış PDF: tüm belgenin OCR'ı, ardından her görsel için ikinci geçiş.
+export const maxDuration = 300;
 
 const MAX_BYTES = 25 * 1024 * 1024;
 
@@ -37,11 +39,20 @@ export async function POST(request: Request) {
     const fileHash = createHash("sha256").update(bytes).digest("hex");
 
     let parsed: {
-      segments: Array<{ id: string; text: string; kind: "paragraph" | "table-cell"; order: number }>;
+      segments: Array<{
+        id: string;
+        text: string;
+        kind: "paragraph" | "table-cell";
+        order: number;
+        page?: number;
+        ocrWarning?: string | null;
+      }>;
       stats: Record<string, number>;
     };
+    let layout: LayoutBlock[] | null = null;
     let ocrWarning: string | null = null;
     let ocrProvider: string | null = null;
+    let ocrDemo = false;
 
     if (isPdf(bytes)) {
       // PDF yolu OCR sağlayıcısına bağlıdır. Hiçbiri yapılandırılmamışsa demo
@@ -51,18 +62,20 @@ export async function POST(request: Request) {
       const result = await provider.run(bytes, { lang: sourceLang });
       const segments = ocrToSegments(result);
       parsed = {
-        segments: segments.map(({ id, text, kind, order }) => ({ id, text, kind, order })),
-        stats: {
-          paragraphs: segments.length,
-          tableCells: 0,
-          tables: 0,
-          images: 0,
-          words: segments.reduce((total, s) => total + (s.text.match(/S+/g) ?? []).length, 0),
-          pages: result.pages ?? 0,
-        },
+        segments: segments.map(({ id, text, kind, order, page, ocrWarning: warning }) => ({
+          id,
+          text,
+          kind,
+          order,
+          page,
+          ocrWarning: warning,
+        })),
+        stats: layoutStats(result.blocks, result.pages),
       };
+      layout = result.blocks;
       ocrWarning = result.warning;
       ocrProvider = provider.label;
+      ocrDemo = result.demo;
     } else {
       try {
         parsed = parseDocx(bytes);
@@ -109,12 +122,13 @@ export async function POST(request: Request) {
         target_lang: targetLang,
         stats: parsed.stats,
         segments,
+        layout,
       })
       .select("id, filename, stats, segments, source_lang, target_lang, status, instructions, chat")
       .single();
     if (error) throw new Error(error.message);
 
-    return NextResponse.json({ document: data, ocrWarning, ocrProvider });
+    return NextResponse.json({ document: data, ocrWarning, ocrProvider, ocrDemo });
   } catch (error) {
     if (error instanceof Error && error.message === "UNAUTHORIZED") {
       return NextResponse.json({ error: "Oturumunuz sona erdi." }, { status: 401 });

@@ -21,6 +21,13 @@ export function suspiciousTarget(source: string, target: string): string | null 
   if (PUNCTUATION_ONLY.test(target)) {
     return "Bellekteki karşılık yalnızca noktalama içeriyor — bu kayıt büyük ihtimalle hatalı.";
   }
+  // Aynı CAT bölme artığının başka bir yüzü: gerçek bellekte
+  // "Suspension concentrate (SC)" -> ": Süspansiyon Konsantresi (SC)".
+  // Tablo etiketinin iki noktası bir sonraki hücreye kaymış.
+  const leading = /^\s*([:;,.])/.exec(target);
+  if (leading && !/^\s*[:;,.]/.test(source)) {
+    return `Çeviri kaynakta olmayan "${leading[1]}" işaretiyle başlıyor — bellek kaydı büyük ihtimalle bölünmüş bir satırdan kalma.`;
+  }
   const targetWords = (target.match(/\S+/g) ?? []).length;
   if (sourceWords >= 3 && targetWords * 4 <= sourceWords) {
     return `Çeviri kaynaktan çok daha kısa (${sourceWords} kelime → ${targetWords}). Kontrol edin.`;

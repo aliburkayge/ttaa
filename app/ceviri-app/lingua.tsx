@@ -16,6 +16,9 @@ type Segment = {
   warning: string | null;
   engine?: string | null;
   alternatives?: Array<{ engine: string; text: string }>;
+  /** Taranmış belgede: kaynak satır hangi sayfada ve OCR ondan emin miydi. */
+  page?: number;
+  ocrWarning?: string | null;
   edited?: boolean;
 };
 
@@ -30,7 +33,14 @@ type Doc = {
   filename: string;
   source_lang: string;
   target_lang: string;
-  stats: { paragraphs: number; tableCells: number; tables: number; images: number; words: number };
+  stats: {
+    paragraphs: number;
+    tableCells: number;
+    tables: number;
+    images: number;
+    words: number;
+    pages?: number;
+  };
   segments: Segment[];
   instructions?: string | null;
   chat?: ChatMessage[] | null;
@@ -75,6 +85,7 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
   const [targetLang, setTargetLang] = useState("tr-TR");
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [ocrWarning, setOcrWarning] = useState<string | null>(null);
+  const [ocrDemo, setOcrDemo] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const streamRef = useRef<HTMLDivElement>(null);
@@ -105,6 +116,7 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
         setChat(uploaded.chat ?? []);
         setInstructions(uploaded.instructions ?? null);
         setOcrWarning(typeof payload.ocrWarning === "string" ? payload.ocrWarning : null);
+        setOcrDemo(payload.ocrDemo === true);
         setSavedIds(new Set());
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : "Yükleme başarısız.");
@@ -249,6 +261,8 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
     ? doc.segments.filter((s) => s.source === "tm-exact" || s.source === "tm-fuzzy").length
     : 0;
   const flagged = doc ? doc.segments.filter((s) => s.warning !== null).length : 0;
+  const ocrFlagged = doc ? doc.segments.filter((s) => s.ocrWarning).length : 0;
+  const isScan = doc ? doc.filename.toLowerCase().endsWith(".pdf") : false;
   const complete = total > 0 && translated === total;
   const working = busy !== null || thinking;
 
@@ -306,16 +320,32 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
                 <div className={styles.botBody}>
                   {ocrWarning && (
                     <div className={styles.ocrWarn}>
-                      <b>OCR bağlı değil</b>
-                      <span className={styles.demoTag}>DEMO</span>
+                      <b>{ocrDemo ? "OCR bağlı değil" : "OCR notu"}</b>
+                      {ocrDemo && <span className={styles.demoTag}>DEMO</span>}
                       <div>{ocrWarning}</div>
                     </div>
                   )}
                   <p className={styles.botText}>
-                    Belgeyi okudum. <b>{total}</b> çevrilecek segment buldum
-                    {doc.stats.tables > 0 && <> — bunların <b>{doc.stats.tableCells}</b> tanesi tablo hücresi</>}.
-                    Biçim, {doc.stats.tables} tablo ve {doc.stats.images} görsel olduğu gibi korunacak.
+                    {isScan ? (
+                      <>
+                        Taranmış belgeyi okudum: <b>{doc.stats.pages}</b> sayfa, <b>{total}</b> çevrilecek satır
+                        {doc.stats.tables > 0 && <> — <b>{doc.stats.tableCells}</b> tanesi tablo hücresi</>}.
+                        Word çıktısında sayfa yapısı korunacak; imza ve mühürlerin yerine yer tutucu yazılacak.
+                      </>
+                    ) : (
+                      <>
+                        Belgeyi okudum. <b>{total}</b> çevrilecek segment buldum
+                        {doc.stats.tables > 0 && <> — bunların <b>{doc.stats.tableCells}</b> tanesi tablo hücresi</>}.
+                        Biçim, {doc.stats.tables} tablo ve {doc.stats.images} görsel olduğu gibi korunacak.
+                      </>
+                    )}
                   </p>
+                  {ocrFlagged > 0 && (
+                    <p className={styles.botMuted}>
+                      <b>{ocrFlagged}</b> satırda OCR emin değildi ya da metin bir görselin içinden okundu;
+                      bunları kaynak sütununda sarıyla işaretledim. Aslıyla karşılaştırın.
+                    </p>
+                  )}
                   <p className={styles.botMuted}>
                     Çeviriyi başlatabilir ya da önce nasıl çevrilmesini istediğinizi yazabilirsiniz.
                   </p>
@@ -411,8 +441,12 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
                                     {segment.kind === "table-cell" && (
                                       <span className={`${styles.tag} ${styles.tagTable}`}>TABLO</span>
                                     )}
+                                    {segment.page !== undefined && (
+                                      <span className={styles.segNo}>s. {segment.page}</span>
+                                    )}
                                   </div>
                                   {segment.text}
+                                  {segment.ocrWarning && <div className={styles.ocrLine}>{segment.ocrWarning}</div>}
                                 </div>
                                 <div className={`${styles.segSide} ${styles.segDst}`}>
                                   <div className={styles.segTop}>

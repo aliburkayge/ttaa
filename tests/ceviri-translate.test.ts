@@ -98,3 +98,15 @@ test("does not flag a short source translated to a short target", () => {
 test("treats an empty source as nothing to judge", () => {
   assert.equal(suspiciousTarget("", ""), null);
 });
+
+test("flags a memory entry that starts with punctuation the source does not have", () => {
+  // Real entry from the customer's memory: a table label's colon slid into the
+  // next cell when the CAT tool split the row.
+  const warning = suspiciousTarget("Suspension concentrate (SC)", ": Süspansiyon Konsantresi (SC)");
+  assert.match(String(warning), /":" işaretiyle başlıyor/);
+});
+
+test("does not flag leading punctuation that is already in the source", () => {
+  assert.equal(suspiciousTarget(": see annex", ": eke bakınız"), null);
+  assert.equal(suspiciousTarget("Yellow", "Sarı"), null);
+});

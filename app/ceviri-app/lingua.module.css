@@ -433,3 +433,10 @@
   border-radius: 999px; padding: 3px 10px; font: inherit; font-size: 11.5px; cursor: pointer;
 }
 .altUse:hover { border-color: #dcdce2; color: var(--ink); }
+
+/* ---------- OCR'ın emin olmadığı satır ---------- */
+
+.ocrLine {
+  margin-top: 7px; background: #fff8ec; border-radius: 10px;
+  padding: 6px 9px; font-size: 11.5px; line-height: 1.45; color: #8a5a10;
+}
