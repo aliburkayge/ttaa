@@ -4,7 +4,7 @@ import { degrees, PDFArray, PDFDocument, PDFName, PDFRawStream } from "pdf-lib";
 import sharp from "sharp";
 import type { LayoutBlock, OcrLine } from "../lib/ceviri/ocr-layout.ts";
 import { planOverlay, renderOverlay, type OverlayPlan, type Rect } from "../lib/ceviri/pdf-overlay.ts";
-import { displayToPage, imagePlacement, loadScanPages } from "../lib/ceviri/pdf-scan.ts";
+import { displayToPage, imagePlacement, loadScanPages, unpackGray1bpp } from "../lib/ceviri/pdf-scan.ts";
 
 /**
  * A synthetic "scan": a page image with a two-column table, black bars
@@ -72,6 +72,44 @@ async function scannedPdf(options: { skew?: number; rotated?: boolean; extra?: s
     const page = doc.addPage([PAGE.width, PAGE.height]);
     page.drawImage(embedded, { x: 0, y: 0, width: PAGE.width, height: PAGE.height });
   }
+  return doc.save();
+}
+
+/**
+ * The same scan as a black-and-white page: 1 bit per pixel, DeviceGray, the way
+ * fax-style scanners store it (the customer's JBIG2 files decode to exactly this).
+ * Flate instead of JBIG2 because no JBIG2 encoder is at hand; both end up as
+ * packed bits that must be unpacked, not read as bytes.
+ */
+async function bilevelPdf(): Promise<Uint8Array> {
+  const { data, info } = await sharp(Buffer.from(scanSvg(0)))
+    .greyscale()
+    .threshold(128)
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const stride = Math.ceil(info.width / 8);
+  const packed = Buffer.alloc(stride * info.height);
+  for (let y = 0; y < info.height; y++) {
+    for (let x = 0; x < info.width; x++) {
+      if (data[y * info.width + x] > 127) packed[y * stride + (x >> 3)] |= 0x80 >> (x & 7);
+    }
+  }
+
+  const doc = await PDFDocument.create();
+  const page = doc.addPage([PAGE.width, PAGE.height]);
+  const ref = doc.context.register(
+    doc.context.flateStream(packed, {
+      Type: "XObject",
+      Subtype: "Image",
+      Width: info.width,
+      Height: info.height,
+      ColorSpace: "DeviceGray",
+      BitsPerComponent: 1,
+    }),
+  );
+  page.node.setXObject(PDFName.of("Im0"), ref);
+  const content = doc.context.flateStream(`q ${PAGE.width} 0 0 ${PAGE.height} 0 0 cm /Im0 Do Q`);
+  page.node.set(PDFName.of("Contents"), doc.context.register(content));
   return doc.save();
 }
 
@@ -380,4 +418,24 @@ test("erases a printed line but not the red initials written over it", async () 
   // The red mark sits beside the title's line: the title must be cut out
   // pixel by pixel, never with a box that would take the initials too.
   for (const rect of title.erase) assert.ok(rect.u1 < 62 || rect.u0 > 67 || rect.v1 < 22 || rect.v0 > 28);
+});
+
+test("unpacks 1-bit gray rows, padded to whole bytes, with 1 as white", () => {
+  // 10 pixels wide → 2 bytes per row. Row 0: black,white,black,white,... ; row 1: all white.
+  const bits = Uint8Array.from([0b01010101, 0b01000000, 0xff, 0xff]);
+  const gray = unpackGray1bpp(bits, 10, 2);
+  assert.deepEqual(Array.from(gray.slice(0, 10)), [0, 255, 0, 255, 0, 255, 0, 255, 0, 255]);
+  assert.ok(gray.slice(10).every((value) => value === 255));
+});
+
+test("reads a black-and-white scan and finds the table cells in it", async () => {
+  const pdf = await bilevelPdf();
+  const { pages } = await loadScanPages(pdf);
+  assert.equal(Math.round(pages[0].width), PAGE.width);
+  assert.ok((pages[0].luminance(150, 29) ?? 255) < 100, "title bar is not where it should be");
+  assert.ok((pages[0].luminance(150, 45) ?? 0) > 200, "blank area reads dark");
+
+  const plan = await planOverlay(pdf, BLOCKS);
+  assert.deepEqual(plan.unplaced.map((entry) => entry.id), [LINES.stampText.id]);
+  assert.ok(itemFor(plan, LINES.weightValue.id), "two-line cell was not placed");
 });

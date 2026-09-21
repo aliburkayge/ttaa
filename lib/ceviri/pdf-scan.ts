@@ -1,3 +1,4 @@
+import path from "node:path";
 import { inflateSync } from "node:zlib";
 import {
   PDFArray,
@@ -111,7 +112,61 @@ export function imagePlacement(content: string, imageName: string): Matrix | nul
 
 type Raster = { width: number; height: number; channels: 1 | 3 | 4; data: Uint8Array };
 
-async function decodeImage(stream: PDFRawStream): Promise<Raster> {
+/** pdf.js'nin 1 bit/piksel gri görüntüsünü (satırlar bayta hizalı, 1 = beyaz) 8 bit griye açar. */
+export function unpackGray1bpp(bits: Uint8Array, width: number, height: number): Uint8Array {
+  const stride = Math.ceil(width / 8);
+  const gray = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      gray[y * width + x] = (bits[y * stride + (x >> 3)] >> (7 - (x & 7))) & 1 ? 255 : 0;
+    }
+  }
+  return gray;
+}
+
+/**
+ * JBIG2, CCITT, JPX gibi biçimleri pdf.js çözer (JBIG2 çözücüsü WASM). Yalnızca
+ * gerektiğinde yüklenir; JPEG taramalar bu yola hiç girmez. Sayfadaki en büyük
+ * görüntü tarama sayılır.
+ */
+async function decodeWithPdfjs(bytes: Uint8Array, pageNumber: number): Promise<Raster> {
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  // pdf.js sonda "/" ister; Windows'ta path.sep ters eğik çizgi olduğundan
+  // ayırıcılar düzeltilip sona elle eklenir.
+  const wasmUrl = path.join(process.cwd(), "node_modules", "pdfjs-dist", "wasm").split(path.sep).join("/") + "/";
+  const task = pdfjs.getDocument({
+    data: new Uint8Array(bytes),
+    wasmUrl,
+    useSystemFonts: false,
+    verbosity: 0,
+  });
+  const doc = await task.promise;
+  try {
+    const page = await doc.getPage(pageNumber);
+    const ops = await page.getOperatorList();
+    let best: { name: string; area: number } | null = null;
+    for (let i = 0; i < ops.fnArray.length; i++) {
+      if (ops.fnArray[i] !== pdfjs.OPS.paintImageXObject) continue;
+      const [name, width, height] = ops.argsArray[i] as [string, number, number];
+      if (!best || width * height > best.area) best = { name, area: width * height };
+    }
+    if (!best) throw new Error("PDF sayfasında çözülebilir bir tarama görüntüsü bulunamadı.");
+    const store = best.name.startsWith("g_") ? page.commonObjs : page.objs;
+    const image = await new Promise<{ width: number; height: number; kind: number; data: Uint8Array } | null>(
+      (resolve) => store.get(best!.name, resolve),
+    );
+    if (!image?.data) throw new Error("Tarama görüntüsü çözülemedi (bozuk ya da desteklenmeyen sıkıştırma).");
+    const { width, height, data, kind } = image;
+    // pdf.js: 1 = 1 bit gri, 2 = RGB 24, 3 = RGBA 32.
+    if (kind === 1) return { width, height, channels: 1, data: unpackGray1bpp(data, width, height) };
+    if (kind === 2) return { width, height, channels: 3, data: new Uint8Array(data) };
+    return { width, height, channels: 4, data: new Uint8Array(data) };
+  } finally {
+    await doc.destroy();
+  }
+}
+
+async function decodeImage(stream: PDFRawStream, fallback: () => Promise<Raster>): Promise<Raster> {
   const dict = stream.dict;
   const filter = dict.get(PDFName.of("Filter"));
   const names =
@@ -129,13 +184,13 @@ async function decodeImage(stream: PDFRawStream): Promise<Raster> {
       const channels = info.channels >= 3 ? (info.channels === 4 ? 4 : 3) : 1;
       return { width: info.width, height: info.height, channels, data: new Uint8Array(pixels) };
     } else {
-      throw new Error(
-        `Bu PDF'teki tarama ${name.slice(1)} biçiminde sıkıştırılmış; şimdilik yalnızca JPEG taramalar destekleniyor.`,
-      );
+      return fallback();
     }
   }
   const width = (dict.get(PDFName.of("Width")) as PDFNumber).asNumber();
   const height = (dict.get(PDFName.of("Height")) as PDFNumber).asNumber();
+  const bits = (dict.get(PDFName.of("BitsPerComponent")) as PDFNumber | undefined)?.asNumber() ?? 8;
+  if (bits === 1) return { width, height, channels: 1, data: unpackGray1bpp(data, width, height) };
   const channels = data.length >= width * height * 3 ? 3 : 1;
   return { width, height, channels, data };
 }
@@ -177,7 +232,7 @@ export async function loadScanPages(bytes: Uint8Array): Promise<{ doc: PDFDocume
   const doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
   const pages: ScanPage[] = [];
 
-  for (const page of doc.getPages()) {
+  for (const [pageIndex, page] of doc.getPages().entries()) {
     const angle = ((page.getRotation().angle % 360) + 360) % 360;
     const rotation = (angle === 90 || angle === 180 || angle === 270 ? angle : 0) as ScanPage["rotation"];
     const media = page.getMediaBox();
@@ -190,7 +245,7 @@ export async function loadScanPages(bytes: Uint8Array): Promise<{ doc: PDFDocume
     if (!found) throw new Error("PDF sayfasında taranmış görüntü bulunamadı.");
     const placement = imagePlacement(contentBytes(doc, page), found.name);
     if (!placement) throw new Error("Taranmış görüntünün sayfadaki konumu okunamadı.");
-    const raster = await decodeImage(found.stream);
+    const raster = await decodeImage(found.stream, () => decodeWithPdfjs(bytes, pageIndex + 1));
 
     // Sayfa düzlemi → görüntünün birim karesi (0-1), matrisin tersiyle.
     const [a, b, c, d, e, f] = placement;
