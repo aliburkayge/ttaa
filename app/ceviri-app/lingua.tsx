@@ -14,8 +14,14 @@ type Segment = {
   score: number | null;
   note: string | null;
   warning: string | null;
+  engine?: string | null;
+  alternatives?: Array<{ engine: string; text: string }>;
   edited?: boolean;
 };
+
+type EngineStatus = { id: string; label: string; on: boolean };
+
+const ENGINE_LABELS: Record<string, string> = { openai: "OpenAI", deepl: "DeepL", gemini: "Gemini" };
 
 type ChatMessage = { role: "user" | "assistant"; content: string; at: string };
 
@@ -32,28 +38,31 @@ type Doc = {
 
 const LANGS = ["en-US", "tr-TR", "de-DE", "ru-RU", "es-ES", "it-IT", "el-GR", "pl-PL"];
 
-/**
- * Hangi motorun gerçekten çalıştığı. Bu şerit süs değil: resmi bir evrakın
- * hangi kaynaktan çıktığı sorulduğunda cevabı ekranda durmalı. DeepL ve Gemini
- * adaptörleri yazıldı ama anahtarları yok, o yüzden "bağlı değil" yazıyor.
- */
-const ENGINES = [
-  { label: "Çeviri belleği", on: true },
-  { label: "Terminoloji", on: true },
-  { label: "OpenAI", on: true },
-  { label: "DeepL", on: false },
-  { label: "Gemini", on: false },
-];
-
-function tagFor(source: string | null) {
+function tagFor(source: string | null, engine?: string | null) {
   if (source === "tm-exact" || source === "tm-fuzzy") return { label: "BELLEK", cls: styles.tagTm };
-  if (source === "engine") return { label: "MOTOR", cls: styles.tagEngine };
+  if (source === "engine") {
+    const label = engine ? (ENGINE_LABELS[engine] ?? engine).toLocaleUpperCase("tr") : "MOTOR";
+    return { label, cls: styles.tagEngine };
+  }
   if (source === "human") return { label: "DÜZELTİLDİ", cls: styles.tagTm };
   if (source === "untouched") return { label: "HATA", cls: styles.tagFail };
   return null;
 }
 
-export default function Lingua() {
+/**
+ * Hangi motorun gerçekten çalıştığı, sunucudaki anahtarlardan okunur. Bu şerit
+ * süs değil: resmi bir evrakın hangi kaynaktan çıktığı sorulduğunda cevabı
+ * ekranda durmalı.
+ */
+export default function Lingua({ engines }: { engines: EngineStatus[] }) {
+  const strip = [
+    { label: "Çeviri belleği", on: true },
+    { label: "Terminoloji", on: true },
+    ...engines.map((engine) => ({ label: engine.label, on: engine.on })),
+  ];
+  const route = ["Bellek", engines.filter((e) => e.on).map((e) => e.label).join(" + ")]
+    .filter(Boolean)
+    .join(" → ");
   const [doc, setDoc] = useState<Doc | null>(null);
   const [chat, setChat] = useState<ChatMessage[]>([]);
   const [instructions, setInstructions] = useState<string | null>(null);
@@ -204,6 +213,24 @@ export default function Lingua() {
     }
   }
 
+  /**
+   * Seçilmeyen motorun metnini kabul etmek bir inceleme kararıdır; elle
+   * düzeltme gibi belleğe onaylı çeviri olarak yazılır.
+   */
+  function adopt(segmentId: string, text: string) {
+    setDoc((current) =>
+      current && {
+        ...current,
+        segments: current.segments.map((segment) =>
+          segment.id === segmentId
+            ? { ...segment, translation: text, source: "human", warning: null, alternatives: [] }
+            : segment,
+        ),
+      },
+    );
+    void saveSegment(segmentId, text);
+  }
+
   function onPick(file: File | undefined) {
     if (file) void upload(file);
   }
@@ -245,7 +272,8 @@ export default function Lingua() {
               <p className={styles.helloTitle}>Merhaba, ben Lingua</p>
               <p className={styles.helloText}>
                 Bir belge bırakın. Önce kendi çeviri belleğinize ve terminolojinize bakarım;
-                bellekte olmayan cümleleri OpenAI&apos;ye sorarım. Sonrasında nasıl çevrilmesini
+                bellekte olmayan cümleleri {engines.filter((e) => e.on).map((e) => e.label).join(" ve ")}{" "}
+                ile çevirip kurallara en uygun olanı seçerim. Sonrasında nasıl çevrilmesini
                 istediğinizi buradan anlatabilirsiniz.
               </p>
               <div className={styles.chips}>
@@ -293,7 +321,7 @@ export default function Lingua() {
                   </p>
 
                   <div className={styles.engines}>
-                    {ENGINES.map((engine) => (
+                    {strip.map((engine) => (
                       <span
                         key={engine.label}
                         className={engine.on ? styles.engineOn : styles.engineOff}
@@ -374,7 +402,7 @@ export default function Lingua() {
                         </div>
                         <div className={styles.segScroll}>
                           {doc.segments.map((segment, index) => {
-                            const tag = tagFor(segment.source);
+                            const tag = tagFor(segment.source, segment.engine);
                             return (
                               <div className={styles.seg} key={segment.id}>
                                 <div className={`${styles.segSide} ${styles.segSrc}`}>
@@ -416,6 +444,22 @@ export default function Lingua() {
                                   {segment.note && !segment.warning && (
                                     <div className={styles.note}>{segment.note}</div>
                                   )}
+                                  {segment.source === "engine" &&
+                                    segment.alternatives?.map((alternative) => (
+                                      <div className={styles.alt} key={alternative.engine}>
+                                        <span className={styles.altHead}>
+                                          {ENGINE_LABELS[alternative.engine] ?? alternative.engine} önerisi
+                                        </span>
+                                        <span className={styles.altText}>{alternative.text}</span>
+                                        <button
+                                          className={styles.altUse}
+                                          type="button"
+                                          onClick={() => adopt(segment.id, alternative.text)}
+                                        >
+                                          Bunu kullan
+                                        </button>
+                                      </div>
+                                    ))}
                                 </div>
                               </div>
                             );
@@ -531,8 +575,11 @@ export default function Lingua() {
               >
                 {LANGS.map((lang) => <option key={lang} value={lang}>{lang}</option>)}
               </select>
-              <span className={styles.model} title="Önce çeviri belleği, sonra OpenAI. DeepL ve Gemini için anahtar yok.">
-                Bellek → OpenAI
+              <span
+                className={styles.model}
+                title="Önce çeviri belleği; bellekte olmayan cümleler açık motorlara gider, kurallara göre biri seçilir."
+              >
+                {route}
               </span>
               <button
                 className={styles.send}

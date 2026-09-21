@@ -1,6 +1,11 @@
 import { fetchWithRetry, integerEnv } from "../upstream";
 import { searchTm, matchTier } from "./tm-store";
 import { lookupTerms, type TermHit } from "./term-store";
+import { missingProtected, protectedSpans, suspiciousTarget, violatedTerms } from "./qa";
+import { arbitrate, configuredEngines, type EngineCandidate } from "./engines";
+
+// Testler ve eski çağıranlar kuralları buradan içe aktarıyor.
+export { missingProtected, protectedSpans, suspiciousTarget, violatedTerms };
 
 type ResponsesBody = {
   output_text?: string;
@@ -55,69 +60,15 @@ export type TranslatedSegment = {
   score: number | null;
   terms: TermHit[];
   forbidden: TermHit[];
+  /** Which engine produced the text; null for memory hits. */
+  engine?: string | null;
+  /** Rule-compliant texts from other engines that were not chosen. */
+  alternatives?: Array<{ engine: string; text: string }>;
   /** Informational provenance, shown but never counted as a problem. */
   note: string | null;
   /** A QA problem a human must look at before this document goes out. */
   warning: string | null;
 };
-
-const PUNCTUATION_ONLY = /^[\s.,;:!?·•\-–—_/\\()[\]{}'"]*$/;
-
-/**
- * Catches translation-memory entries that are not real translations. Their CAT
- * tool split headings across lines, so the memory contains rows like
- * "CONTROL" -> "." where a translator folded two source lines into one target
- * phrase. Reused blindly, those rows silently delete text from a document.
- */
-export function suspiciousTarget(source: string, target: string): string | null {
-  const sourceWords = (source.match(/\S+/g) ?? []).length;
-  if (sourceWords === 0) return null;
-
-  if (PUNCTUATION_ONLY.test(target)) {
-    return "Bellekteki karşılık yalnızca noktalama içeriyor — bu kayıt büyük ihtimalle hatalı.";
-  }
-  const targetWords = (target.match(/\S+/g) ?? []).length;
-  if (sourceWords >= 3 && targetWords * 4 <= sourceWords) {
-    return `Çeviri kaynaktan çok daha kısa (${sourceWords} kelime → ${targetWords}). Kontrol edin.`;
-  }
-  return null;
-}
-
-/**
- * Text that must survive a translation byte for byte: product and registration
- * codes, quantities with units, dates, CAS numbers, emails, URLs. A single
- * altered digit in a registration code invalidates an official document, so
- * these are listed for the model and checked again afterwards.
- */
-const PROTECTED = [
-  // Registration codes as they appear in the customer's own files:
-  // "BAS 216 17 F", "BAS 555 00 F", "BASF 216 17 F", "BAS 480 031".
-  /\b[A-Z]{2,4}\s+\d{2,4}(?:\s+\d{1,3}){1,2}(?:\s+[A-Z])?\b/g,
-  /\b\d+[.,]?\d*\s?(?:g\/l|g\/kg|mg\/kg|ml|L|kg|g|mm|cm|%)\b/gi,
-  /\b\d{1,3}-\d{2,3}-\d\b/g, // CAS
-  /\b[\w.+-]+@[\w-]+\.[\w.]+\b/g,
-  /\bhttps?:\/\/\S+/g,
-  /\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b/g,
-];
-
-export function protectedSpans(text: string): string[] {
-  const found = new Set<string>();
-  for (const pattern of PROTECTED) {
-    pattern.lastIndex = 0;
-    for (const match of text.matchAll(pattern)) found.add(match[0]);
-  }
-  return [...found];
-}
-
-/** Every protected span in the source must reappear untouched in the target. */
-export function missingProtected(source: string, target: string): string[] {
-  return protectedSpans(source).filter((span) => !target.includes(span));
-}
-
-export function violatedTerms(target: string, forbidden: TermHit[]): TermHit[] {
-  const lower = target.toLocaleLowerCase("tr");
-  return forbidden.filter((hit) => lower.includes(hit.targetText.toLocaleLowerCase("tr")));
-}
 
 function buildPrompt(input: {
   text: string;
@@ -230,9 +181,52 @@ export async function translateSegment(
     instructions: options.instructions ?? null,
   });
 
-  const translation = await askOpenAI(prompt, options.model);
+  const engineContext = {
+    sourceLang: options.sourceLang,
+    targetLang: options.targetLang,
+    terms: termHits.preferred,
+    forbidden: termHits.forbidden,
+    similar: matches.slice(0, 3),
+  };
+
+  // OpenAI başta: bellek eşleşmelerini, terim listesini ve kullanıcı
+  // talimatını taşıyan tek motor o. Hakem eşitlikte sırayı esas alır.
+  const runners: Array<{ engine: string; run: () => Promise<string> }> = [
+    { engine: "openai", run: () => askOpenAI(prompt, options.model) },
+    ...configuredEngines().map((engine) => ({
+      engine: engine.id,
+      run: () => engine.translate(segment.text, engineContext),
+    })),
+  ];
+
+  const settled = await Promise.allSettled(runners.map((runner) => runner.run()));
+  const candidates: EngineCandidate[] = settled.map((outcome, index) =>
+    outcome.status === "fulfilled"
+      ? { engine: runners[index].engine, text: outcome.value, error: null }
+      : {
+          engine: runners[index].engine,
+          text: "",
+          error: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason),
+        },
+  );
+
+  const verdict = arbitrate(segment.text, candidates, termHits.forbidden, termHits.preferred);
+
+  // Hiçbir aday kurallardan geçemediyse bile inceleyene boş satır verilmez:
+  // metin üreten ilk aday gösterilir, neden geçemediği uyarıda yazar.
+  const fallback = candidates.find((candidate) => candidate.text.trim());
+  const chosen = verdict.chosen ?? fallback;
+  if (!chosen) {
+    throw new Error(verdict.rejected.map((r) => `${r.engine}: ${r.reason}`).join(" · "));
+  }
+  const translation = chosen.text;
 
   const problems: string[] = [];
+  if (verdict.needsHuman) {
+    problems.push(
+      `Hiçbir motor kurallardan geçemedi (${verdict.rejected.map((r) => `${r.engine}: ${r.reason}`).join("; ")})`,
+    );
+  }
   const missing = missingProtected(segment.text, translation);
   if (missing.length) problems.push(`Kaynaktaki şu ifadeler çeviride yok: ${missing.join(", ")}`);
   const violated = violatedTerms(translation, termHits.forbidden);
@@ -240,14 +234,17 @@ export async function translateSegment(
   const short = suspiciousTarget(segment.text, translation);
   if (short) problems.push(short);
 
+  const noteParts = [verdict.chosen ? verdict.reason : null];
+  if (termHits.preferred.length) noteParts.push(`${termHits.preferred.length} terim kuralı`);
+
   return {
     ...base,
     translation,
     source: "engine",
+    engine: chosen.engine,
+    alternatives: verdict.alternatives.map(({ engine, text }) => ({ engine, text })),
     score: best ? best.score : null,
-    note: termHits.preferred.length
-      ? `${termHits.preferred.length} terim kuralı uygulandı`
-      : null,
+    note: noteParts.filter(Boolean).join(" · ") || null,
     warning: problems.length ? problems.join(" · ") : null,
   };
 }

@@ -1,13 +1,16 @@
+import { fetchWithRetry, integerEnv } from "../upstream";
 import type { TermHit } from "./term-store";
-import { missingProtected, protectedSpans, violatedTerms } from "./translate";
+import { missingProtected, presentTerms, protectedSpans, violatedTerms } from "./qa";
 
 /**
  * Çeviri motorları, adaptörün arkasında (spec 6.1-6.2).
  *
- * OpenAI gerçek ve çalışıyor. DeepL ve Gemini için anahtar yok; adaptörleri
- * tanımlı ama gövdeleri bilinçli olarak boş — çağrılırlarsa sessizce boş metin
- * dönmek yerine açıkça hata veriyorlar. Anahtarlar geldiğinde yalnızca bu
- * dosya değişir; hakem ve QA katmanı aynı kalır.
+ * OpenAI translate.ts içinde çağrılır, çünkü bellek eşleşmelerini ve terim
+ * listesini isteminde taşıyan tek motor odur. Buradaki motorlar ona ikinci
+ * görüş olarak eşlik eder; sonuçları aşağıdaki hakemden geçer.
+ *
+ * DeepL gerçek ve çalışıyor. Gemini için anahtar yok; çağrılırsa sessizce boş
+ * metin dönmek yerine açıkça hata verir.
  */
 
 export type EngineCandidate = {
@@ -28,7 +31,8 @@ export type EngineContext = {
 export type Engine = {
   id: string;
   label: string;
-  configured: boolean;
+  /** Her okumada ortamdan hesaplanır; anahtar eklenince yeniden başlatma yeter. */
+  readonly configured: boolean;
   translate(text: string, context: EngineContext): Promise<string>;
 };
 
@@ -38,7 +42,9 @@ export type Verdict = {
   reason: string;
   /** Yasaklı terim veya eksik korunan ifade yüzünden elenenler. */
   rejected: Array<{ engine: string; reason: string }>;
-  /** Hiçbir aday temiz değilse true — insan bakmalı. */
+  /** Kurallardan geçen ama seçilmeyen, metni farklı adaylar — inceleyene gösterilir. */
+  alternatives: EngineCandidate[];
+  /** Hiçbir aday kurallardan geçemediyse true — insan bakmalı. */
   needsHuman: boolean;
 };
 
@@ -50,40 +56,121 @@ function notImplemented(name: string, envVar: string): Engine["translate"] {
   };
 }
 
+/**
+ * DeepL dil kodları: kaynakta yalnızca ana dil ("EN"), hedefte İngilizce ve
+ * Portekizce için bölge zorunlu ("EN-US", "PT-BR"). Diğer hedefler ana dil.
+ */
+export function deeplLang(tag: string, role: "source" | "target"): string {
+  const [primary, region] = tag.split("-");
+  const base = primary.toUpperCase();
+  if (role === "source") return base;
+  if (base === "EN") return region?.toUpperCase() === "GB" ? "EN-GB" : "EN-US";
+  if (base === "PT") return region?.toUpperCase() === "PT" ? "PT-PT" : "PT-BR";
+  return base;
+}
+
+/** ":fx" ile biten anahtar ücretsiz plandır ve ayrı bir sunucuya gider. */
+export function deeplEndpoint(key: string): string {
+  return key.endsWith(":fx")
+    ? "https://api-free.deepl.com/v2/translate"
+    : "https://api.deepl.com/v2/translate";
+}
+
+type DeeplBody = { translations?: Array<{ text?: string }>; message?: string };
+
+async function deeplTranslate(text: string, context: EngineContext): Promise<string> {
+  const key = process.env.DEEPL_API_KEY?.trim();
+  if (!key) throw new Error("DEEPL_API_KEY sunucu ortamında tanımlı değil.");
+
+  const response = await fetchWithRetry(
+    deeplEndpoint(key),
+    {
+      method: "POST",
+      headers: { Authorization: `DeepL-Auth-Key ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: [text],
+        source_lang: deeplLang(context.sourceLang, "source"),
+        target_lang: deeplLang(context.targetLang, "target"),
+        // Resmi evrak: cümle bölme DeepL'e bırakılmaz, segment bizim
+        // ayırdığımız gibi gider ve gelir.
+        split_sentences: "0",
+        preserve_formatting: true,
+      }),
+      cache: "no-store",
+    },
+    {
+      upstream: "DeepL",
+      timeoutMs: integerEnv("DEEPL_TIMEOUT_MS", 30_000),
+      maxAttempts: 3,
+      // Çeviri isteği yan etkisizdir; aynı metni ikinci kez göndermek güvenli.
+      retryUnsafe: true,
+    },
+  );
+
+  const body = (await response.json().catch(() => ({}))) as DeeplBody;
+  if (response.status === 456) throw new Error("DeepL aylık karakter kotası doldu.");
+  if (!response.ok) throw new Error(body.message ?? `DeepL HTTP ${response.status}`);
+  const translated = body.translations?.[0]?.text?.trim();
+  if (!translated) throw new Error("DeepL boş yanıt döndü.");
+  return translated;
+}
+
 export const DEEPL_ENGINE: Engine = {
   id: "deepl",
   label: "DeepL",
-  configured: Boolean(process.env.DEEPL_API_KEY?.trim()),
-  translate: notImplemented("DeepL", "DEEPL_API_KEY"),
+  get configured() {
+    return Boolean(process.env.DEEPL_API_KEY?.trim());
+  },
+  translate: deeplTranslate,
 };
 
 export const GEMINI_ENGINE: Engine = {
   id: "gemini",
   label: "Gemini",
-  configured: Boolean(process.env.GEMINI_API_KEY?.trim()),
+  get configured() {
+    return Boolean(process.env.GEMINI_API_KEY?.trim());
+  },
   translate: notImplemented("Gemini", "GEMINI_API_KEY"),
 };
 
-/** Yapılandırılmış motorları döner. OpenAI çağıran tarafça eklenir. */
+/** Yapılandırılmış ek motorları döner. OpenAI çağıran tarafça eklenir. */
 export function configuredEngines(): Engine[] {
   return [DEEPL_ENGINE, GEMINI_ENGINE].filter((engine) => engine.configured);
+}
+
+export type EngineStatus = { id: string; label: string; on: boolean };
+
+/** Arayüz ve sohbet için: hangi motor gerçekten açık. */
+export function engineStatus(): EngineStatus[] {
+  return [
+    { id: "openai", label: "OpenAI", on: Boolean(process.env.OPENAI_API_KEY?.trim()) },
+    ...[DEEPL_ENGINE, GEMINI_ENGINE].map((engine) => ({
+      id: engine.id,
+      label: engine.label,
+      on: engine.configured,
+    })),
+  ];
 }
 
 /**
  * Hakem (spec 6.2). Serbest değil, kısıtlı:
  *
- * 1. Yasaklı terim içeren aday, karşılaştırmaya girmeden elenir.
- * 2. Kaynaktaki korunan ifadeyi (ruhsat kodu, miktar, tarih) kaybeden aday elenir.
- * 3. Kalanlar arasından en çok motorun üzerinde uzlaştığı metin seçilir;
- *    beraberlikte motor sırası belirleyicidir.
+ * 1. Hata veren, yasaklı terim içeren veya kaynaktaki korunan ifadeyi (ruhsat
+ *    kodu, miktar, tarih) kaybeden aday, karşılaştırmaya girmeden elenir.
+ * 2. Kalanlar arasından en çok motorun aynı metinde uzlaştığı seçilir.
+ * 3. Uzlaşma yoksa zorunlu terimlerden daha çoğunu kullanan seçilir.
+ * 4. O da eşitse aday sırası belirler — çağıran, bellek ve terim listesini
+ *    istemde taşıyan motoru başa koyar.
  *
- * "Hangisi daha akıcı" diye seçim yapılmaz — resmi evrakta akıcılık değil,
- * kurallara uygunluk ve tutarlılık belirleyicidir.
+ * "Hangisi daha akıcı" diye seçim yapılmaz. İki motorun farklı ama kurallara
+ * uygun metin üretmesi normaldir; bu yüzden ayrışma tek başına insana
+ * yönlendirmez, seçilmeyen metin alternatif olarak inceleyene gösterilir.
  */
 export function arbitrate(
   source: string,
   candidates: EngineCandidate[],
   forbidden: TermHit[],
+  required: TermHit[] = [],
 ): Verdict {
   const rejected: Verdict["rejected"] = [];
   const eligible: EngineCandidate[] = [];
@@ -117,36 +204,54 @@ export function arbitrate(
       chosen: null,
       reason: "Hiçbir aday kurallardan geçemedi.",
       rejected,
+      alternatives: [],
       needsHuman: true,
     };
   }
 
-  const tally = new Map<string, EngineCandidate[]>();
+  // Aynı metni üreten adaylar tek grupta; gruplar ilk görülme sırasını korur.
+  const groups = new Map<string, EngineCandidate[]>();
   for (const candidate of eligible) {
     const key = candidate.text.trim();
-    const list = tally.get(key);
+    const list = groups.get(key);
     if (list) list.push(candidate);
-    else tally.set(key, [candidate]);
+    else groups.set(key, [candidate]);
   }
 
-  let best: EngineCandidate[] = [];
-  for (const group of tally.values()) if (group.length > best.length) best = group;
+  const ranked = [...groups.values()].map((group, order) => ({
+    group,
+    order,
+    terms: presentTerms(group[0].text, required).length,
+  }));
+  ranked.sort(
+    (a, b) => b.group.length - a.group.length || b.terms - a.terms || a.order - b.order,
+  );
 
-  const agreed = best.length;
-  const protectedCount = protectedSpans(source).length;
-  const reasonParts = [
-    agreed > 1
-      ? `${agreed} motor aynı metinde uzlaştı (${best.map((c) => c.engine).join(", ")})`
-      : `tek geçerli aday: ${best[0].engine}`,
-  ];
+  const best = ranked[0];
+  const runnerUp = ranked[1];
+  const reasonParts: string[] = [];
+  if (best.group.length > 1) {
+    reasonParts.push(
+      `${best.group.length} motor aynı metinde uzlaştı (${best.group.map((c) => c.engine).join(", ")})`,
+    );
+  } else if (!runnerUp) {
+    reasonParts.push(`tek geçerli aday: ${best.group[0].engine}`);
+  } else if (best.terms > runnerUp.terms) {
+    reasonParts.push(
+      `${best.group[0].engine} seçildi: ${required.length} zorunlu terimden ${best.terms} tanesini kullanıyor, ${runnerUp.group[0].engine} ${runnerUp.terms}`,
+    );
+  } else {
+    reasonParts.push(`${best.group[0].engine} seçildi: öncelikli motor`);
+  }
   if (rejected.length) reasonParts.push(`${rejected.length} aday elendi`);
+  const protectedCount = protectedSpans(source).length;
   if (protectedCount) reasonParts.push(`${protectedCount} korunan ifade doğrulandı`);
 
   return {
-    chosen: best[0],
+    chosen: best.group[0],
     reason: reasonParts.join(" · "),
     rejected,
-    // Tek motor varken uzlaşma diye bir şey yoktur; ayrışma ancak 2+ motorda anlamlıdır.
-    needsHuman: eligible.length > 1 && agreed === 1,
+    alternatives: ranked.slice(1).map((entry) => entry.group[0]),
+    needsHuman: false,
   };
 }

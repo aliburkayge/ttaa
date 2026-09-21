@@ -16,6 +16,8 @@ type StoredSegment = {
   score: number | null;
   note: string | null;
   warning: string | null;
+  engine?: string | null;
+  alternatives?: Array<{ engine: string; text: string }>;
 };
 
 /** How many segments one request translates before returning, so the UI keeps moving. */
@@ -73,6 +75,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         translation: result.translation,
         source: result.source,
         score: result.score,
+        engine: result.engine ?? null,
+        alternatives: result.alternatives ?? [],
         note: result.note,
         warning: result.warning,
       };

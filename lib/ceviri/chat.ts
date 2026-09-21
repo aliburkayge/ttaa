@@ -1,3 +1,4 @@
+import type { EngineStatus } from "./engines";
 import { askOpenAI } from "./translate";
 
 /**
@@ -18,6 +19,8 @@ import { askOpenAI } from "./translate";
 export type ChatMessage = { role: "user" | "assistant"; content: string; at: string };
 
 export type DocumentContext = {
+  /** Gerçekte hangi motorların açık olduğu — sohbet bunu uydurmasın diye. */
+  engines: EngineStatus[];
   filename: string;
   sourceLang: string;
   targetLang: string;
@@ -40,6 +43,21 @@ export type ChatDecision = {
 /** İsteme sığdırmak için: uzun belgelerde segmentlerin bir kısmı gösterilir. */
 const MAX_SEGMENTS_IN_PROMPT = 60;
 const MAX_HISTORY = 12;
+
+function engineLines(engines: EngineStatus[]): string[] {
+  const extra = engines.filter((engine) => engine.id !== "openai");
+  const on = extra.filter((engine) => engine.on).map((engine) => engine.label);
+  const off = extra.filter((engine) => !engine.on).map((engine) => engine.label);
+  const lines: string[] = [];
+  if (on.length) {
+    lines.push(
+      `- ${on.join(" and ")} also translate the same segments in parallel, as a second opinion.`,
+      "- A rule-based referee picks one: candidates using a forbidden term or losing a protected span (registration codes, quantities, dates) are dropped; then agreement between engines wins; then the one using more of the required glossary terms; then OpenAI. The text not chosen is shown to the reviewer as an alternative.",
+    );
+  }
+  if (off.length) lines.push(`- ${off.join(" and ")}: adapter exists but no API key, so it does not run.`);
+  return lines;
+}
 
 function segmentLines(context: DocumentContext): string[] {
   const shown = context.segments.slice(0, MAX_SEGMENTS_IN_PROMPT);
@@ -71,7 +89,7 @@ export function buildChatPrompt(
     "- Every segment first goes to the translation memory (the customer's own past CAT translations).",
     "- A match of 95% or better is reused verbatim. It is text already delivered and approved.",
     "- Anything below that goes to OpenAI, carrying the memory matches and the glossary in the prompt.",
-    "- DeepL and Gemini adapters exist but have no API key yet, so they do not run.",
+    ...engineLines(context.engines),
     "- Standing instructions apply to the OpenAI path only. They do NOT rewrite verbatim memory hits.",
     "",
     `Document: ${context.filename} (${context.sourceLang} -> ${context.targetLang})`,

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireAdminSession } from "../../../../../../lib/auth";
 import { getCeviriSupabase } from "../../../../../../lib/ceviri/supabase";
 import { runChat, type ChatMessage } from "../../../../../../lib/ceviri/chat";
+import { engineStatus } from "../../../../../../lib/ceviri/engines";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -41,6 +42,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
     const decision = await runChat(
       {
+        engines: engineStatus(),
         filename: doc.filename,
         sourceLang: doc.source_lang,
         targetLang: doc.target_lang,
@@ -73,7 +75,16 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const nextSegments = reset
       ? segments.map((segment) =>
           segment.source === "engine" || segment.source === "untouched"
-            ? { ...segment, translation: null, source: null, score: null, note: null, warning: null }
+            ? {
+                ...segment,
+                translation: null,
+                source: null,
+                score: null,
+                note: null,
+                warning: null,
+                engine: null,
+                alternatives: [],
+              }
             : segment,
         )
       : segments;

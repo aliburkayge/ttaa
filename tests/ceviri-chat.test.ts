@@ -4,6 +4,11 @@ import { buildChatPrompt, parseChatDecision, type DocumentContext } from "../lib
 
 function context(overrides: Partial<DocumentContext> = {}): DocumentContext {
   return {
+    engines: [
+      { id: "openai", label: "OpenAI", on: true },
+      { id: "deepl", label: "DeepL", on: true },
+      { id: "gemini", label: "Gemini", on: false },
+    ],
     filename: "Privest-EN.docx",
     sourceLang: "en-US",
     targetLang: "tr-TR",
@@ -23,12 +28,29 @@ test("puts the document's own segments in the prompt so answers are not invented
   assert.match(prompt, /Segments: 2, translated: 1/);
 });
 
-test("tells the model that DeepL and Gemini are not running", () => {
+test("tells the model exactly which engines are running", () => {
   // The user asked exactly this; an assistant that claims otherwise is lying
   // about which engine produced an official document.
   const prompt = buildChatPrompt(context(), [], "hangi motorları kullanıyorsun?");
-  assert.match(prompt, /DeepL and Gemini adapters exist but have no API key/);
-  assert.match(prompt, /below that goes to OpenAI/);
+  assert.match(prompt, /DeepL also translate the same segments in parallel/);
+  assert.match(prompt, /Gemini: adapter exists but no API key/);
+  assert.match(prompt, /rule-based referee/);
+});
+
+test("does not mention a referee when OpenAI is the only engine", () => {
+  const prompt = buildChatPrompt(
+    context({
+      engines: [
+        { id: "openai", label: "OpenAI", on: true },
+        { id: "deepl", label: "DeepL", on: false },
+        { id: "gemini", label: "Gemini", on: false },
+      ],
+    }),
+    [],
+    "?",
+  );
+  assert.equal(prompt.includes("referee"), false);
+  assert.match(prompt, /DeepL and Gemini: adapter exists but no API key/);
 });
 
 test("carries the standing instructions already in force", () => {
