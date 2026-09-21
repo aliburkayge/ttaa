@@ -1,7 +1,7 @@
 import { requireAdminSession } from "../../../../../../lib/auth";
 import { getCeviriSupabase, CEVIRI_DOCS_BUCKET } from "../../../../../../lib/ceviri/supabase";
 import { rebuildDocx } from "../../../../../../lib/ceviri/docx";
-import { renderOverlay, type ScanLayout } from "../../../../../../lib/ceviri/pdf-overlay";
+import { planOverlay, renderOverlay, type ScanLayout } from "../../../../../../lib/ceviri/pdf-overlay";
 import { tidyTarget } from "../../../../../../lib/ceviri/qa";
 
 export const runtime = "nodejs";
@@ -36,12 +36,33 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     const disposition = (name: string) => `attachment; filename*=UTF-8''${encodeURIComponent(name)}`;
 
     if (/\.pdf$/i.test(doc.storage_path)) {
-      const layout = doc.layout as ScanLayout | null;
+      let layout = doc.layout as ScanLayout | null;
       if (!layout || layout.version !== 2) {
         return Response.json(
           { error: "Bu belge eski bir sürümle yüklenmiş; yeniden yükleyin." },
           { status: 409 },
         );
+      }
+      if (!layout.overlay) {
+        // Yükleme sırasında sayfa düzeni ölçülememiş (ör. desteklenmeyen
+        // sıkıştırma, sonradan eklendi). OCR blokları kayıtlı olduğundan
+        // yeniden yüklemeye ve OCR'a gerek yok: planı şimdi çıkarıp saklarız.
+        try {
+          const overlay = await planOverlay(original, layout.blocks);
+          const unplaced = new Map(overlay.unplaced.map((entry) => [entry.id, entry.reason]));
+          const cautions = new Map(
+            overlay.items.flatMap((item) => (item.caution ? item.lineIds.map((lineId) => [lineId, item.caution]) : [])),
+          );
+          layout = { ...layout, overlay, overlayError: null };
+          const refreshed = (doc.segments as Array<Record<string, unknown>>).map((segment) => ({
+            ...segment,
+            placement: unplaced.get(String(segment.id)) ?? null,
+            caution: cautions.get(String(segment.id)) ?? null,
+          }));
+          await supabase.from("ceviri_documents").update({ layout, segments: refreshed }).eq("id", id);
+        } catch (cause) {
+          layout = { ...layout, overlayError: cause instanceof Error ? cause.message : null };
+        }
       }
       if (!layout.overlay) {
         return Response.json(
