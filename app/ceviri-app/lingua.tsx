@@ -19,8 +19,17 @@ type Segment = {
   /** Taranmış belgede: kaynak satır hangi sayfada ve OCR ondan emin miydi. */
   page?: number;
   ocrWarning?: string | null;
+  /** Çeviri orijinal PDF'te bu satırın yerine yazılamayacaksa nedeni. */
+  placement?: string | null;
   edited?: boolean;
 };
+
+/** Yerleşim uyarısı yalnızca metni gerçekten değişecek satırda anlamlıdır. */
+function placementWarning(segment: Segment): string | null {
+  if (!segment.placement || !segment.translation) return null;
+  if (segment.translation.trim() === segment.text.trim()) return null;
+  return `Çeviri PDF'te bu satırın yerine yazılamayacak: ${segment.placement}`;
+}
 
 type EngineStatus = { id: string; label: string; on: boolean };
 
@@ -330,7 +339,8 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
                       <>
                         Taranmış belgeyi okudum: <b>{doc.stats.pages}</b> sayfa, <b>{total}</b> çevrilecek satır
                         {doc.stats.tables > 0 && <> — <b>{doc.stats.tableCells}</b> tanesi tablo hücresi</>}.
-                        Word çıktısında sayfa yapısı korunacak; imza ve mühürlerin yerine yer tutucu yazılacak.
+                        Çeviri orijinal PDF&apos;in üstüne, her satırın kendi yerine yazılacak; logo, tablo,
+                        fotoğraf, imza ve mühür olduğu gibi kalır.
                       </>
                     ) : (
                       <>
@@ -397,7 +407,7 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
                         )}
                         {complete && (
                           <a className={styles.primary} href={`/api/ceviri/documents/${doc.id}/download`}>
-                            Word olarak indir
+                            {isScan ? "PDF olarak indir" : "Word olarak indir"}
                           </a>
                         )}
                         <button
@@ -447,6 +457,9 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
                                   </div>
                                   {segment.text}
                                   {segment.ocrWarning && <div className={styles.ocrLine}>{segment.ocrWarning}</div>}
+                                  {placementWarning(segment) && (
+                                    <div className={styles.ocrLine}>{placementWarning(segment)}</div>
+                                  )}
                                 </div>
                                 <div className={`${styles.segSide} ${styles.segDst}`}>
                                   <div className={styles.segTop}>

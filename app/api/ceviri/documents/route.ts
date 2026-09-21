@@ -4,7 +4,8 @@ import { requireAdminSession } from "../../../../lib/auth";
 import { getCeviriSupabase, CEVIRI_DOCS_BUCKET } from "../../../../lib/ceviri/supabase";
 import { parseDocx } from "../../../../lib/ceviri/docx";
 import { activeOcrProvider, isPdf, ocrToSegments } from "../../../../lib/ceviri/ocr";
-import { layoutStats, type LayoutBlock } from "../../../../lib/ceviri/ocr-layout";
+import { layoutStats } from "../../../../lib/ceviri/ocr-layout";
+import { planOverlay, type OverlayPlan, type ScanLayout } from "../../../../lib/ceviri/pdf-overlay";
 
 export const runtime = "nodejs";
 // Taranmış PDF: tüm belgenin OCR'ı, ardından her görsel için ikinci geçiş.
@@ -46,10 +47,12 @@ export async function POST(request: Request) {
         order: number;
         page?: number;
         ocrWarning?: string | null;
+        /** Çeviri orijinal konumuna yazılamayacaksa nedeni. */
+        placement?: string | null;
       }>;
       stats: Record<string, number>;
     };
-    let layout: LayoutBlock[] | null = null;
+    let layout: ScanLayout | null = null;
     let ocrWarning: string | null = null;
     let ocrProvider: string | null = null;
     let ocrDemo = false;
@@ -60,6 +63,20 @@ export async function POST(request: Request) {
       // arayüzde gösterilir. Uydurulmuş metin gerçek sanılmasın diye böyle.
       const provider = activeOcrProvider();
       const result = await provider.run(bytes, { lang: sourceLang });
+
+      // Çeviri orijinal PDF'in üstüne yazılacak; her satırın yeri şimdi ölçülür
+      // ki yerleşemeyen satır inceleme ekranında önceden görünsün.
+      let overlay: OverlayPlan | null = null;
+      let overlayError: string | null = null;
+      if (!result.demo) {
+        try {
+          overlay = await planOverlay(bytes, result.blocks);
+        } catch (cause) {
+          overlayError = cause instanceof Error ? cause.message : "Sayfa düzeni ölçülemedi.";
+        }
+      }
+      const unplaced = new Map(overlay?.unplaced.map((entry) => [entry.id, entry.reason]) ?? []);
+
       const segments = ocrToSegments(result);
       parsed = {
         segments: segments.map(({ id, text, kind, order, page, ocrWarning: warning }) => ({
@@ -69,10 +86,11 @@ export async function POST(request: Request) {
           order,
           page,
           ocrWarning: warning,
+          placement: unplaced.get(id) ?? overlayError,
         })),
         stats: layoutStats(result.blocks, result.pages),
       };
-      layout = result.blocks;
+      layout = { version: 2, blocks: result.blocks, overlay, overlayError };
       ocrWarning = result.warning;
       ocrProvider = provider.label;
       ocrDemo = result.demo;

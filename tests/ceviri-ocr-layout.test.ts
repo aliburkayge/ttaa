@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { strFromU8, unzipSync } from "fflate";
-import { buildDocxFromLayout } from "../lib/ceviri/docx-build.ts";
 import { parseImageKind } from "../lib/ceviri/image-kind.ts";
 import {
   imageKey,
@@ -9,7 +7,6 @@ import {
   layoutSegments,
   layoutStats,
   parseTableHtml,
-  placeholderFor,
   textLines,
   type ImageInsight,
   type MistralResponse,
@@ -154,18 +151,27 @@ test("never turns a signature scribble into a name", () => {
   assert.equal(segments.some((segment) => segment.text === "Schulz"), false);
 });
 
-test("keeps logo pixels but drops signature and stamp pixels", () => {
-  const images = layoutFromMistral(RESPONSE, INSIGHTS).filter((block) => block.kind === "image");
-  assert.deepEqual(
-    images.map((block) => [block.kind === "image" && block.image, block.kind === "image" && block.data !== null]),
-    [["logo", true], ["signature_stamp", false], ["signature", false]],
-  );
+test("records where every block sits on the page, in OCR pixels", () => {
+  const blocks = layoutFromMistral(RESPONSE, INSIGHTS);
+  const title = blocks.find((block) => block.kind === "paragraph" && block.lines[0].text === "ACME AGRO B.V.");
+  assert.deepEqual(title?.frame, {
+    box: { x0: 53, y0: 617, x1: 400, y1: 632 },
+    pageWidth: 720,
+    pageHeight: 1018,
+  });
+  const stamp = blocks.find((block) => block.kind === "image" && block.image === "signature_stamp");
+  assert.deepEqual(stamp?.frame?.box, { x0: 258, y0: 644, x1: 567, y1: 785 });
 });
 
-test("treats an image it could not classify as something to keep, not delete", () => {
-  const blocks = layoutFromMistral(RESPONSE, new Map());
-  const images = blocks.filter((block) => block.kind === "image");
-  assert.ok(images.every((block) => block.kind === "image" && block.image === "unknown" && block.data));
+test("leaves a block without a position unframed rather than guessing one", () => {
+  const blocks = layoutFromMistral(RESPONSE, INSIGHTS);
+  const address = blocks.find((block) => block.kind === "paragraph" && block.lines[0].text.startsWith("ACME Agro"));
+  assert.equal(address?.frame, undefined);
+});
+
+test("does not keep image pixels in the layout; the original page keeps them", () => {
+  const blocks = layoutFromMistral(RESPONSE, INSIGHTS);
+  assert.equal(JSON.stringify(blocks).includes("base64"), false);
 });
 
 test("counts pages, tables, cells and words for the UI", () => {
@@ -177,12 +183,6 @@ test("counts pages, tables, cells and words for the UI", () => {
   assert.ok(stats.words > 10);
 });
 
-test("writes placeholders in the target language", () => {
-  assert.equal(placeholderFor("signature", "tr-TR"), "[İMZA]");
-  assert.equal(placeholderFor("signature_stamp", "tr-TR"), "[İMZA] [MÜHÜR]");
-  assert.equal(placeholderFor("stamp", "en-US"), "[STAMP]");
-  assert.equal(placeholderFor("logo", "tr-TR"), null);
-});
 
 test("reads the image classifier's label and refuses anything off the list", () => {
   assert.equal(parseImageKind('{"kind": "signature_stamp"}'), "signature_stamp");
@@ -191,57 +191,3 @@ test("reads the image classifier's label and refuses anything off the list", () 
   assert.equal(parseImageKind("I think it is a stamp"), "unknown");
 });
 
-function built(translations: Map<string, string>) {
-  const blocks = layoutFromMistral(RESPONSE, INSIGHTS);
-  const files = unzipSync(buildDocxFromLayout(blocks, translations, "tr-TR"));
-  return { blocks, files, xml: strFromU8(files["word/document.xml"]) };
-}
-
-test("produces a Word package with the parts Word requires", () => {
-  const { files } = built(new Map());
-  for (const part of ["[Content_Types].xml", "_rels/.rels", "word/document.xml", "word/styles.xml", "word/_rels/document.xml.rels"]) {
-    assert.ok(files[part], `${part} eksik`);
-  }
-});
-
-test("writes translations, and the source where a line is untranslated", () => {
-  const blocks = layoutFromMistral(RESPONSE, INSIGHTS);
-  const title = layoutSegments(blocks).find((segment) => segment.text === "PACKAGING INFORMATION FORM")!;
-  const { xml } = built(new Map([[title.id, "AMBALAJ BİLGİ FORMU"]]));
-  assert.match(xml, /AMBALAJ BİLGİ FORMU/);
-  assert.equal(xml.includes("PACKAGING INFORMATION FORM"), false);
-  assert.match(xml, /Page 1 of 2/, "untranslated line vanished instead of falling back to the source");
-});
-
-test("escapes XML special characters", () => {
-  const { xml } = built(new Map());
-  assert.match(xml, /160 g bottle &amp; handle/);
-});
-
-test("keeps the table: cell line breaks, spanning cells and borders", () => {
-  const { xml } = built(new Map());
-  assert.equal((xml.match(/<w:tbl>/g) ?? []).length, 1);
-  assert.match(xml, /0\.25 L: 30 g bottle<\/w:t><\/w:r><w:r><w:br\/><\/w:r>/);
-  assert.match(xml, /<w:gridSpan w:val="2"\/>/);
-  assert.match(xml, /<w:tblBorders>/);
-});
-
-test("breaks the page where the source page ended", () => {
-  const { xml } = built(new Map());
-  assert.equal((xml.match(/<w:br w:type="page"\/>/g) ?? []).length, 1);
-});
-
-test("embeds the logo and writes placeholders for signature and stamp", () => {
-  const { files, xml } = built(new Map());
-  const media = Object.keys(files).filter((name) => name.startsWith("word/media/"));
-  assert.deepEqual(media, ["word/media/image1.jpeg"]);
-  assert.match(xml, /r:embed="rIdImg1"/);
-  assert.match(xml, /\[İMZA\]<\/w:t>/);
-  assert.match(xml, /\[İMZA\] \[MÜHÜR\]<\/w:t>/);
-  assert.match(strFromU8(files["word/_rels/document.xml.rels"]), /Target="media\/image1\.jpeg"/);
-});
-
-test("prints the signatory recovered from inside the stamp under its placeholder", () => {
-  const { xml } = built(new Map());
-  assert.ok(xml.indexOf("[İMZA] [MÜHÜR]") < xml.indexOf("John Sample"));
-});

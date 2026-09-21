@@ -221,14 +221,6 @@ const MISTRAL_PROVIDER: OcrProvider = {
       }
     }
     const insights = new Map(await Promise.all(jobs));
-
-    // Word'e gömülecek görseller de data URL olarak saklansın.
-    for (const page of body.pages ?? []) {
-      for (const image of page.images ?? []) {
-        if (image.image_base64) image.image_base64 = asDataUrl(image.image_base64);
-      }
-    }
-
     const blocks = layoutFromMistral(body, insights);
     const unknown = [...insights.values()].filter((insight) => insight.kind === "unknown").length;
 
@@ -237,8 +229,10 @@ const MISTRAL_PROVIDER: OcrProvider = {
       demo: false,
       pages: body.pages?.length ?? null,
       blocks,
+      // Görsellerin kendisine hiç dokunulmaz; tür bilinmezse yalnızca içindeki
+      // basılı yazı (varsa) okunmamış olur.
       warning: unknown
-        ? `${unknown} görselin türü (imza/mühür/logo) belirlenemedi; Word'e olduğu gibi kondu. İmza veya mühürse yer tutucuyla değiştirin.`
+        ? `${unknown} görselin türü belirlenemedi. Görsel olduğu gibi kalır, ama içinde basılı yazı varsa (imzacı adı gibi) okunmamış olabilir.`
         : null,
     };
   },

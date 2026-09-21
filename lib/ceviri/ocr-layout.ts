@@ -35,29 +35,33 @@ export type OcrLine = {
   ocrWarning: string | null;
 };
 
+/** OCR'ın koordinat düzleminde bir kutu (sayfa pikseli, sol üst başlangıç). */
+export type Box = { x0: number; y0: number; x1: number; y1: number };
+
+/** Bloğun sayfadaki yeri; çeviri orijinal sayfada tam bu konuma yazılır. */
+export type Frame = { box: Box; pageWidth: number; pageHeight: number };
+
 export type LayoutBlock =
   | {
       kind: "paragraph";
       role: "header" | "footer" | "title" | "text";
       page: number;
       lines: OcrLine[];
+      frame?: Frame;
     }
   | {
       kind: "table";
       page: number;
       rows: Array<Array<{ colspan: number; lines: OcrLine[] }>>;
+      frame?: Frame;
     }
   | {
       kind: "image";
       page: number;
       image: ImageKind;
-      /** Yalnızca logo/fotoğraf/bilinmeyen için saklanır; imza ve mühür Word'e kopyalanmaz. */
-      data: string | null;
-      widthPx: number;
-      heightPx: number;
-      dpi: number;
       /** Görselin içindeki basılı metin (ör. mühürlü bloktaki imzacı adı). */
       lines: OcrLine[];
+      frame?: Frame;
     };
 
 export type LayoutSegment = {
@@ -173,7 +177,6 @@ export function imageKey(page: number, id: string): string {
   return `${page}:${id}`;
 }
 
-const KEEP_IMAGE: ReadonlySet<ImageKind> = new Set(["logo", "photo", "unknown"]);
 const SIGNATURE_LIKE: ReadonlySet<ImageKind> = new Set(["signature", "stamp", "signature_stamp"]);
 
 /**
@@ -184,7 +187,6 @@ const SIGNATURE_LIKE: ReadonlySet<ImageKind> = new Set(["signature", "stamp", "s
  */
 const SIGNATURE_NAME_GAP = 20;
 
-type Box = { x0: number; y0: number; x1: number; y1: number };
 type Placed = { block: LayoutBlock; box: Box | null };
 
 function boxOf(source: {
@@ -248,7 +250,8 @@ export function layoutFromMistral(
 
   for (const page of response.pages ?? []) {
     const pageNo = page.index + 1;
-    const dpi = page.dimensions?.dpi ?? 96;
+    const pageWidth = page.dimensions?.width ?? 0;
+    const pageHeight = page.dimensions?.height ?? 0;
     const placed: Placed[] = [];
 
     for (const block of page.blocks ?? []) {
@@ -279,19 +282,7 @@ export function layoutFromMistral(
           }
         }
 
-        placed.push({
-          block: {
-            kind: "image",
-            page: pageNo,
-            image: kind,
-            data: KEEP_IMAGE.has(kind) ? image?.image_base64 ?? null : null,
-            widthPx: Math.max(1, x1 - x0),
-            heightPx: Math.max(1, y1 - y0),
-            dpi,
-            lines,
-          },
-          box: { x0, y0, x1, y1 },
-        });
+        placed.push({ block: { kind: "image", page: pageNo, image: kind, lines }, box: { x0, y0, x1, y1 } });
         continue;
       }
 
@@ -331,7 +322,9 @@ export function layoutFromMistral(
       }
     }
 
-    for (const item of keepSignaturesWithNames(placed)) blocks.push(item.block);
+    for (const { block, box } of keepSignaturesWithNames(placed)) {
+      blocks.push(box && pageWidth && pageHeight ? { ...block, frame: { box, pageWidth, pageHeight } } : block);
+    }
   }
 
   return blocks;
@@ -359,28 +352,6 @@ export function layoutSegments(blocks: LayoutBlock[]): LayoutSegment[] {
     }
   }
   return segments;
-}
-
-const PLACEHOLDERS: Record<"tr" | "en", Partial<Record<ImageKind, string>>> = {
-  // Tasarım dokümanı 6.6: büyük harf, köşeli parantez.
-  tr: {
-    signature: "[İMZA]",
-    stamp: "[MÜHÜR]",
-    signature_stamp: "[İMZA] [MÜHÜR]",
-    barcode: "[BARKOD]",
-  },
-  en: {
-    signature: "[SIGNATURE]",
-    stamp: "[STAMP]",
-    signature_stamp: "[SIGNATURE] [STAMP]",
-    barcode: "[BARCODE]",
-  },
-};
-
-/** İmza, mühür ve barkod çeviriye kopyalanmaz; hedef dilde yer tutucu yazılır. */
-export function placeholderFor(kind: ImageKind, targetLang: string): string | null {
-  const table = targetLang.toLowerCase().startsWith("tr") ? PLACEHOLDERS.tr : PLACEHOLDERS.en;
-  return table[kind] ?? null;
 }
 
 export function layoutStats(blocks: LayoutBlock[], pages: number | null) {
