@@ -7,7 +7,7 @@ import { createAyVerificationLabel, validatePrototypeDetails, type PrototypeDeta
 
 type Label = Awaited<ReturnType<typeof createAyVerificationLabel>>;
 type Result = { details: PrototypeDetails; label: Label; pageUrl: string; file: File | null; hasFile: boolean };
-type Found = { url: string; details: Pick<PrototypeDetails, "documentNumber" | "customer" | "documentDate" | "documentType">; hasFile: boolean };
+type Found = { url: string; details: Pick<PrototypeDetails, "documentNumber" | "customer" | "documentDate" | "documentType">; hasFile: boolean; storage: "private" | "wordpress" | "none" };
 
 function downloadFile(dataUrl: string, name: string) {
   const link = document.createElement("a");
@@ -128,7 +128,7 @@ export default function AyVerificationStudio({ today }: { today: string }) {
       setForm(details);
       setResult({ details, file, label, pageUrl: payload.url, hasFile: Boolean(payload.hasFile) });
       setLookupNumber(details.documentNumber);
-      setFound({ details, url: payload.url, hasFile: Boolean(payload.hasFile) });
+      setFound({ details, url: payload.url, hasFile: Boolean(payload.hasFile), storage: payload.hasFile ? "private" : "none" });
       setLookupError(""); setLookupNotice("");
       setNotice(payload.warning ? `Sayfa yayımlandı. ${payload.warning}` : file ? "PDF ve doğrulama sayfası yayımlandı; QR bu adrese açılır." : "Doğrulama sayfası yayımlandı. PDF’yi daha sonra aşağıdaki alandan ekleyebilirsiniz.");
       setListReload((value) => value + 1);
@@ -156,7 +156,7 @@ export default function AyVerificationStudio({ today }: { today: string }) {
     if (!found || attachBusy) return;
     setLookupError(""); setLookupNotice("");
     if (!lookupFile || !/\.pdf$/i.test(lookupFile.name) || !lookupFile.size || lookupFile.size > 8 * 1024 * 1024) { setLookupError("En fazla 8 MB boyutunda bir PDF seçin."); return; }
-    if (!attachConfirmed) { setLookupError("PDF’nin herkese açık yayımlanacağını onaylayın."); return; }
+    if (!attachConfirmed) { setLookupError("PDF’nin doğrulama sayfasında güvenli görüntüleyiciyle gösterileceğini onaylayın."); return; }
     const data = new FormData();
     data.set("mode", found.hasFile ? "replace" : "attach"); data.set("documentNumber", found.details.documentNumber); data.set("file", lookupFile); data.set("confirmed", "true");
     setAttachBusy(true);
@@ -164,7 +164,7 @@ export default function AyVerificationStudio({ today }: { today: string }) {
       const response = await fetch("/api/qr-documents/ay-tercume", { method: "POST", body: data });
       const payload = await response.json() as { error?: string; url?: string; warning?: string | null };
       if (!response.ok || !payload.url) throw new Error(payload.error || "PDF mevcut sayfaya eklenemedi.");
-      setFound({ ...found, hasFile: true });
+      setFound({ ...found, hasFile: true, storage: "private" });
       setResult((current) => current && current.pageUrl === payload.url ? { ...current, hasFile: true } : current);
       if (result?.pageUrl === payload.url) setNotice("PDF aynı doğrulama sayfasına eklendi; QR adresi değişmedi.");
       setLookupFile(null); setAttachConfirmed(false);
@@ -183,7 +183,7 @@ export default function AyVerificationStudio({ today }: { today: string }) {
       const response = await fetch("/api/qr-documents/ay-tercume", { method: "POST", body: data });
       const payload = await response.json() as { error?: string; warning?: string | null };
       if (!response.ok) throw new Error(payload.error || "PDF kaldırılamadı.");
-      setFound({ ...found, hasFile: false });
+      setFound({ ...found, hasFile: false, storage: "none" });
       setResult((current) => current && current.pageUrl === found.url ? { ...current, hasFile: false } : current);
       setLookupFile(null); setAttachConfirmed(false);
       if (lookupFileInput.current) lookupFileInput.current.value = "";
@@ -210,6 +210,21 @@ export default function AyVerificationStudio({ today }: { today: string }) {
       setLookupNotice(payload.warning ? `${deletedNumber} silindi. ${payload.warning}` : `${deletedNumber} numaralı doğrulama kaydı ve sayfası silindi.`);
       setListReload((value) => value + 1);
     } catch (failure) { setLookupError(failure instanceof Error ? failure.message : "Doğrulama kaydı silinemedi."); }
+    finally { setAttachBusy(false); }
+  }
+
+  async function secureLegacyPdf() {
+    if (!found || found.storage !== "wordpress" || attachBusy) return;
+    setAttachBusy(true); setLookupError(""); setLookupNotice("");
+    try {
+      const data = new FormData(); data.set("mode", "secure"); data.set("documentNumber", found.details.documentNumber); data.set("confirmed", "true");
+      const response = await fetch("/api/qr-documents/ay-tercume", { method: "POST", body: data });
+      const payload = await response.json() as { error?: string; url?: string; warning?: string | null };
+      if (!response.ok || payload.url !== found.url) throw new Error(payload.error || "PDF güvenli depoya taşınamadı.");
+      setFound({ ...found, storage: "private" });
+      setLookupNotice(payload.warning ? `PDF güvenli depoya taşındı. ${payload.warning}` : "PDF özel depoya taşındı; açık WordPress medya adresi kaldırıldı.");
+      setListReload((value) => value + 1);
+    } catch (failure) { setLookupError(failure instanceof Error ? failure.message : "PDF güvenli depoya taşınamadı."); }
     finally { setAttachBusy(false); }
   }
 
@@ -249,7 +264,7 @@ export default function AyVerificationStudio({ today }: { today: string }) {
 
   return <>
     <div className="qr-proto-heading"><div><p className="qr-eyebrow">AY TERCÜME · BELGE YÖNETİMİ</p><h1>QR Dosya Doğrulama</h1><p>Belgeyi kaydedin, aytercume.com doğrulama sayfasını ve QR kodunu oluşturun.</p></div><span className="qr-live-status"><i /> WordPress bağlantılı</span></div>
-    <div className="qr-proto-notice qr-public-notice"><span aria-hidden="true">i</span><p>PDF olmadan da belgeye özel sayfa ve QR oluşur. Müşteri adı hemen, PDF eklediğinizde dosyanın kendisi aytercume.com üzerinde herkese açık görünür. Yalnızca kontrol ettiğiniz belge için doğrulama kaydı oluşturun.</p></div>
+    <div className="qr-proto-notice qr-public-notice"><span aria-hidden="true">i</span><p>PDF olmadan da belgeye özel sayfa ve QR oluşur. PDF eklendiğinde özel depoda saklanır, arama motorlarına kapatılır ve yalnızca doğrulama sayfasındaki güvenli görüntüleyicide gösterilir. Müşteri adı doğrulama sayfasında görünür.</p></div>
 
     <div className="qr-proto-grid">
       <section className="qr-form-panel" aria-labelledby="qr-form-title">
@@ -263,7 +278,7 @@ export default function AyVerificationStudio({ today }: { today: string }) {
             <label>Müşteri <span>*</span><input value={form.customer} onChange={(event) => change("customer", event.target.value)} required maxLength={120} placeholder="Müşteri adı veya firma unvanı" autoComplete="off" /><small>Doğrulama sayfasında herkese açık görünür.</small></label>
             <label>Belge türü<select value={form.documentType} onChange={(event) => change("documentType", event.target.value)}><option>Tercüme belgesi</option><option>Diploma / eğitim belgesi</option><option>Resmî evrak</option><option>Sözleşme</option><option>Diğer</option></select></label>
             <label>Doğrulanmış PDF <em>İsteğe bağlı</em><input ref={fileInput} className="qr-file-input" type="file" accept=".pdf,application/pdf" onChange={(event) => { setFile(event.target.files?.[0] || null); setError(""); setNotice(""); }} /><small>En fazla 8 MB. Şimdi ekleyebilir veya sayfayı oluşturup dosyayı daha sonra yükleyebilirsiniz.</small></label>
-            <label className="qr-confirm"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} required /><span>Bu belgeyi kontrol ettim. Müşteri adı ve eklersem PDF’nin herkese açık yayımlanacağını kabul ediyorum.</span></label>
+            <label className="qr-confirm"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} required /><span>Bu belgeyi kontrol ettim. Müşteri adının görüneceğini ve eklersem PDF’nin güvenli görüntüleyicide açılacağını kabul ediyorum.</span></label>
           </fieldset>
           {error ? <p className="qr-form-error" role="alert">{error}{existingUrl ? <> <a href={existingUrl} target="_blank" rel="noopener noreferrer">Mevcut sayfayı aç ↗</a></> : null}</p> : null}
           <div className="qr-form-actions"><button className="qr-primary-button" type="submit" disabled={busy || ready}><QrIcon size={17} />{busy ? "WordPress sayfası hazırlanıyor…" : ready ? "Sayfa ve QR hazır" : "Sayfayı yayımla ve QR oluştur"}</button><button className="qr-secondary-button" type="button" disabled={busy} onClick={reset}>Yeni belge</button></div>
@@ -282,14 +297,14 @@ export default function AyVerificationStudio({ today }: { today: string }) {
 
     <section className="qr-demo-list" aria-labelledby="qr-records-title"><div className="qr-list-heading"><div><h2 id="qr-records-title">Belge kayıtları <span>{records.length}</span></h2><p>Önceden yayımlanan Ay Tercüme doğrulama sayfaları da burada görünür.</p></div><div className="qr-list-tools"><input aria-label="Belge kayıtlarında ara" placeholder="Belge no veya müşteri ara" value={listQuery} onChange={(event) => { setListQuery(event.target.value); setListPage(1); }} /><button type="button" className="qr-secondary-button" onClick={() => setListReload((value) => value + 1)} disabled={listBusy}>Yenile</button></div></div>
       {listError ? <p className="qr-form-error" role="alert">{listError}</p> : null}
-      {listBusy ? <p className="qr-list-message">Kayıtlar yükleniyor…</p> : records.length ? <div className="qr-table-scroll"><table><thead><tr><th>Belge no</th><th>Müşteri</th><th>Belge türü</th><th>PDF</th><th>Sayfa / QR</th><th>İşlem</th></tr></thead><tbody>{records.map((entry) => <tr key={entry.url} className={found?.url === entry.url ? "is-selected" : ""}><td><strong>{entry.details.documentNumber}</strong><small>{entry.details.documentDate.split("-").reverse().join(".")}</small></td><td>{entry.details.customer}</td><td>{entry.details.documentType}</td><td><span className={`qr-record-status${entry.hasFile ? " is-complete" : ""}`}>{entry.hasFile ? "PDF yüklü" : "PDF bekleniyor"}</span></td><td><a href={entry.url} target="_blank" rel="noopener noreferrer">Sayfayı aç ↗</a></td><td><button type="button" className="qr-text-button" onClick={() => void selectRecord(entry)}>Kaydı / QR’ı aç</button></td></tr>)}</tbody></table></div> : <p className="qr-list-message">{listQuery ? "Aramayla eşleşen kayıt bulunamadı." : "Bu sayfada kayıt yok."}</p>}
+      {listBusy ? <p className="qr-list-message">Kayıtlar yükleniyor…</p> : records.length ? <div className="qr-table-scroll"><table><thead><tr><th>Belge no</th><th>Müşteri</th><th>Belge türü</th><th>PDF</th><th>Sayfa / QR</th><th>İşlem</th></tr></thead><tbody>{records.map((entry) => <tr key={entry.url} className={found?.url === entry.url ? "is-selected" : ""}><td><strong>{entry.details.documentNumber}</strong><small>{entry.details.documentDate.split("-").reverse().join(".")}</small></td><td>{entry.details.customer}</td><td>{entry.details.documentType}</td><td><span className={`qr-record-status${entry.storage === "private" ? " is-complete" : ""}`}>{entry.storage === "private" ? "Güvenli PDF" : entry.storage === "wordpress" ? "Eski açık PDF" : "PDF bekleniyor"}</span></td><td><a href={entry.url} target="_blank" rel="noopener noreferrer">Sayfayı aç ↗</a></td><td><button type="button" className="qr-text-button" onClick={() => void selectRecord(entry)}>Kaydı / QR’ı aç</button></td></tr>)}</tbody></table></div> : <p className="qr-list-message">{listQuery ? "Aramayla eşleşen kayıt bulunamadı." : "Bu sayfada kayıt yok."}</p>}
       <div className="qr-pagination"><button type="button" className="qr-secondary-button" disabled={listBusy || listPage <= 1} onClick={() => setListPage((value) => value - 1)}>Önceki</button><span>Sayfa {listPage}</span><button type="button" className="qr-secondary-button" disabled={listBusy || !hasMore} onClick={() => setListPage((value) => value + 1)}>Sonraki</button></div>
     </section>
 
     <section className="qr-update-card" aria-labelledby="qr-update-title"><div className="qr-panel-heading"><div><small>03 · PDF YÖNETİMİ</small><h2 id="qr-update-title">Kayıtlı belgenin PDF’si</h2></div></div><p className="qr-update-intro">Listeden bir kayıt açın veya belge numarasıyla arayın. PDF ekleyebilir, değiştirebilir veya kaldırabilirsiniz; basılmış QR adresi aynı kalır.</p>
       <form className="qr-update-search" onSubmit={lookupDocument}><label>Belge numarası<input value={lookupNumber} onChange={(event) => { setLookupNumber(event.target.value); setFound(null); setLookupError(""); setLookupNotice(""); }} required maxLength={64} placeholder="Örn. AY-aB7k-Q2mN-x8Rp-5TzV" /></label><button type="submit" className="qr-secondary-button" disabled={lookupBusy || attachBusy}>{lookupBusy ? "Aranıyor…" : "Kaydı bul"}</button></form>
-      {found ? <div className="qr-found-record"><div><small>MEVCUT WORDPRESS SAYFASI</small><strong>{found.details.documentNumber} · {found.details.customer}</strong><span>{found.details.documentDate.split("-").reverse().join(".")} · {found.details.documentType}</span><a href={found.url} target="_blank" rel="noopener noreferrer">Doğrulama sayfasını aç ↗</a><button type="button" className="qr-text-button" disabled={designBusy || attachBusy} onClick={() => void refreshDesign()}>{designBusy ? "Tasarım güncelleniyor…" : "Sayfa tasarımını yenile"}</button><button type="button" className="qr-danger-button qr-delete-record" disabled={attachBusy || designBusy} onClick={() => void deleteRecord()}>{attachBusy ? "İşlem sürüyor…" : "Doğrulama kaydını ve sayfayı sil"}</button></div><span className={`qr-record-status${found.hasFile ? " is-complete" : ""}`}>{found.hasFile ? "PDF yüklü" : "PDF bekleniyor"}</span></div> : null}
-      {found ? <form className="qr-attach-form" onSubmit={attachDocument}><label>{found.hasFile ? "Yerine yüklenecek yeni PDF" : "Bu kayda eklenecek PDF"} <span>*</span><input ref={lookupFileInput} className="qr-file-input" type="file" accept=".pdf,application/pdf" required onChange={(event) => { setLookupFile(event.target.files?.[0] || null); setLookupError(""); }} /><small>En fazla 8 MB. Dosya herkese açık doğrulama sayfasında gösterilir.</small></label><label className="qr-confirm"><input type="checkbox" checked={attachConfirmed} onChange={(event) => setAttachConfirmed(event.target.checked)} required /><span>Bu PDF’nin doğru belgeye ait olduğunu kontrol ettim ve herkese açık yayımlanacağını kabul ediyorum.</span></label><div className="qr-form-actions"><button type="submit" className="qr-primary-button" disabled={attachBusy}>{attachBusy ? "PDF kaydediliyor…" : found.hasFile ? "PDF’yi değiştir" : "PDF ekle"}</button>{found.hasFile ? <button type="button" className="qr-danger-button" disabled={attachBusy} onClick={() => void removeDocument()}>PDF’yi kaldır</button> : null}</div></form> : null}
+      {found ? <div className="qr-found-record"><div><small>MEVCUT WORDPRESS SAYFASI</small><strong>{found.details.documentNumber} · {found.details.customer}</strong><span>{found.details.documentDate.split("-").reverse().join(".")} · {found.details.documentType}</span><a href={found.url} target="_blank" rel="noopener noreferrer">Doğrulama sayfasını aç ↗</a>{found.storage === "wordpress" ? <button type="button" className="qr-primary-button" disabled={attachBusy || designBusy} onClick={() => void secureLegacyPdf()}>{attachBusy ? "Taşınıyor…" : "PDF’yi güvenli depoya taşı"}</button> : null}<button type="button" className="qr-text-button" disabled={designBusy || attachBusy} onClick={() => void refreshDesign()}>{designBusy ? "Tasarım güncelleniyor…" : "Sayfa tasarımını yenile"}</button><button type="button" className="qr-danger-button qr-delete-record" disabled={attachBusy || designBusy} onClick={() => void deleteRecord()}>{attachBusy ? "İşlem sürüyor…" : "Doğrulama kaydını ve sayfayı sil"}</button></div><span className={`qr-record-status${found.storage === "private" ? " is-complete" : ""}`}>{found.storage === "private" ? "Güvenli PDF" : found.storage === "wordpress" ? "Eski açık PDF" : "PDF bekleniyor"}</span></div> : null}
+      {found ? <form className="qr-attach-form" onSubmit={attachDocument}><label>{found.hasFile ? "Yerine yüklenecek yeni PDF" : "Bu kayda eklenecek PDF"} <span>*</span><input ref={lookupFileInput} className="qr-file-input" type="file" accept=".pdf,application/pdf" required onChange={(event) => { setLookupFile(event.target.files?.[0] || null); setLookupError(""); }} /><small>En fazla 8 MB. Özel depoda saklanır ve yalnızca güvenli görüntüleyicide gösterilir.</small></label><label className="qr-confirm"><input type="checkbox" checked={attachConfirmed} onChange={(event) => setAttachConfirmed(event.target.checked)} required /><span>Bu PDF’nin doğru belgeye ait olduğunu ve doğrulama sayfasına erişen kişilerce görüntülenebileceğini onaylıyorum.</span></label><div className="qr-form-actions"><button type="submit" className="qr-primary-button" disabled={attachBusy}>{attachBusy ? "PDF kaydediliyor…" : found.hasFile ? "PDF’yi değiştir" : "PDF ekle"}</button>{found.hasFile ? <button type="button" className="qr-danger-button" disabled={attachBusy} onClick={() => void removeDocument()}>PDF’yi kaldır</button> : null}</div></form> : null}
       {lookupError ? <p className="qr-form-error" role="alert">{lookupError}</p> : null}{lookupNotice ? <p className="qr-update-success" role="status">{lookupNotice}</p> : null}
     </section>
 

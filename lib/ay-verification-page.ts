@@ -1,11 +1,13 @@
 import { verificationLandingWidget } from "./verification-landing-widget";
 import { ayVerificationArticleHtml, ayVerificationArticleStyle } from "./ay-verification-article";
+import { verificationPdfViewerUrl } from "./verification-pdf-viewer";
 
 export type AyVerificationDocument = {
   documentNumber: string;
   customer: string;
   documentDate: string;
   documentType: string;
+  fileKey?: string;
   fileUrl?: string;
   mediaId?: number;
 };
@@ -100,14 +102,18 @@ export function ayVerificationLandingHtml() {
 export function ayVerificationDocumentHtml(document: AyVerificationDocument, marker: string) {
   const url = document.fileUrl ? new URL(document.fileUrl) : null;
   if (url && (url.protocol !== "https:" || !["aytercume.com", "www.aytercume.com"].includes(url.hostname))) throw new Error("Belge bağlantısı aytercume.com üzerinde HTTPS olmalıdır.");
+  if (document.fileKey !== undefined && !/^ay-tercume\/[a-f0-9-]{36}\/[a-z0-9-]+\.pdf$/.test(document.fileKey)) throw new Error("Özel PDF kaydı geçersiz.");
+  const token = /^AY_VERIFICATION:([a-f0-9-]{36})$/.exec(marker)?.[1];
+  if (!token) throw new Error("Doğrulama sayfası kimliği geçersiz.");
   const number = escapeHtml(document.documentNumber);
   const kind = escapeHtml(document.documentType);
-  const fileUrl = url ? escapeHtml(url.toString()) : "";
-  const fileSection = url
-    ? `<section class="ayv-file" aria-labelledby="ayv-file-title"><div class="ayv-file-head"><div><span class="ayv-section-label">03 · BELGE GÖRÜNTÜSÜ</span><h2 id="ayv-file-title">Doğrulanan dosya</h2><p>Dosyanın kendisini aşağıda inceleyebilirsiniz. Tarayıcınız önizlemeyi göstermiyorsa PDF’yi ayrı sekmede açın.</p></div><a class="ayv-open" href="${fileUrl}" target="_blank" rel="noopener noreferrer">PDF’yi aç <span aria-hidden="true">↗</span></a></div><div class="ayv-pdf-frame"><div class="ayv-pdf-bar">Belge önizlemesi <small>PDF</small></div><iframe class="ayv-pdf" src="${fileUrl}#toolbar=0" title="${number} numaralı doğrulanmış belge" loading="lazy" referrerpolicy="no-referrer"></iframe></div></section>`
+  const hasFile = Boolean(document.fileKey || url);
+  const viewerUrl = hasFile ? escapeHtml(verificationPdfViewerUrl("ay-tercume", token)) : "";
+  const fileSection = hasFile
+    ? `<section class="ayv-file" aria-labelledby="ayv-file-title"><div class="ayv-file-head"><div><span class="ayv-section-label">03 · BELGE GÖRÜNTÜSÜ</span><h2 id="ayv-file-title">Doğrulanan dosya</h2><p>Dosya güvenli görüntüleyicide yalnızca inceleme amacıyla gösterilir. Arama motorlarına gönderilmez.</p></div></div><div class="ayv-pdf-frame"><div class="ayv-pdf-bar">Güvenli belge önizlemesi <small>PDF</small></div><iframe class="ayv-pdf" src="${viewerUrl}" title="${number} numaralı doğrulanmış belge" loading="lazy" referrerpolicy="no-referrer"></iframe></div></section>`
     : `<section class="ayv-file ayv-pending" aria-labelledby="ayv-file-title"><span class="ayv-pending-icon" aria-hidden="true"></span><span class="ayv-section-label">03 · EVRAK DURUMU</span><h2 id="ayv-file-title">Gerekli evraklar şu anda yüklenmemiştir.</h2><p>En yakın zamanda tekrar kontrol edin. Bu sayfa güncellendiğinde aynı QR kodu üzerinden dosyayı görüntüleyebilirsiniz.</p></section>`;
   const encoded = Buffer.from(JSON.stringify(document), "utf8").toString("base64url");
-  return `${verificationStyle}<main class="ayv"><header class="ayv-hero"><div class="ayv-hero-top"><span class="ayv-seal" aria-hidden="true"></span><div class="ayv-brand"><span>AY TERCÜME</span><strong>Belge doğrulama</strong></div><span class="ayv-verified">ONAYLI KAYIT</span></div><div class="ayv-hero-body"><span class="ayv-kicker">DOĞRULANMIŞ BELGE</span><h1>Bu dosya AY Tercüme tarafından oluşturulup doğrulanmıştır.</h1><p class="ayv-lead">${url ? "Aşağıdaki belge bilgilerini ve dosyanın kendisini inceleyebilirsiniz." : "Belge bilgileri aşağıdadır. Dosya hazır olduğunda bu sayfada görüntülenecektir."}</p></div><div class="ayv-hero-foot"><span class="ayv-status">Doğrulanmış belge</span><span class="ayv-hero-foot-note">AY Tercüme resmî belge kaydı</span></div></header>
+  return `${verificationStyle}<main class="ayv"><header class="ayv-hero"><div class="ayv-hero-top"><span class="ayv-seal" aria-hidden="true"></span><div class="ayv-brand"><span>AY TERCÜME</span><strong>Belge doğrulama</strong></div><span class="ayv-verified">ONAYLI KAYIT</span></div><div class="ayv-hero-body"><span class="ayv-kicker">DOĞRULANMIŞ BELGE</span><h1>Bu dosya AY Tercüme tarafından oluşturulup doğrulanmıştır.</h1><p class="ayv-lead">${hasFile ? "Aşağıdaki belge bilgilerini ve dosyanın kendisini inceleyebilirsiniz." : "Belge bilgileri aşağıdadır. Dosya hazır olduğunda bu sayfada görüntülenecektir."}</p></div><div class="ayv-hero-foot"><span class="ayv-status">Doğrulanmış belge</span><span class="ayv-hero-foot-note">AY Tercüme resmî belge kaydı</span></div></header>
   <section class="ayv-details" aria-label="Belge bilgileri"><div class="ayv-detail"><span class="ayv-detail-index" aria-hidden="true">01</span><div class="ayv-detail-body"><span>Belge numarası</span><strong>${number}</strong></div></div><div class="ayv-detail"><span class="ayv-detail-index" aria-hidden="true">02</span><div class="ayv-detail-body"><span>Müşteri</span><strong>${escapeHtml(document.customer)}</strong></div></div><div class="ayv-detail"><span class="ayv-detail-index" aria-hidden="true">03</span><div class="ayv-detail-body"><span>Belge tarihi</span><strong>${escapeHtml(displayDate(document.documentDate))}</strong></div></div><div class="ayv-detail"><span class="ayv-detail-index" aria-hidden="true">04</span><div class="ayv-detail-body"><span>Belge türü</span><strong>${kind}</strong></div></div></section>
   ${fileSection}${contactSection()}</main><!-- ${escapeHtml(marker)} --><!-- AY_VERIFICATION_DESIGN:2 --><!-- AY_VERIFICATION_DATA:${encoded} -->`;
 }
@@ -119,6 +125,6 @@ export function readAyVerificationDocument(html: string, marker: string): AyVeri
   let value: AyVerificationDocument;
   try { value = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as AyVerificationDocument; }
   catch { throw new Error("Doğrulama sayfası belge bilgileri okunamadı."); }
-  if (!value || typeof value.documentNumber !== "string" || typeof value.customer !== "string" || typeof value.documentDate !== "string" || typeof value.documentType !== "string" || (value.fileUrl !== undefined && typeof value.fileUrl !== "string") || (value.mediaId !== undefined && (!Number.isSafeInteger(value.mediaId) || value.mediaId <= 0))) throw new Error("Doğrulama sayfası belge bilgileri geçersiz.");
+  if (!value || typeof value.documentNumber !== "string" || typeof value.customer !== "string" || typeof value.documentDate !== "string" || typeof value.documentType !== "string" || (value.fileKey !== undefined && typeof value.fileKey !== "string") || (value.fileUrl !== undefined && typeof value.fileUrl !== "string") || (value.mediaId !== undefined && (!Number.isSafeInteger(value.mediaId) || value.mediaId <= 0))) throw new Error("Doğrulama sayfası belge bilgileri geçersiz.");
   return value;
 }

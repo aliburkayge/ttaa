@@ -121,7 +121,7 @@ export async function findTtaaVerificationDocument(token: string) {
   const page = (await pagesBySlug(baseUrl, authorization, slug)).find((item) => item.slug === slug);
   if (!page) return null;
   const document = readTtaaVerificationDocument(page.content?.raw || "", `TTAA_VERIFICATION:${token}`);
-  return { id: page.id, status: page.status, url: page.link, document, hasFile: Boolean(document.fileUrl) };
+  return { id: page.id, status: page.status, url: page.link, document, hasFile: Boolean(document.fileKey || document.fileUrl) };
 }
 
 export async function listTtaaVerificationDocuments(query: string, pageNumber: number) {
@@ -139,7 +139,7 @@ export async function listTtaaVerificationDocuments(query: string, pageNumber: n
     try {
       const document = readTtaaVerificationDocument(item.content?.raw || "", `TTAA_VERIFICATION:${token}`);
       if (query && !`${document.documentNumber} ${document.customer} ${document.documentType}`.toLocaleLowerCase("tr-TR").includes(query.toLocaleLowerCase("tr-TR"))) return [];
-      return [{ token, url: item.link, details: document, hasFile: Boolean(document.fileUrl) }];
+      return [{ id: item.id, token, url: item.link, details: document, hasFile: Boolean(document.fileKey || document.fileUrl) }];
     } catch { return []; }
   });
   const totalPages = Number(response.headers.get("x-wp-totalpages") || 1);
@@ -196,32 +196,32 @@ export async function publishTtaaVerificationDocument(document: TtaaVerification
     title: `Document Verification – ${document.documentNumber}`,
     content: ttaaVerificationDocumentHtml(document, `TTAA_VERIFICATION:${token}`),
     marker: `TTAA_VERIFICATION:${token}`,
-    seo: ttaaVerificationSeo(document.documentNumber, Boolean(document.fileUrl)),
+    seo: ttaaVerificationSeo(document.documentNumber, Boolean(document.fileKey || document.fileUrl)),
     noindex: true,
-    hasFile: Boolean(document.fileUrl),
+    hasFile: Boolean(document.fileKey || document.fileUrl),
   });
 }
 
-export async function setTtaaVerificationPdf(token: string, file?: { url: string; mediaId?: number }) {
+export async function setTtaaVerificationPdf(token: string, file?: { key: string }) {
   if (!/^[a-f0-9-]{36}$/.test(token)) throw new Error("Geçersiz doğrulama kimliği.");
   const { baseUrl, authorization } = config();
   const current = await findTtaaVerificationDocument(token);
   if (!current || current.status !== "publish") throw new Error("Yayımlanmış doğrulama sayfası bulunamadı.");
-  const document = { ...current.document, fileUrl: file?.url, mediaId: file?.mediaId };
+  const document = { ...current.document, fileKey: file?.key, fileUrl: undefined, mediaId: undefined };
   const marker = `TTAA_VERIFICATION:${token}`;
   const content = ttaaVerificationDocumentHtml(document, marker);
   await saveSeo(baseUrl, authorization, current.id, ttaaVerificationSeo(document.documentNumber, Boolean(file)), true);
   const updated = await savePage(baseUrl, authorization, { content }, current.id);
   if (updated.status !== "publish" || updated.slug !== slugFor(token)) throw new Error("WordPress mevcut doğrulama sayfasını güncellemedi.");
   const saved = await pageById(baseUrl, authorization, current.id);
-  if (!saved.content?.raw?.includes(marker) || Boolean(saved.content.raw.includes("<iframe")) !== Boolean(file) || (file && !saved.content.raw.includes(file.url))) throw new Error("WordPress PDF görünümünü kaydetmedi.");
+  if (!saved.content?.raw?.includes(marker) || Boolean(saved.content.raw.includes("<iframe")) !== Boolean(file)) throw new Error("WordPress PDF görünümünü kaydetmedi.");
   const confirmed = readTtaaVerificationDocument(saved.content.raw, marker);
-  if (confirmed.fileUrl !== file?.url || confirmed.mediaId !== file?.mediaId) throw new Error("WordPress PDF bağlantısını kaydetmedi.");
+  if (confirmed.fileKey !== file?.key || confirmed.fileUrl !== undefined || confirmed.mediaId !== undefined) throw new Error("WordPress özel PDF kaydını saklamadı.");
   return { id: current.id, url: current.url, document: confirmed };
 }
 
-export async function attachTtaaVerificationPdf(token: string, fileUrl: string, mediaId?: number) {
+export async function attachTtaaVerificationPdf(token: string, fileKey: string) {
   const current = await findTtaaVerificationDocument(token);
   if (current?.hasFile) throw new Error("Bu sayfaya PDF zaten eklenmiş; mevcut dosya değiştirilmedi.");
-  return setTtaaVerificationPdf(token, { url: fileUrl, mediaId });
+  return setTtaaVerificationPdf(token, { key: fileKey });
 }

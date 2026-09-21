@@ -16,7 +16,7 @@
     "typecheck:worker": "tsc -p tsconfig.worker.json --noEmit",
     "test:wordpress": "node --import tsx --test tests/wordpress-target.test.ts",
     "test:quality": "node --import tsx --test tests/content-quality.test.ts tests/internal-links.test.ts",
-    "test:qr": "node --import tsx --test tests/qr-prototype.test.ts tests/ay-verification-page.test.ts tests/ay-verification-wordpress.test.ts tests/ttaa-verification-page.test.ts tests/ttaa-verification-wordpress.test.ts tests/qr-request-origin.test.ts tests/ttaa-qr-records.test.ts tests/public-verification.test.ts",
+    "test:qr": "node --import tsx --test tests/qr-prototype.test.ts tests/ay-verification-page.test.ts tests/ay-verification-wordpress.test.ts tests/ttaa-verification-page.test.ts tests/ttaa-verification-wordpress.test.ts tests/qr-request-origin.test.ts tests/ttaa-qr-records.test.ts tests/public-verification.test.ts tests/verification-pdf-security.test.ts",
     "test": "npm run build && node --test tests/rendered-html.test.mjs && npm run test:wordpress && npm run test:quality && npm run test:qr",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"

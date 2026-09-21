@@ -24,15 +24,17 @@ test("TTAA public verification uses its own English brand and official contacts"
 });
 
 test("TTAA page escapes document data and changes from pending to embedded PDF", () => {
-  const marker = "TTAA_VERIFICATION:record";
+  const token = "11111111-2222-3333-4444-555555555555";
+  const marker = `TTAA_VERIFICATION:${token}`;
   const pending = ttaaVerificationDocumentHtml({ ...record, customer: "A & B <script>" }, marker);
   assert.match(pending, /The supporting PDF has not been uploaded yet/);
   assert.match(pending, /A &amp; B &lt;script&gt;/);
   assert.doesNotMatch(pending, /<iframe/);
   assert.match(pending, /\.ayv-seal:before\{[^}]*border-left:5px solid #fff/);
   assert.equal(readTtaaVerificationDocument(pending, marker).customer, "A & B <script>");
-  const withPdf = ttaaVerificationDocumentHtml({ ...record, fileUrl: "https://turkishtranslation.com.tr/wp-content/uploads/document.pdf" }, marker);
-  assert.match(withPdf, /<iframe[^>]+document\.pdf#toolbar=0/);
+  const withPdf = ttaaVerificationDocumentHtml({ ...record, fileKey: `ttaa/${token}/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.pdf` }, marker);
+  assert.match(withPdf, /<iframe[^>]+\/api\/public-verification\/viewer\?brand=ttaa&amp;token=/);
+  assert.doesNotMatch(withPdf, /wp-content\/uploads|Open PDF/);
   assert.throws(() => ttaaVerificationDocumentHtml({ ...record, fileUrl: "https://example.com/private.pdf" }, marker), /TTAA website/);
 });
 

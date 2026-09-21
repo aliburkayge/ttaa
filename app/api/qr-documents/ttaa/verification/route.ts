@@ -4,7 +4,8 @@ import { attachTtaaVerificationPdf, deleteTtaaVerificationDocument, findTtaaVeri
 import { ttaaVerificationToken } from "../../../../../lib/ttaa-verification-token";
 import { isSameOriginPanelRequest } from "../../../../../lib/qr-request-origin";
 import { validatePrototypeDetails } from "../../../../../lib/qr-prototype";
-import { attachWordPressMedia, deleteWordPressMedia, uploadWordPressMedia } from "../../../../../lib/wordpress";
+import { deleteVerificationPdf, importVerificationPdf, storeVerificationPdf } from "../../../../../lib/verification-pdf-storage";
+import { deleteWordPressMedia } from "../../../../../lib/wordpress";
 import { getTtaaQrRecord, loadTtaaQrPdf } from "../../../../../lib/ttaa-qr-records";
 import { generateVerificationDocumentNumber } from "../../../../../lib/verification-document-number";
 
@@ -34,13 +35,8 @@ async function uploadPdf(file: File, token: string, number: string) {
   if (!/\.pdf$/i.test(file.name) || !file.size || file.size > 8 * 1024 * 1024 || (file.type && !["application/pdf", "application/octet-stream"].includes(file.type))) throw new Error("En fazla 8 MB boyutunda bir PDF yükleyin.");
   const bytes = new Uint8Array(await file.arrayBuffer());
   if (new TextDecoder().decode(bytes.slice(0, 5)) !== "%PDF-") throw new Error("Seçilen dosya geçerli bir PDF değil.");
-  return uploadWordPressMedia({
-    bytes,
-    fileName: `ttaa-verification-${token}.pdf`,
-    contentType: "application/pdf",
-    alt: `Verified document ${number}`,
-    title: `Document verification ${number}`,
-  }, "ttaa");
+  void number;
+  return storeVerificationPdf("ttaa", token, bytes);
 }
 
 export async function GET(request: Request) {
@@ -50,12 +46,13 @@ export async function GET(request: Request) {
     if (params.get("list") === "1") {
       const query = (params.get("q") || "").trim().slice(0, 120);
       const page = Math.max(1, Math.min(1000, Number(params.get("page") || "1") || 1));
-      return json(await listTtaaVerificationDocuments(query, page));
+      const result = await listTtaaVerificationDocuments(query, page);
+      return json({ ...result, records: result.records.map((record) => ({ url: record.url, details: { documentNumber: record.details.documentNumber, customer: record.details.customer, documentDate: record.details.documentDate, documentType: record.details.documentType }, hasFile: record.hasFile, storage: record.details.fileKey ? "private" : record.details.fileUrl ? "wordpress" : "none" })) });
     }
     const token = documentToken(params.get("documentNumber") || "");
     const page = await findTtaaVerificationDocument(token);
     if (!page || page.status !== "publish") return json({ error: "Bu belge numarasıyla yayımlanmış doğrulama sayfası bulunamadı." }, 404);
-    return json({ url: page.url, details: { documentNumber: page.document.documentNumber, customer: page.document.customer, documentDate: page.document.documentDate, documentType: page.document.documentType }, hasFile: page.hasFile });
+    return json({ url: page.url, details: { documentNumber: page.document.documentNumber, customer: page.document.customer, documentDate: page.document.documentDate, documentType: page.document.documentType }, hasFile: page.hasFile, storage: page.document.fileKey ? "private" : page.document.fileUrl ? "wordpress" : "none" });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "Belge aranamadı." }, 400);
   }
@@ -69,7 +66,7 @@ export async function POST(request: Request) {
   try {
     const data = await request.formData();
     const mode = data.get("mode") || "create";
-    if (mode !== "create" && mode !== "import" && mode !== "attach" && mode !== "replace" && mode !== "remove" && mode !== "design" && mode !== "delete") return json({ error: "Geçersiz belge işlemi." }, 400);
+    if (mode !== "create" && mode !== "import" && mode !== "attach" && mode !== "replace" && mode !== "remove" && mode !== "design" && mode !== "secure" && mode !== "delete") return json({ error: "Geçersiz belge işlemi." }, 400);
     if (mode !== "delete" && data.get("confirmed") !== "true") return json({ error: "Belgenin doğrulandığını ve herkese açık bilgileri onaylayın." }, 400);
     const fileEntry = data.get("file");
     const file = fileEntry instanceof File && (fileEntry.name || fileEntry.size) ? fileEntry : null;
@@ -85,9 +82,23 @@ export async function POST(request: Request) {
         const oldId = previous.document.fileUrl ? await findTtaaVerificationMediaId(previous.document.fileUrl, previous.id, previous.document.mediaId).catch(() => undefined) : undefined;
         await deleteTtaaVerificationDocument(token);
         let warning: string | null = null;
-        if (oldId) try { await deleteWordPressMedia(oldId, "ttaa"); } catch { warning = "Sayfa silindi ancak PDF ortam dosyası silinemedi. WordPress ortam kitaplığını kontrol edin."; }
+        if (previous.document.fileKey) try { await deleteVerificationPdf("ttaa", token, previous.document.fileKey); } catch { warning = "Sayfa silindi ancak özel depodaki PDF silinemedi. Depolama alanını kontrol edin."; }
+        else if (oldId) try { await deleteWordPressMedia(oldId, "ttaa"); } catch { warning = "Sayfa silindi ancak PDF ortam dosyası silinemedi. WordPress ortam kitaplığını kontrol edin."; }
         else if (previous.document.fileUrl) warning = "Sayfa silindi ancak bağlı PDF ortam kaydı otomatik bulunamadı. WordPress ortam kitaplığını kontrol edin.";
         return json({ deleted: true, documentNumber: previous.document.documentNumber, warning });
+      }
+      if (mode === "secure") {
+        if (previous.document.fileKey) return json({ pageId: previous.id, url: previous.url, hasFile: true, storage: "private", details: previous.document, warning: null });
+        if (!previous.document.fileUrl) return json({ error: "Güvenli depoya taşınacak eski PDF bulunamadı." }, 409);
+        const oldId = await findTtaaVerificationMediaId(previous.document.fileUrl, previous.id, previous.document.mediaId).catch(() => undefined);
+        const stored = await importVerificationPdf("ttaa", token, previous.document.fileUrl);
+        let page;
+        try { page = await setTtaaVerificationPdf(token, { key: stored.key }); }
+        catch (error) { await deleteVerificationPdf("ttaa", token, stored.key).catch(() => undefined); throw error; }
+        let warning: string | null = null;
+        if (oldId) try { await deleteWordPressMedia(oldId, "ttaa"); } catch { warning = "PDF güvenli depoya taşındı ancak eski WordPress ortam dosyası silinemedi."; }
+        else warning = "PDF güvenli depoya taşındı ancak eski WordPress ortam kaydı bulunamadı.";
+        return json({ pageId: page.id, url: page.url, hasFile: true, storage: "private", details: page.document, warning });
       }
       if (mode === "design") {
         const page = await refreshTtaaVerificationDocumentDesign(token);
@@ -99,33 +110,38 @@ export async function POST(request: Request) {
         const page = await setTtaaVerificationPdf(token);
         const oldId = previous.document.fileUrl ? await findTtaaVerificationMediaId(previous.document.fileUrl, previous.id, previous.document.mediaId).catch(() => undefined) : undefined;
         let warning: string | null = null;
-        if (oldId) {
+        if (previous.document.fileKey) {
+          try { await deleteVerificationPdf("ttaa", token, previous.document.fileKey); }
+          catch { warning = "PDF sayfadan kaldırıldı ancak özel depodaki dosya silinemedi. Depolama alanını kontrol edin."; }
+        } else if (oldId) {
           try { await deleteWordPressMedia(oldId, "ttaa"); }
           catch { warning = "PDF sayfadan kaldırıldı ancak WordPress ortam dosyası silinemedi. Ortam kitaplığını kontrol edin."; }
         } else warning = "PDF sayfadan kaldırıldı ancak eski ortam dosyası otomatik bulunamadı. Ortam kitaplığını kontrol edin.";
         return json({ pageId: page.id, url: page.url, hasFile: false, details: page.document, warning });
       }
       if (!file) return json({ error: "PDF dosyasını seçin." }, 400);
-      let media;
-      try { media = await uploadPdf(file, token, previous.document.documentNumber); }
+      let stored;
+      try { stored = await uploadPdf(file, token, previous.document.documentNumber); }
       catch (error) { return json({ error: error instanceof Error ? error.message : "PDF yüklenemedi." }, 400); }
       let page;
-      try { page = mode === "attach" ? await attachTtaaVerificationPdf(token, media.url, media.id) : await setTtaaVerificationPdf(token, { url: media.url, mediaId: media.id }); }
+      try { page = mode === "attach" ? await attachTtaaVerificationPdf(token, stored.key) : await setTtaaVerificationPdf(token, { key: stored.key }); }
       catch (error) {
         const current = await findTtaaVerificationDocument(token).catch(() => undefined);
-        if (current === null || (current && current.document.fileUrl !== media.url)) await deleteWordPressMedia(media.id, "ttaa").catch(() => undefined);
+        if (current === null || (current && current.document.fileKey !== stored.key)) await deleteVerificationPdf("ttaa", token, stored.key).catch(() => undefined);
         throw error;
       }
-      const attachment = await attachWordPressMedia([media.id], page.id, "ttaa");
-      let warning = attachment.warning || null;
-      if (mode === "replace" && previous.document.fileUrl) {
+      let warning: string | null = null;
+      if (mode === "replace" && previous.document.fileKey) {
+        try { await deleteVerificationPdf("ttaa", token, previous.document.fileKey); }
+        catch { warning = "Yeni PDF güvenli depoya kaydedildi ancak eski özel dosya silinemedi."; }
+      } else if (mode === "replace" && previous.document.fileUrl) {
         const oldId = await findTtaaVerificationMediaId(previous.document.fileUrl, previous.id, previous.document.mediaId).catch(() => undefined);
-        if (oldId && oldId !== media.id) {
+        if (oldId) {
           try { await deleteWordPressMedia(oldId, "ttaa"); }
           catch { warning = "Yeni PDF yayımlandı ancak eski WordPress ortam dosyası silinemedi. Ortam kitaplığını kontrol edin."; }
         } else if (!oldId) warning = "Yeni PDF yayımlandı ancak eski ortam dosyası otomatik bulunamadı. Ortam kitaplığını kontrol edin.";
       }
-      return json({ pageId: page.id, url: page.url, mediaId: media.id, hasFile: true, details: page.document, warning });
+      return json({ pageId: page.id, url: page.url, hasFile: true, details: page.document, warning });
     }
 
     const legacy = mode === "import" ? await getTtaaQrRecord(String(data.get("documentNumber") || "")) : null;
@@ -153,9 +169,9 @@ export async function POST(request: Request) {
     const token = legacy ? documentToken(details.documentNumber) : generatedToken;
     const previous = await findTtaaVerificationDocument(token);
     if (previous?.status === "publish") return json({ error: previous.hasFile ? "Bu belge numarası için sayfa ve PDF zaten var." : "Bu belge numarası için sayfa hazır. Aşağıdaki ‘Mevcut belgeye PDF ekle’ alanını kullanın.", url: previous.url, hasFile: previous.hasFile }, 409);
-    let media;
+    let stored;
     if (uploadFile) {
-      try { media = await uploadPdf(uploadFile, token, details.documentNumber); }
+      try { stored = await uploadPdf(uploadFile, token, details.documentNumber); }
       catch (error) { return json({ error: error instanceof Error ? error.message : "PDF yüklenemedi." }, 400); }
     }
     let page;
@@ -165,18 +181,16 @@ export async function POST(request: Request) {
         customer: details.customer,
         documentDate: details.documentDate,
         documentType: details.documentType,
-        fileUrl: media?.url,
-        mediaId: media?.id,
+        fileKey: stored?.key,
       }, token);
     } catch (error) {
-      if (media) {
+      if (stored) {
         const current = await findTtaaVerificationDocument(token).catch(() => undefined);
-        if (current === null || (current && current.status !== "publish")) await deleteWordPressMedia(media.id, "ttaa").catch(() => undefined);
+        if (current === null || (current && current.status !== "publish")) await deleteVerificationPdf("ttaa", token, stored.key).catch(() => undefined);
       }
       throw error;
     }
-    const attachment = media ? await attachWordPressMedia([media.id], page.id, "ttaa") : null;
-    return json({ pageId: page.id, url: page.url, mediaId: media?.id || null, hasFile: Boolean(media), details, reused: page.reused, warning: attachment?.warning || null }, 201);
+    return json({ pageId: page.id, url: page.url, hasFile: Boolean(stored), details, reused: page.reused, warning: null }, 201);
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "TTAA doğrulama sayfası oluşturulamadı." }, 500);
   }
