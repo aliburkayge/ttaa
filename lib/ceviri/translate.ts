@@ -1,11 +1,11 @@
 import { fetchWithRetry, integerEnv } from "../upstream";
 import { searchTm, matchTier } from "./tm-store";
 import { lookupTerms, type TermHit } from "./term-store";
-import { missingProtected, protectedSpans, suspiciousTarget, violatedTerms } from "./qa";
+import { keepUntranslated, missingProtected, tidyTarget, protectedSpans, suspiciousTarget, violatedTerms } from "./qa";
 import { arbitrate, configuredEngines, type EngineCandidate } from "./engines";
 
 // Testler ve eski çağıranlar kuralları buradan içe aktarıyor.
-export { missingProtected, protectedSpans, suspiciousTarget, violatedTerms };
+export { keepUntranslated, tidyTarget, missingProtected, protectedSpans, suspiciousTarget, violatedTerms };
 
 type ResponsesBody = {
   output_text?: string;
@@ -163,7 +163,7 @@ export async function translateSegment(
   if (best && matchTier(best.score) === "exact") {
     return {
       ...base,
-      translation: best.target_text,
+      translation: tidyTarget(segment.text, best.target_text),
       source: best.score >= 1 ? "tm-exact" : "tm-fuzzy",
       score: best.score,
       note: `Bellekten alındı — ${best.project_names.length} projede kullanılmış`,
@@ -219,7 +219,7 @@ export async function translateSegment(
   if (!chosen) {
     throw new Error(verdict.rejected.map((r) => `${r.engine}: ${r.reason}`).join(" · "));
   }
-  const translation = chosen.text;
+  const translation = tidyTarget(segment.text, chosen.text);
 
   const problems: string[] = [];
   if (verdict.needsHuman) {

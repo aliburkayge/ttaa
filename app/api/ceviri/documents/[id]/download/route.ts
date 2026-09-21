@@ -2,6 +2,7 @@ import { requireAdminSession } from "../../../../../../lib/auth";
 import { getCeviriSupabase, CEVIRI_DOCS_BUCKET } from "../../../../../../lib/ceviri/supabase";
 import { rebuildDocx } from "../../../../../../lib/ceviri/docx";
 import { renderOverlay, type ScanLayout } from "../../../../../../lib/ceviri/pdf-overlay";
+import { tidyTarget } from "../../../../../../lib/ceviri/qa";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -59,7 +60,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
 
     const translations = new Map<string, string>();
     for (const segment of segments) {
-      if (segment.translation) translations.set(segment.id, segment.translation);
+      if (segment.translation) translations.set(segment.id, tidyTarget(segment.text, segment.translation));
     }
     const rebuilt = rebuildDocx(original, translations);
     // Same filename as the source, per the customer's own delivery convention.

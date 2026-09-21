@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  keepUntranslated,
+  tidyTarget,
   missingProtected,
   protectedSpans,
   suspiciousTarget,
@@ -109,4 +111,24 @@ test("flags a memory entry that starts with punctuation the source does not have
 test("does not flag leading punctuation that is already in the source", () => {
   assert.equal(suspiciousTarget(": see annex", ": eke bakınız"), null);
   assert.equal(suspiciousTarget("Yellow", "Sarı"), null);
+});
+
+test("keepUntranslated keeps the source when only punctuation or case changed", () => {
+  assert.equal(keepUntranslated("BASF", "BASF."), "BASF");
+  assert.equal(
+    keepUntranslated("BASF Agro B.V. Arnhem (NL) - Freienbach Branch", "BASF AGRO B.V. Arnhem (NL) Freienbach Branch"),
+    "BASF Agro B.V. Arnhem (NL) - Freienbach Branch",
+  );
+  assert.equal(
+    keepUntranslated("BASF AGRO B.V. ARNHEM (NL) FREIENBACH BRANCH", "BASF AGRO B.V. Arnhem (NL) Freienbach Branch"),
+    "BASF AGRO B.V. ARNHEM (NL) FREIENBACH BRANCH",
+  );
+  assert.equal(keepUntranslated("Switzerland", "İsviçre"), "İsviçre");
+  assert.equal(keepUntranslated("Page 1", "Sayfa 1"), "Sayfa 1");
+});
+
+test("tidyTarget drops punctuation shifted in from a split memory row", () => {
+  assert.equal(tidyTarget("Suspension concentrate (SC)", ": Süspansiyon Konsantresi (SC)"), "Süspansiyon Konsantresi (SC)");
+  assert.equal(tidyTarget("BASF", "BASF."), "BASF");
+  assert.equal(tidyTarget(": note", ": not"), ": not");
 });

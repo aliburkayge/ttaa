@@ -5,6 +5,7 @@ import { degrees, PDFDocument, rgb, type PDFFont } from "pdf-lib";
 import sharp from "sharp";
 import type { Box, LayoutBlock, OcrLine } from "./ocr-layout";
 import { displayToPage, loadScanPages, type ScanPage } from "./pdf-scan";
+import { tidyTarget } from "./qa";
 
 /**
  * Çeviriyi taranmış PDF'in üstüne, İngilizce yazının tam yerine yazar.
@@ -1278,7 +1279,9 @@ export async function renderOverlay(
     const page = pdfPages[item.page - 1];
     if (!page) continue;
     const lines = item.lineIds.map((id) => texts.get(id));
-    const changed = lines.some((line) => line?.translation && line.translation.trim() !== line.source.trim());
+    const changed = lines.some(
+      (line) => line?.translation && tidyTarget(line.source, line.translation).trim() !== line.source.trim(),
+    );
     if (!changed) continue;
 
     const angle = ((page.getRotation().angle % 360) + 360) % 360;
@@ -1325,7 +1328,9 @@ export async function renderOverlay(
     const font = item.bold ? bold : regular;
     const width = item.area.u1 - item.area.u0;
     const height = item.area.v1 - item.area.v0;
-    const content = lines.map((line) => line?.translation?.trim() || line?.source || "");
+    const content = lines.map((line) =>
+      line?.translation?.trim() ? tidyTarget(line.source, line.translation.trim()) : line?.source || "",
+    );
 
     let size = item.fontSize;
     let leading = item.leading;

@@ -9,6 +9,35 @@ import type { TermHit } from "./term-store";
 const PUNCTUATION_ONLY = /^[\s.,;:!?·•\-–—_/\\()[\]{}'"]*$/;
 
 /**
+ * Harf ve rakamlar dışında her şeyi atar, büyük/küçük harfi eşitler. Türkçe
+ * yerel ayar kullanılmaz: o "FREIENBACH"ı "freıenbach" yapıp aynı satırı
+ * farklı gösteriyordu.
+ */
+function letters(text: string): string {
+  return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+/**
+ * Kaynakla yalnızca noktalama, tire ya da büyük/küçük harf farkı olan bir
+ * "çeviri" aslında çevrilmemiş metindir (marka, isim, adres). Böyle bir
+ * durumda kaynak aynen korunur. Gerçek bellekte "BASF" -> "BASF." ve
+ * "BASF Agro B.V. ... - Freienbach" -> "BASF AGRO B.V. ... Freienbach"
+ * kayıtları vardı; çıktıda logonun üstüne "BASF." yazılmasına yol açtı.
+ */
+export function keepUntranslated(source: string, target: string): string {
+  return letters(target) && letters(target) === letters(source) ? source : target;
+}
+
+/**
+ * Çeviriye kaynakta olmayan bir şey eklenmesin: başa kaymış noktalama
+ * (": Süspansiyon Konsantresi") atılır, çevrilmemiş metin kaynak hâliyle kalır.
+ */
+export function tidyTarget(source: string, target: string): string {
+  const trimmed = /^\s*[:;,.]/.test(source) ? target : target.replace(/^\s*[:;,.]+\s*/, "");
+  return keepUntranslated(source, trimmed || target);
+}
+
+/**
  * Catches translation-memory entries that are not real translations. Their CAT
  * tool split headings across lines, so the memory contains rows like
  * "CONTROL" -> "." where a translator folded two source lines into one target
