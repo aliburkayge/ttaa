@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test, type TestContext } from "node:test";
-import { attachTtaaVerificationPdf, ensureTtaaVerificationLanding, findTtaaVerificationDocument, listTtaaVerificationDocuments, publishTtaaVerificationDocument, setTtaaVerificationPdf } from "../lib/ttaa-verification-wordpress.ts";
+import { attachTtaaVerificationPdf, deleteTtaaVerificationDocument, ensureTtaaVerificationLanding, findTtaaVerificationDocument, listTtaaVerificationDocuments, publishTtaaVerificationDocument, setTtaaVerificationPdf } from "../lib/ttaa-verification-wordpress.ts";
 import { ttaaVerificationToken } from "../lib/ttaa-verification-token.ts";
 
 const originalEnv = { ...process.env };
@@ -36,6 +36,12 @@ function fakeWordPress(t: TestContext, options: { dropSeo?: boolean; foreignSlug
       if (id) return json(records.find((record) => record.id === id) || { message: "Not found" }, records.some((record) => record.id === id) ? 200 : 404);
       if (url.searchParams.has("slug")) return json(records.filter((record) => record.slug === url.searchParams.get("slug") && (record.status === "publish" || url.searchParams.get("status") === "any")));
       return json(records.filter((record) => !url.searchParams.has("search") || `${record.title} ${record.content.raw}`.toLowerCase().includes((url.searchParams.get("search") || "").toLowerCase())));
+    }
+    if (method === "DELETE" && id) {
+      const index = records.findIndex((record) => record.id === id);
+      if (index < 0) return json({ message: "Not found" }, 404);
+      const [record] = records.splice(index, 1);
+      return json({ deleted: true, previous: record });
     }
     if (!id) {
       const record = { id: records.length + 100, slug: String(body.slug), status: String(body.status), link: `https://turkishtranslation.com.tr/${String(body.slug)}/`, content: { raw: String(body.content) }, title: String(body.title) };
@@ -101,6 +107,17 @@ test("TTAA PDF add, replace and remove retain the original QR URL", async (t) =>
   assert.equal(removed.url, first.url);
   assert.equal(removed.document.fileUrl, undefined);
   assert.doesNotMatch(wp.records[0].content.raw, /<iframe/);
+});
+
+test("owned TTAA verification pages can be permanently deleted", async (t) => {
+  const wp = fakeWordPress(t);
+  const token = ttaaVerificationToken(document.documentNumber);
+  const published = await publishTtaaVerificationDocument(document, token);
+  const deleted = await deleteTtaaVerificationDocument(token);
+  assert.equal(deleted.id, published.id);
+  assert.equal(wp.records.length, 0);
+  assert.equal(await findTtaaVerificationDocument(token), null);
+  assert.ok(wp.calls.some((call) => call.method === "DELETE" && call.pathname.endsWith(`/${published.id}`)));
 });
 
 test("SEO failure keeps a TTAA document in draft and foreign pages are untouched", async (t) => {

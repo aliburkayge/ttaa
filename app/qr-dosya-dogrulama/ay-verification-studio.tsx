@@ -21,10 +21,10 @@ async function pngFromSvg(url: string) {
   image.src = url;
   await image.decode();
   const canvas = document.createElement("canvas");
-  canvas.width = 1400;
-  canvas.height = 900;
+  canvas.width = 1200;
+  canvas.height = 1200;
   const context = canvas.getContext("2d");
-  if (!context) throw new Error("PNG etiketi hazırlanamadı.");
+  if (!context) throw new Error("PNG QR kodu hazırlanamadı.");
   context.fillStyle = "white";
   context.fillRect(0, 0, canvas.width, canvas.height);
   context.drawImage(image, 0, 0, canvas.width, canvas.height);
@@ -193,6 +193,26 @@ export default function AyVerificationStudio({ today }: { today: string }) {
     finally { setAttachBusy(false); }
   }
 
+  async function deleteRecord() {
+    if (!found || attachBusy) return;
+    const confirmation = window.prompt(`Bu işlem WordPress doğrulama sayfasını ve bağlı PDF dosyasını kalıcı olarak siler. Onaylamak için belge numarasını yazın:\n\n${found.details.documentNumber}`);
+    if (confirmation === null) return;
+    if (confirmation.trim() !== found.details.documentNumber) { setLookupError("Belge numarası eşleşmedi; kayıt silinmedi."); return; }
+    setAttachBusy(true); setLookupError(""); setLookupNotice("");
+    try {
+      const data = new FormData(); data.set("mode", "delete"); data.set("documentNumber", found.details.documentNumber); data.set("deleteConfirmation", confirmation.trim());
+      const response = await fetch("/api/qr-documents/ay-tercume", { method: "POST", body: data });
+      const payload = await response.json() as { error?: string; deleted?: boolean; warning?: string | null };
+      if (!response.ok || !payload.deleted) throw new Error(payload.error || "Doğrulama kaydı silinemedi.");
+      const deletedNumber = found.details.documentNumber;
+      reset(); setFound(null); setLookupNumber(""); setLookupFile(null); setAttachConfirmed(false);
+      if (lookupFileInput.current) lookupFileInput.current.value = "";
+      setLookupNotice(payload.warning ? `${deletedNumber} silindi. ${payload.warning}` : `${deletedNumber} numaralı doğrulama kaydı ve sayfası silindi.`);
+      setListReload((value) => value + 1);
+    } catch (failure) { setLookupError(failure instanceof Error ? failure.message : "Doğrulama kaydı silinemedi."); }
+    finally { setAttachBusy(false); }
+  }
+
   async function refreshDesign() {
     if (!found || designBusy || attachBusy) return;
     setDesignBusy(true); setLookupError(""); setLookupNotice("");
@@ -228,7 +248,7 @@ export default function AyVerificationStudio({ today }: { today: string }) {
   }
 
   return <>
-    <div className="qr-proto-heading"><div><p className="qr-eyebrow">AY TERCÜME · BELGE YÖNETİMİ</p><h1>QR Dosya Doğrulama</h1><p>Belgeyi kaydedin, aytercume.com doğrulama sayfasını ve QR etiketini oluşturun.</p></div><span className="qr-live-status"><i /> WordPress bağlantılı</span></div>
+    <div className="qr-proto-heading"><div><p className="qr-eyebrow">AY TERCÜME · BELGE YÖNETİMİ</p><h1>QR Dosya Doğrulama</h1><p>Belgeyi kaydedin, aytercume.com doğrulama sayfasını ve QR kodunu oluşturun.</p></div><span className="qr-live-status"><i /> WordPress bağlantılı</span></div>
     <div className="qr-proto-notice qr-public-notice"><span aria-hidden="true">i</span><p>PDF olmadan da belgeye özel sayfa ve QR oluşur. Müşteri adı hemen, PDF eklediğinizde dosyanın kendisi aytercume.com üzerinde herkese açık görünür. Yalnızca kontrol ettiğiniz belge için doğrulama kaydı oluşturun.</p></div>
 
     <div className="qr-proto-grid">
@@ -251,12 +271,12 @@ export default function AyVerificationStudio({ today }: { today: string }) {
       </section>
 
       <section className="qr-label-panel" aria-labelledby="qr-label-title">
-        <div className="qr-panel-heading"><div><small>02 · DOĞRULAMA ETİKETİ</small><h2 id="qr-label-title">QR ve sayfa bağlantısı</h2></div><span className="qr-size-badge">70 × 45 mm</span></div>
-        <div className="qr-label-stage">{result ? <img className="qr-generated-label" src={result.label.labelUrl} alt={`Ay Tercüme belge ${result.details.documentNumber} QR etiketi`} /> : <div className="qr-label-empty"><span><QrIcon size={48} /></span><strong>QR etiketi burada görünecek</strong><p>Belge bilgilerini kaydettiğinizde<br />WordPress sayfası oluşturulur.</p></div>}</div>
-        <div aria-live="polite" className={`qr-label-feedback${dirty ? " is-dirty" : ""}`}>{dirty ? "Bilgiler değişti. Mevcut etiket önce yayımlanan sayfaya aittir; yeni kayıt oluşturmadan önce alanları kontrol edin." : notice || "QR doğrudan aytercume.com üzerindeki belge sayfasına gider."}</div>
+        <div className="qr-panel-heading"><div><small>02 · QR KOD</small><h2 id="qr-label-title">Yalnızca QR kod</h2></div><span className="qr-size-badge">Kare çıktı</span></div>
+        <div className="qr-label-stage">{result ? <img className="qr-generated-label" src={result.label.labelUrl} alt={`Ay Tercüme belge ${result.details.documentNumber} QR kodu`} /> : <div className="qr-label-empty"><span><QrIcon size={48} /></span><strong>QR kodu burada görünecek</strong><p>Belge bilgilerini kaydettiğinizde<br />WordPress sayfası oluşturulur.</p></div>}</div>
+        <div aria-live="polite" className={`qr-label-feedback${dirty ? " is-dirty" : ""}`}>{dirty ? "Bilgiler değişti. Mevcut QR kod önce yayımlanan sayfaya aittir; yeni kayıt oluşturmadan önce alanları kontrol edin." : notice || "QR doğrudan aytercume.com üzerindeki belge sayfasına gider."}</div>
         {result ? <p className="qr-live-link"><strong>Doğrulama sayfası · {result.hasFile ? "PDF yüklü" : "PDF bekleniyor"}</strong><a href={result.pageUrl} target="_blank" rel="noopener noreferrer">{result.pageUrl} ↗</a></p> : null}
-        <div className="qr-label-actions"><button type="button" className="qr-primary-button" disabled={!ready} onClick={() => window.print()}>Etiketi yazdır</button><button type="button" className="qr-secondary-button" disabled={!ready} onClick={() => void downloadPng()}>PNG indir</button><button type="button" className="qr-secondary-button" disabled={!ready} onClick={() => { if (result) downloadFile(result.label.labelUrl, `ay-tercume-${result.details.documentNumber}-qr.svg`); }}>SVG indir</button></div>
-        <p className="qr-print-help">Baskıda “gerçek boyut / %100” seçin. QR kodu yayımlanmış WordPress sayfasını açar.</p>
+        <div className="qr-label-actions"><button type="button" className="qr-primary-button" disabled={!ready} onClick={() => window.print()}>QR kodu yazdır</button><button type="button" className="qr-secondary-button" disabled={!ready} onClick={() => void downloadPng()}>QR PNG indir</button><button type="button" className="qr-secondary-button" disabled={!ready} onClick={() => { if (result) downloadFile(result.label.labelUrl, `ay-tercume-${result.details.documentNumber}-qr.svg`); }}>QR SVG indir</button></div>
+        <p className="qr-print-help">Çıktı yalnızca QR koddan oluşur. PNG veya SVG dosyasını kendi şablonunuza doğrudan ekleyebilirsiniz.</p>
       </section>
     </div>
 
@@ -268,12 +288,12 @@ export default function AyVerificationStudio({ today }: { today: string }) {
 
     <section className="qr-update-card" aria-labelledby="qr-update-title"><div className="qr-panel-heading"><div><small>03 · PDF YÖNETİMİ</small><h2 id="qr-update-title">Kayıtlı belgenin PDF’si</h2></div></div><p className="qr-update-intro">Listeden bir kayıt açın veya belge numarasıyla arayın. PDF ekleyebilir, değiştirebilir veya kaldırabilirsiniz; basılmış QR adresi aynı kalır.</p>
       <form className="qr-update-search" onSubmit={lookupDocument}><label>Belge numarası<input value={lookupNumber} onChange={(event) => { setLookupNumber(event.target.value); setFound(null); setLookupError(""); setLookupNotice(""); }} required maxLength={64} placeholder="Örn. AY-aB7k-Q2mN-x8Rp-5TzV" /></label><button type="submit" className="qr-secondary-button" disabled={lookupBusy || attachBusy}>{lookupBusy ? "Aranıyor…" : "Kaydı bul"}</button></form>
-      {found ? <div className="qr-found-record"><div><small>MEVCUT WORDPRESS SAYFASI</small><strong>{found.details.documentNumber} · {found.details.customer}</strong><span>{found.details.documentDate.split("-").reverse().join(".")} · {found.details.documentType}</span><a href={found.url} target="_blank" rel="noopener noreferrer">Doğrulama sayfasını aç ↗</a><button type="button" className="qr-text-button" disabled={designBusy || attachBusy} onClick={() => void refreshDesign()}>{designBusy ? "Tasarım güncelleniyor…" : "Sayfa tasarımını yenile"}</button></div><span className={`qr-record-status${found.hasFile ? " is-complete" : ""}`}>{found.hasFile ? "PDF yüklü" : "PDF bekleniyor"}</span></div> : null}
+      {found ? <div className="qr-found-record"><div><small>MEVCUT WORDPRESS SAYFASI</small><strong>{found.details.documentNumber} · {found.details.customer}</strong><span>{found.details.documentDate.split("-").reverse().join(".")} · {found.details.documentType}</span><a href={found.url} target="_blank" rel="noopener noreferrer">Doğrulama sayfasını aç ↗</a><button type="button" className="qr-text-button" disabled={designBusy || attachBusy} onClick={() => void refreshDesign()}>{designBusy ? "Tasarım güncelleniyor…" : "Sayfa tasarımını yenile"}</button><button type="button" className="qr-danger-button qr-delete-record" disabled={attachBusy || designBusy} onClick={() => void deleteRecord()}>{attachBusy ? "İşlem sürüyor…" : "Doğrulama kaydını ve sayfayı sil"}</button></div><span className={`qr-record-status${found.hasFile ? " is-complete" : ""}`}>{found.hasFile ? "PDF yüklü" : "PDF bekleniyor"}</span></div> : null}
       {found ? <form className="qr-attach-form" onSubmit={attachDocument}><label>{found.hasFile ? "Yerine yüklenecek yeni PDF" : "Bu kayda eklenecek PDF"} <span>*</span><input ref={lookupFileInput} className="qr-file-input" type="file" accept=".pdf,application/pdf" required onChange={(event) => { setLookupFile(event.target.files?.[0] || null); setLookupError(""); }} /><small>En fazla 8 MB. Dosya herkese açık doğrulama sayfasında gösterilir.</small></label><label className="qr-confirm"><input type="checkbox" checked={attachConfirmed} onChange={(event) => setAttachConfirmed(event.target.checked)} required /><span>Bu PDF’nin doğru belgeye ait olduğunu kontrol ettim ve herkese açık yayımlanacağını kabul ediyorum.</span></label><div className="qr-form-actions"><button type="submit" className="qr-primary-button" disabled={attachBusy}>{attachBusy ? "PDF kaydediliyor…" : found.hasFile ? "PDF’yi değiştir" : "PDF ekle"}</button>{found.hasFile ? <button type="button" className="qr-danger-button" disabled={attachBusy} onClick={() => void removeDocument()}>PDF’yi kaldır</button> : null}</div></form> : null}
       {lookupError ? <p className="qr-form-error" role="alert">{lookupError}</p> : null}{lookupNotice ? <p className="qr-update-success" role="status">{lookupNotice}</p> : null}
     </section>
 
     <section className="qr-landing-card" aria-labelledby="qr-landing-title"><div><small>AYTERCUME.COM · GİRİŞ SAYFASI</small><h2 id="qr-landing-title">Genel belge doğrulama sayfası</h2><p>Bu sayfa ziyaretçilere QR doğrulama akışını ve Ankara/İstanbul iletişim bilgilerini açıklar. Belgeye özel sayfalar ayrıca oluşturulur.</p>{landingUrl ? <a href={landingUrl} target="_blank" rel="noopener noreferrer">{landingUrl} ↗</a> : null}</div><button type="button" className="qr-secondary-button" disabled={landingBusy || busy} onClick={() => void createLanding()}>{landingBusy ? "Oluşturuluyor…" : "Giriş sayfasını oluştur / aç"}</button></section>
-    {result && !dirty ? <div className="qr-print-only"><img src={result.label.labelUrl} alt="Ay Tercüme QR doğrulama etiketi" /></div> : null}
+    {result && !dirty ? <div className="qr-print-only"><img src={result.label.labelUrl} alt="Ay Tercüme doğrulama QR kodu" /></div> : null}
   </>;
 }

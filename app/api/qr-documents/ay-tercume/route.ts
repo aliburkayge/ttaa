@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAdminSession } from "../../../../lib/auth";
-import { attachAyVerificationPdf, findAyVerificationDocument, findAyVerificationMediaId, listAyVerificationDocuments, publishAyVerificationDocument, refreshAyVerificationDocumentDesign, setAyVerificationPdf } from "../../../../lib/ay-verification-wordpress";
+import { attachAyVerificationPdf, deleteAyVerificationDocument, findAyVerificationDocument, findAyVerificationMediaId, listAyVerificationDocuments, publishAyVerificationDocument, refreshAyVerificationDocumentDesign, setAyVerificationPdf } from "../../../../lib/ay-verification-wordpress";
 import { ayVerificationToken } from "../../../../lib/ay-verification-token";
 import { isSameOriginPanelRequest } from "../../../../lib/qr-request-origin";
 import { validatePrototypeDetails } from "../../../../lib/qr-prototype";
@@ -68,8 +68,8 @@ export async function POST(request: Request) {
   try {
     const data = await request.formData();
     const mode = data.get("mode") || "create";
-    if (mode !== "create" && mode !== "attach" && mode !== "replace" && mode !== "remove" && mode !== "design") return json({ error: "Geçersiz belge işlemi." }, 400);
-    if (data.get("confirmed") !== "true") return json({ error: "Belgenin doğrulandığını ve herkese açık bilgileri onaylayın." }, 400);
+    if (mode !== "create" && mode !== "attach" && mode !== "replace" && mode !== "remove" && mode !== "design" && mode !== "delete") return json({ error: "Geçersiz belge işlemi." }, 400);
+    if (mode !== "delete" && data.get("confirmed") !== "true") return json({ error: "Belgenin doğrulandığını ve herkese açık bilgileri onaylayın." }, 400);
     const fileEntry = data.get("file");
     const file = fileEntry instanceof File && (fileEntry.name || fileEntry.size) ? fileEntry : null;
 
@@ -78,6 +78,15 @@ export async function POST(request: Request) {
       const token = documentToken(number);
       const previous = await findAyVerificationDocument(token);
       if (!previous || previous.status !== "publish") return json({ error: "Bu belge numarasıyla yayımlanmış doğrulama sayfası bulunamadı." }, 404);
+      if (mode === "delete") {
+        if (String(data.get("deleteConfirmation") || "").trim() !== previous.document.documentNumber) return json({ error: "Silmek için belge numarasını eksiksiz yazın." }, 400);
+        const oldId = previous.document.fileUrl ? await findAyVerificationMediaId(previous.document.fileUrl, previous.id, previous.document.mediaId).catch(() => undefined) : undefined;
+        await deleteAyVerificationDocument(token);
+        let warning: string | null = null;
+        if (oldId) try { await deleteWordPressMedia(oldId, "ay-tercume"); } catch { warning = "Sayfa silindi ancak PDF ortam dosyası silinemedi. WordPress ortam kitaplığını kontrol edin."; }
+        else if (previous.document.fileUrl) warning = "Sayfa silindi ancak bağlı PDF ortam kaydı otomatik bulunamadı. WordPress ortam kitaplığını kontrol edin.";
+        return json({ deleted: true, documentNumber: previous.document.documentNumber, warning });
+      }
       if (mode === "design") {
         const page = await refreshAyVerificationDocumentDesign(token);
         return json({ pageId: page.id, url: page.url, reused: page.reused, hasFile: previous.hasFile });

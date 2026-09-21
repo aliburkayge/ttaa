@@ -36,11 +36,13 @@ test("TTAA page escapes document data and changes from pending to embedded PDF",
   assert.throws(() => ttaaVerificationDocumentHtml({ ...record, fileUrl: "https://example.com/private.pdf" }, marker), /TTAA website/);
 });
 
-test("TTAA production QR contains the official document URL", async () => {
+test("TTAA production download contains only the QR for the official document URL", async () => {
   const url = "https://turkishtranslation.com.tr/document-verification-11111111-2222-3333-4444-555555555555/";
   const label = await createTtaaVerificationLabel(record, url);
   assert.equal(label.qrText, url);
-  assert.match(label.labelSvg, /VERIFICATION: TURKISHTRANSLATION\.COM\.TR/);
+  assert.equal(label.labelSvg, label.qrSvg);
+  assert.match(label.labelSvg, /<svg[^>]+width="1200"[^>]+height="1200"/);
+  assert.doesNotMatch(label.labelSvg, /TTAA|VERIFICATION|TTAA2026009|<text/);
   assert.doesNotMatch(label.qrText, /PROTOTIP/);
   await assert.rejects(createTtaaVerificationLabel(record, "https://aytercume.com/document/"), /turkishtranslation.com.tr/);
 });

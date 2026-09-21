@@ -166,6 +166,19 @@ export async function findAyVerificationMediaId(fileUrl: string, pageId: number,
   return media.find((item) => item.source_url === fileUrl)?.id;
 }
 
+export async function deleteAyVerificationDocument(token: string) {
+  if (!/^[a-f0-9-]{36}$/.test(token)) throw new Error("Geçersiz doğrulama kimliği.");
+  const { baseUrl, authorization } = config();
+  const current = await findAyVerificationDocument(token);
+  if (!current || current.status !== "publish") throw new Error("Yayımlanmış doğrulama sayfası bulunamadı.");
+  const page = await pageById(baseUrl, authorization, current.id);
+  if (page.slug !== `belge-dogrulama-${token}` || !page.content?.raw?.includes(`AY_VERIFICATION:${token}`)) throw new Error("Bu sayfa AY Tercüme doğrulama sistemi tarafından yönetilmiyor; silinmedi.");
+  await wpJson<WpPage>(`${baseUrl}/wp-json/wp/v2/pages/${current.id}?force=true`, authorization, { method: "DELETE" });
+  const remaining = (await pagesBySlug(baseUrl, authorization, `belge-dogrulama-${token}`)).find((item) => item.id === current.id);
+  if (remaining) throw new Error("WordPress doğrulama sayfasını silmedi.");
+  return current;
+}
+
 export async function refreshAyVerificationDocumentDesign(token: string) {
   if (!/^[a-f0-9-]{36}$/.test(token)) throw new Error("Geçersiz doğrulama kimliği.");
   const { baseUrl, authorization } = config();

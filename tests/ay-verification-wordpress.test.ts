@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test, type TestContext } from "node:test";
-import { attachAyVerificationPdf, ensureAyVerificationLanding, findAyVerificationDocument, listAyVerificationDocuments, publishAyVerificationDocument, refreshAyVerificationDocumentDesign, setAyVerificationPdf } from "../lib/ay-verification-wordpress.ts";
+import { attachAyVerificationPdf, deleteAyVerificationDocument, ensureAyVerificationLanding, findAyVerificationDocument, listAyVerificationDocuments, publishAyVerificationDocument, refreshAyVerificationDocumentDesign, setAyVerificationPdf } from "../lib/ay-verification-wordpress.ts";
 import { ayVerificationToken } from "../lib/ay-verification-token.ts";
 
 const originalEnv = { ...process.env };
@@ -41,6 +41,12 @@ function fakeWordPress(t: TestContext, options: { seoFails?: boolean; foreignSlu
     assert.ok(match, `Unexpected WordPress request: ${url}`);
     const id = match[1] ? Number(match[1]) : null;
     if (method === "GET") return id ? json(records.find((record) => record.id === id) || { message: "Not found" }, records.some((record) => record.id === id) ? 200 : 404) : url.searchParams.has("slug") ? json(records.filter((record) => record.slug === url.searchParams.get("slug"))) : json(records.filter((record) => !url.searchParams.has("search") || record.content.raw.toLocaleLowerCase("tr-TR").includes((url.searchParams.get("search") || "").toLocaleLowerCase("tr-TR"))));
+    if (method === "DELETE" && id) {
+      const index = records.findIndex((record) => record.id === id);
+      if (index < 0) return json({ message: "Not found" }, 404);
+      const [record] = records.splice(index, 1);
+      return json({ deleted: true, previous: record });
+    }
     if (!id) {
       const record = { id: records.length + 100, slug: String(body.slug), status: String(body.status), link: `https://aytercume.com/${String(body.slug)}/`, content: { raw: String(body.content) }, title: String(body.title), template: String(body.template) };
       records.push(record);
@@ -116,6 +122,17 @@ test("old published documents are listed and PDFs can be replaced then removed w
   assert.doesNotMatch(wp.records[0].content.raw, /<iframe/);
   assert.match(wp.records[0].content.raw, /Gerekli evraklar şu anda yüklenmemiştir/);
   assert.equal(wp.records.length, 1);
+});
+
+test("owned verification pages can be permanently deleted", async (t) => {
+  const wp = fakeWordPress(t);
+  const token = ayVerificationToken(document.documentNumber);
+  const published = await publishAyVerificationDocument(document, token);
+  const deleted = await deleteAyVerificationDocument(token);
+  assert.equal(deleted.id, published.id);
+  assert.equal(wp.records.length, 0);
+  assert.equal(await findAyVerificationDocument(token), null);
+  assert.ok(wp.calls.some((call) => call.method === "DELETE" && call.pathname.endsWith(`/${published.id}`)));
 });
 
 test("an owned published page receives the new design without changing metadata, PDF or URL", async (t) => {

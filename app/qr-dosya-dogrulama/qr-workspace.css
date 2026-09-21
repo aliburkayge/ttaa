@@ -44,7 +44,7 @@
 .qr-form-error { padding:12px; border:1px solid #f0d6cd; border-radius:8px; background:#fff8f5; color:#a54e36; font-size:11px; line-height:1.6; }
 .qr-size-badge { padding:6px 9px; border:1px solid var(--tt-border); border-radius:6px; color:var(--tt-muted); font-size:10px; }
 .qr-label-stage { display:grid; place-items:center; min-height:296px; padding:24px; border:1px dashed #ccdbe0; border-radius:10px; background:repeating-linear-gradient(135deg,#f7fafb,#f7fafb 5px,#f1f6f8 5px,#f1f6f8 6px); }
-.qr-generated-label { width:100%; height:auto; border-radius:8px; box-shadow:0 7px 22px #12374612; }
+.qr-generated-label { width:min(100%,320px); height:auto; background:#fff; box-shadow:0 7px 22px #12374612; }
 .qr-label-empty { text-align:center; }
 .qr-label-empty > span { display:grid; place-items:center; width:76px; height:76px; margin:0 auto 19px; border:1px solid var(--tt-border); border-radius:15px; background:#fff; color:var(--tt-blue-dark); }
 .qr-label-empty strong { color:var(--tt-navy); font-size:13px; }
@@ -103,6 +103,7 @@
 .qr-found-record span:not(.qr-record-status) { color:var(--tt-muted); font-size:10px; }
 .qr-found-record a { width:max-content; max-width:100%; margin-top:4px; color:var(--tt-blue-dark); font-size:10px; overflow-wrap:anywhere; }
 .qr-found-record .qr-text-button { justify-self:start; margin-top:6px; }
+.qr-found-record .qr-delete-record { justify-self:start; margin-top:10px; }
 .qr-record-status { flex:none; padding:6px 9px; border:1px solid #ecd6a6; border-radius:6px; background:#fff9e9; color:#8b5b13; font-size:10px; font-weight:700; white-space:nowrap; }
 .qr-record-status.is-complete { border-color:#b7e6d0; background:#effaf6; color:#087957; }
 .qr-attach-form { display:grid; justify-items:start; gap:15px; margin-top:20px; }
@@ -149,6 +150,6 @@
  body,.qr-workspace { background:#fff!important; }
  .qr-workspace .studio-header,.qr-page > :not(.qr-print-only) { display:none!important; }
  .qr-page { width:auto; max-width:none; padding:0; margin:0; }
- .qr-print-only { display:block; width:70mm; height:45mm; break-inside:avoid; }
- .qr-print-only img { display:block; width:70mm; height:45mm; }
+ .qr-print-only { display:block; width:50mm; height:50mm; break-inside:avoid; }
+ .qr-print-only img { display:block; width:50mm; height:50mm; }
 }
