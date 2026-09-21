@@ -1,5 +1,4 @@
 import { inflateSync } from "node:zlib";
-import sharp from "sharp";
 import {
   PDFArray,
   PDFDict,
@@ -123,6 +122,9 @@ async function decodeImage(stream: PDFRawStream): Promise<Raster> {
     else if (name === "/DCTDecode") {
       // Tarayıcı JPEG'leri yeniden başlatma işaretçileri içeriyor; saf JS
       // çözücü (jpeg-js) bunlarda "unknown JPEG marker ffd0" ile düştü.
+      // sharp yerel bir paket: en üstte içe aktarılırsa Cloudflare çalışma
+      // zamanında (yerel geliştirme sunucusu) tüm site açılışta çöker.
+      const { default: sharp } = await import("sharp");
       const { data: pixels, info } = await sharp(data).raw().toBuffer({ resolveWithObject: true });
       const channels = info.channels >= 3 ? (info.channels === 4 ? 4 : 3) : 1;
       return { width: info.width, height: info.height, channels, data: new Uint8Array(pixels) };

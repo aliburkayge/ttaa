@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import fontkit from "@pdf-lib/fontkit";
 import { degrees, PDFDocument, rgb, type PDFFont } from "pdf-lib";
-import sharp from "sharp";
 import type { Box, LayoutBlock, OcrLine } from "./ocr-layout";
 import { displayToPage, loadScanPages, type ScanPage } from "./pdf-scan";
 import { tidyTarget } from "./qa";
@@ -1252,6 +1251,7 @@ async function maskImage(mask: Mask, paper: Color): Promise<Uint8Array> {
     raw[i * 4 + 2] = paper[2];
     raw[i * 4 + 3] = (bits[i >> 3] >> (i & 7)) & 1 ? 255 : 0;
   }
+  const { default: sharp } = await import("sharp");
   return new Uint8Array(await sharp(raw, { raw: { width: mask.w, height: mask.h, channels: 4 } }).png().toBuffer());
 }
 
