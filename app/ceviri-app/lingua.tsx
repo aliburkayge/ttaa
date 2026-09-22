@@ -757,6 +757,10 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
               onPick(event.dataTransfer.files?.[0]);
             }}
           >
+            <span className={styles.glow} aria-hidden="true" />
+            <span className={styles.ring} aria-hidden="true">
+              <span />
+            </span>
             {busy && <div className={styles.busyLine}>{busy}</div>}
             <textarea
               ref={inputRef}

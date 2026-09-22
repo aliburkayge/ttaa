@@ -108,6 +108,7 @@
   filter: blur(17px);
   opacity: .85;
   animation: orbFloat 6s ease-in-out infinite;
+  will-change: transform;
 }
 @keyframes orbFloat { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
 .helloTitle { font-size: 18px; font-weight: 500; color: var(--ink-soft); margin: 0; }
@@ -232,13 +233,14 @@
 
 .dock { flex: 0 0 auto; padding: 0 20px 20px; }
 .dockInner { width: min(760px, 100%); margin: 0 auto; }
-/* Kutunun çevresinde Lingua'nın renkleri döner; yazarken hızlanır ve parlar. */
-@property --ring {
-  syntax: "<angle>";
-  inherits: false;
-  initial-value: 0deg;
-}
-@keyframes ringSpin { to { --ring: 360deg; } }
+/*
+ * Kutunun çevresinde Lingua'nın renkleri döner; yazarken hızlanır ve parlar.
+ * Dönen şey büyük bir renk çarkıdır ve yalnızca `transform` ile döner: ekran
+ * kartı onu her karede yeniden boyamadan çevirir. Parlama sabittir; bulanıklık
+ * bir kez hesaplanır. (Önceki sürüm çarkı bir CSS değişkeniyle döndürüyor,
+ * bulanık parlamayla birlikte her karede yeniden boyuyordu; sayfa takılıyordu.)
+ */
+@keyframes ringSpin { to { transform: translate(-50%, -50%) rotate(360deg); } }
 .composer {
   position: relative;
   background: var(--surface);
@@ -246,29 +248,32 @@
   box-shadow: var(--lift);
   padding: 16px;
 }
-.composer::before,
-.composer::after {
-  content: "";
+.ring, .glow { position: absolute; pointer-events: none; }
+.ring { inset: -2px; z-index: -1; border-radius: 26px; overflow: hidden; }
+.ring span {
   position: absolute;
-  inset: -2px;
-  z-index: -1;
-  border-radius: 26px;
-  background: conic-gradient(from var(--ring), #c9b8ff, #ffc2d1, #ffe0b8, #a8e6d0, #bcd4ff, #c9b8ff);
+  left: 50%;
+  top: 50%;
+  width: 150%;
+  aspect-ratio: 1;
+  background: conic-gradient(#c9b8ff, #ffc2d1, #ffe0b8, #a8e6d0, #bcd4ff, #c9b8ff);
+  transform: translate(-50%, -50%);
   animation: ringSpin 6s linear infinite;
-  pointer-events: none;
+  will-change: transform;
 }
-.composer::after {
+.glow {
   inset: -10px;
+  z-index: -2;
   border-radius: 34px;
+  background: linear-gradient(90deg, #c9b8ff, #ffc2d1, #ffe0b8, #a8e6d0, #bcd4ff);
   filter: blur(18px);
-  opacity: .4;
+  opacity: .35;
   transition: opacity .4s;
 }
-.composer:focus-within::after, .composerDrag::after { opacity: .85; }
-.composer:focus-within::before, .composer:focus-within::after,
-.composerDrag::before, .composerDrag::after { animation-duration: 2.5s; }
+.composer:focus-within .glow, .composerDrag .glow { opacity: .8; }
+.composer:focus-within .ring span, .composerDrag .ring span { animation-duration: 2.5s; }
 @media (prefers-reduced-motion: reduce) {
-  .composer::before, .composer::after { animation: none; }
+  .ring span { animation: none; }
 }
 .composerDrag { box-shadow: var(--lift), 0 0 0 2px #c9b8ff inset; }
 .composerText {
