@@ -79,12 +79,21 @@ export type OverlayItem = {
 };
 
 export type OverlayPlan = {
+  /**
+   * Planı çıkaran algoritmanın sürümü. Kayıtlı plan bundan eskiyse indirmede
+   * yeniden çıkarılır: iyileştirmeler eski belgelere de yeniden yükleme ve
+   * OCR gerekmeden yansır.
+   */
+  version?: number;
   /** Sayfa başına tarama eğikliği (radyan); düzeltilmiş koordinatların dönüşü. */
   pages: Array<{ skew: number }>;
   items: OverlayItem[];
   /** Orijinal konumuna yazılamayacak satırlar ve nedeni. */
   unplaced: Array<{ id: string; reason: string }>;
 };
+
+/** Planlama algoritmasının sürümü; planlamayı değiştiren her iyileştirmede artırılır. */
+export const PLAN_VERSION = 3;
 
 /** Taranmış PDF için veritabanında saklanan düzen (`ceviri_documents.layout`). */
 export type ScanLayout = {
@@ -1765,7 +1774,7 @@ export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): 
   );
   const items: OverlayItem[] = sized.map((item, index) => ({ ...item, bold: bold[index], family: families[index] }));
 
-  return { pages: skews.map((skew) => ({ skew })), items, unplaced };
+  return { version: PLAN_VERSION, pages: skews.map((skew) => ({ skew })), items, unplaced };
 }
 
 function blockLines(block: LayoutBlock): OcrLine[] {

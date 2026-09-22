@@ -1,7 +1,7 @@
 import { rebuildDocx } from "./docx";
 import { imageFormat, imageToPdf, overlayImage } from "./image-doc";
 import { isPdf } from "./ocr";
-import { planOverlay, renderOverlay, type OverlayPlan, type ScanLayout } from "./pdf-overlay";
+import { PLAN_VERSION, planOverlay, renderOverlay, type OverlayPlan, type ScanLayout } from "./pdf-overlay";
 import { tidyTarget } from "./qa";
 
 /**
@@ -57,8 +57,9 @@ export async function deliver(doc: StoredDocument, original: Uint8Array): Promis
 
   const pdfBytes = image ? await imageToPdf(original) : original;
   let refreshed: Refreshed | null = null;
-  if (!layout.overlay) {
-    // Yükleme sırasında sayfa düzeni ölçülememiş. OCR blokları kayıtlı
+  if (!layout.overlay || (layout.overlay.version ?? 0) < PLAN_VERSION) {
+    // Sayfa düzeni yüklemede ölçülememiş ya da eski bir algoritmayla ölçülmüş.
+    // Yeniden ölçülemezse eski plan kullanılır. OCR blokları kayıtlı
     // olduğundan yeniden yüklemeye ve OCR'a gerek yok: plan şimdi çıkarılır.
     try {
       const overlay = await planOverlay(pdfBytes, layout.blocks);
