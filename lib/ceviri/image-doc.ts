@@ -78,6 +78,7 @@ export async function overlayImage(
   original: Uint8Array,
   plan: OverlayPlan,
   texts: Map<string, { source: string; translation: string | null }>,
+  targetLang?: string,
 ): Promise<{ bytes: Uint8Array; mime: string }> {
   const image = await upright(original);
   const { default: sharp } = await import("sharp");
@@ -86,7 +87,7 @@ export async function overlayImage(
   const blank = await PDFDocument.create();
   blank.addPage([image.width * POINTS_PER_PIXEL, image.height * POINTS_PER_PIXEL]);
   // Silinen yerin kağıdı görselin kendi piksellerinden kurulur.
-  const layer = await renderOverlay(await blank.save(), plan, texts, { source: await imageToPdf(original) });
+  const layer = await renderOverlay(await blank.save(), plan, texts, { source: await imageToPdf(original), targetLang });
   const rgba = await renderPdfPage(layer, 0, { width: image.width, height: image.height }, { transparent: true });
 
   let composed = sharp(image.data).composite([

@@ -98,16 +98,70 @@ export function parseDocx(bytes: Uint8Array): DocxDocument {
   return { segments, stats: { paragraphs, tableCells, tables, images, words } };
 }
 
+const DRAWING = /<w:drawing>[\s\S]*?<\/w:drawing>/g;
+const PICT = /<w:pict(?:\s[^>]*)?>[\s\S]*?<\/w:pict>/g;
+const BLIP_REL = /<a:blip\b[^>]*\br:embed="([^"]+)"/;
+const VML_REL = /<v:imagedata\b[^>]*\br:id="([^"]+)"/;
+
+/** document.xml ilişki kimliği → paketteki dosya yolu ("word/media/image1.png"). */
+function relationships(files: Record<string, Uint8Array>): Map<string, string> {
+  const raw = files["word/_rels/document.xml.rels"];
+  const map = new Map<string, string>();
+  if (!raw) return map;
+  for (const [tag] of strFromU8(raw).matchAll(/<Relationship\b[^>]*>/g)) {
+    const id = /\bId="([^"]+)"/.exec(tag)?.[1];
+    const target = /\bTarget="([^"]+)"/.exec(tag)?.[1];
+    if (!id || !target || /\bTargetMode="External"/.test(tag)) continue;
+    map.set(id, decodeURIComponent(new URL(target, "file:///word/").pathname.slice(1)));
+  }
+  return map;
+}
+
+function imagePart(element: string, rels: Map<string, string>): string | null {
+  const id = (BLIP_REL.exec(element) ?? VML_REL.exec(element))?.[1];
+  return id ? (rels.get(id) ?? null) : null;
+}
+
+export type DocxMedia = { part: string; bytes: Uint8Array; order: number };
+
+/** Gövdede çizilen görseller: her dosya bir kez, ilk göründüğü paragrafın sırasıyla. */
+export function docxMedia(bytes: Uint8Array): DocxMedia[] {
+  const files = unzipSync(bytes);
+  const xml = documentXml(files);
+  const rels = relationships(files);
+  const found = new Map<string, DocxMedia>();
+  let order = 0;
+  PARAGRAPH.lastIndex = 0;
+  let paragraph: RegExpExecArray | null;
+  while ((paragraph = PARAGRAPH.exec(xml))) {
+    order += 1;
+    for (const [element] of paragraph[0].matchAll(new RegExp(`${DRAWING.source}|${PICT.source}`, "g"))) {
+      const part = imagePart(element, rels);
+      if (part && files[part] && !found.has(part)) found.set(part, { part, bytes: files[part], order });
+    }
+  }
+  return [...found.values()];
+}
+
 /**
  * Rebuilds the .docx with translated text, touching nothing but the characters
  * inside <w:t> nodes. Untranslated segments keep their original text.
+ *
+ * `marks`: görsel dosyası → onun yerine yazılacak satırlar. İmza ve mühür
+ * görseli çeviride kopyalanmaz (müşteri kuralı); aynı koşunun içinde etiket
+ * metniyle değiştirilir. Logo gibi diğer görseller olduğu gibi kalır.
  */
-export function rebuildDocx(bytes: Uint8Array, translations: Map<string, string>): Uint8Array {
+export function rebuildDocx(
+  bytes: Uint8Array,
+  translations: Map<string, string>,
+  marks: Map<string, string[]> = new Map(),
+): Uint8Array {
   const files = unzipSync(bytes);
   const xml = documentXml(files);
+  const rels = relationships(files);
 
   let order = 0;
-  const rebuilt = xml.replace(PARAGRAPH, (body) => {
+  const translated = xml.replace(PARAGRAPH, (body) => {
     order += 1;
     const replacement = translations.get(`p${order}`);
     if (replacement === undefined) return body;
@@ -122,6 +176,16 @@ export function rebuildDocx(bytes: Uint8Array, translations: Map<string, string>
       return `${tag}${encodeXml(replacement)}${close}`;
     });
   });
+
+  // Etiketler metin çevirisinden sonra konur: çeviri bir paragrafın ilk
+  // <w:t>'sini doldurup gerisini boşaltır, etiketi silmesin.
+  const label = (element: string) => {
+    const part = imagePart(element, rels);
+    const lines = part ? marks.get(part) : undefined;
+    if (!lines?.length) return element;
+    return lines.map((text) => `<w:t xml:space="preserve">${encodeXml(text)}</w:t>`).join("<w:br/>");
+  };
+  const rebuilt = marks.size ? translated.replace(DRAWING, label).replace(PICT, label) : translated;
 
   files["word/document.xml"] = strToU8(rebuilt);
   return zipSync(files);

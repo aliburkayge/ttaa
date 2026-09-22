@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { requireAdminSession } from "../../../../lib/auth";
 import { getCeviriSupabase, CEVIRI_DOCS_BUCKET } from "../../../../lib/ceviri/supabase";
 import { parseDocx } from "../../../../lib/ceviri/docx";
+import { findDocxMarks, type DocxLayout } from "../../../../lib/ceviri/docx-marks";
 import { IMAGE_FORMATS, imageFormat, imageToPdf } from "../../../../lib/ceviri/image-doc";
 import { activeOcrProvider, isPdf, ocrToSegments } from "../../../../lib/ceviri/ocr";
 import type { MarkKind } from "../../../../lib/ceviri/marks";
@@ -97,7 +98,7 @@ export async function POST(request: Request) {
     const scanned = isPdf(bytes) || image !== null;
 
     let parsed: { segments: ParsedSegment[]; stats: Record<string, number> };
-    let layout: ScanLayout | null = null;
+    let layout: ScanLayout | DocxLayout | null = null;
     let ocrWarning: string | null = null;
     let ocrProvider: string | null = null;
     let ocrDemo = false;
@@ -162,14 +163,27 @@ export async function POST(request: Request) {
         ocr: { warning: ocrWarning, provider: ocrProvider, demo: ocrDemo },
       };
     } else {
+      let docx: ReturnType<typeof parseDocx>;
       try {
-        parsed = parseDocx(bytes);
+        docx = parseDocx(bytes);
       } catch (cause) {
         return NextResponse.json(
           { error: cause instanceof Error ? cause.message : "Belge okunamadı." },
           { status: 422 },
         );
       }
+      // İmza ve mühür görselleri çeviride kopyalanmaz: şimdi sınıflandırılır,
+      // mührün yazısı segment olup belgeyle birlikte çevrilir.
+      const found = await findDocxMarks(bytes);
+      layout = found.layout;
+      parsed = {
+        segments: [...docx.segments, ...found.segments],
+        stats: {
+          ...docx.stats,
+          signatures: found.layout.marks.filter((mark) => mark.kind !== "stamp").length,
+          stamps: found.layout.marks.filter((mark) => mark.kind !== "signature").length,
+        },
+      };
     }
 
     if (parsed.segments.length === 0) {

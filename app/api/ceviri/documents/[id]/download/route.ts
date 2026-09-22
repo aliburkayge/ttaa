@@ -14,7 +14,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
 
     const { data: doc, error } = await supabase
       .from("ceviri_documents")
-      .select("filename, storage_path, segments, layout")
+      .select("filename, storage_path, segments, layout, target_lang")
       .eq("id", id)
       .maybeSingle();
     if (error) throw new Error(error.message);

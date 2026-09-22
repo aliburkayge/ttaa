@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { zipSync, strToU8, unzipSync, strFromU8 } from "fflate";
-import { encodeXml, parseDocx, rebuildDocx } from "../lib/ceviri/docx.ts";
+import sharp from "sharp";
+import { docxMedia, encodeXml, parseDocx, rebuildDocx } from "../lib/ceviri/docx.ts";
+import { findDocxMarks } from "../lib/ceviri/docx-marks.ts";
+import { deliver } from "../lib/ceviri/deliver.ts";
+import type { ImageInsight } from "../lib/ceviri/ocr-layout.ts";
 
 /** Builds a minimal but structurally real .docx around the given body XML. */
 function docx(body: string, extra: Record<string, Uint8Array> = {}): Uint8Array {
@@ -115,4 +119,152 @@ test("keeps leading and trailing spaces in a translation", () => {
   const rebuilt = rebuildDocx(docx(para(run("x"))), new Map([["p1", "  boşluklu  "]]));
   const xml = strFromU8(unzipSync(rebuilt)["word/document.xml"]);
   assert.match(xml, /xml:space="preserve"/);
+});
+
+// ---------- imza ve mühür görselleri ----------
+
+async function png(color: string): Promise<Uint8Array> {
+  return new Uint8Array(await sharp({ create: { width: 4, height: 4, channels: 3, background: color } }).png().toBuffer());
+}
+
+const drawing = (rel: string) =>
+  `<w:r><w:drawing><wp:inline><a:graphic><a:graphicData><pic:pic><pic:blipFill><a:blip r:embed="${rel}"/></pic:blipFill></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
+const pict = (rel: string) => `<w:r><w:pict><v:shape><v:imagedata r:id="${rel}" o:title=""/></v:shape></w:pict></w:r>`;
+const rels = (entries: Record<string, string>) =>
+  strToU8(
+    `<?xml version="1.0"?><Relationships xmlns="x">${Object.entries(entries)
+      .map(([id, target]) => `<Relationship Id="${id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="${target}"/>`)
+      .join("")}<Relationship Id="rId9" Type="hyperlink" Target="https://example.com" TargetMode="External"/></Relationships>`,
+  );
+
+async function signedDocx() {
+  const signature = await png("#1133aa");
+  const logo = await png("#cc0000");
+  const stamp = await png("#3355ff");
+  const bytes = docx(para(run("Dear Sir")) + para(drawing("rId6")) + para(run("Signed:"), drawing("rId5")) + para(pict("rId7")), {
+    "word/_rels/document.xml.rels": rels({ rId5: "media/image1.png", rId6: "media/logo.png", rId7: "media/image3.png" }),
+    "word/media/image1.png": signature,
+    "word/media/logo.png": logo,
+    "word/media/image3.png": stamp,
+  });
+  return { bytes, signature, stamp };
+}
+
+test("lists each image drawn in the body once, in reading order", async () => {
+  const { bytes } = await signedDocx();
+  assert.deepEqual(
+    docxMedia(bytes).map((media) => [media.part, media.order]),
+    [["word/media/logo.png", 2], ["word/media/image1.png", 3], ["word/media/image3.png", 4]],
+  );
+});
+
+test("marks signature and stamp images, reads the stamp's text, leaves the logo", async () => {
+  const { bytes, signature, stamp } = await signedDocx();
+  const b64 = (data: Uint8Array) => Buffer.from(data).toString("base64");
+  const inspect = async (dataUrl: string): Promise<ImageInsight> => {
+    if (dataUrl.endsWith(b64(signature))) return { kind: "signature", lines: [] };
+    if (dataUrl.endsWith(b64(stamp))) {
+      return {
+        kind: "stamp",
+        lines: [
+          { text: "BASF SE\nLudwigshafen", confidence: 0.95 },
+          { text: "Schulz", confidence: 0.49 },
+        ],
+      };
+    }
+    return { kind: "logo", lines: [] };
+  };
+  const { layout, segments } = await findDocxMarks(bytes, inspect);
+  assert.equal(layout.version, "docx-1");
+  assert.deepEqual(
+    layout.marks.map((mark) => [mark.part, mark.kind]),
+    [["word/media/image1.png", "signature"], ["word/media/image3.png", "stamp"]],
+  );
+  assert.deepEqual(segments.map((segment) => [segment.text, segment.mark, segment.order]), [
+    ["BASF SE", "stamp", 4],
+    ["Ludwigshafen", "stamp", 4],
+  ]);
+  assert.deepEqual(layout.marks[1].lineIds, segments.map((segment) => segment.id));
+});
+
+test("an image the classifier cannot read is left in the document", async () => {
+  const { bytes } = await signedDocx();
+  const { layout } = await findDocxMarks(bytes, async () => {
+    throw new Error("OpenAI down");
+  });
+  assert.deepEqual(layout.marks, []);
+});
+
+test("writes the label where a signature or stamp image was, keeps the logo", async () => {
+  const { bytes } = await signedDocx();
+  const out = rebuildDocx(
+    bytes,
+    new Map([["p1", "Sayın Yetkili"]]),
+    new Map([
+      ["word/media/image1.png", ["[İMZA]"]],
+      ["word/media/image3.png", ["[MÜHÜR: BASF SE, Ludwigshafen]"]],
+    ]),
+  );
+  const xml = strFromU8(unzipSync(out)["word/document.xml"]);
+  assert.ok(xml.includes("Sayın Yetkili"));
+  assert.ok(xml.includes("[İMZA]"));
+  assert.ok(xml.includes("[MÜHÜR: BASF SE, Ludwigshafen]"));
+  assert.ok(!xml.includes('r:embed="rId5"'), "signature image is still drawn");
+  assert.ok(!xml.includes('r:id="rId7"'), "stamp image is still drawn");
+  assert.ok(xml.includes('r:embed="rId6"'), "logo was removed");
+});
+
+test("puts a line break between the signature label and the printed name", async () => {
+  const { bytes } = await signedDocx();
+  const out = rebuildDocx(bytes, new Map(), new Map([["word/media/image1.png", ["[İMZA]", "Dirk Schmitz"]]]));
+  const xml = strFromU8(unzipSync(out)["word/document.xml"]);
+  assert.ok(xml.includes('<w:t xml:space="preserve">[İMZA]</w:t><w:br/><w:t xml:space="preserve">Dirk Schmitz</w:t>'));
+});
+
+test("an older Word document without a stored layout gets its labels at download", async () => {
+  const { bytes, signature, stamp } = await signedDocx();
+  const b64 = (data: Uint8Array) => Buffer.from(data).toString("base64");
+  const inspect = async (dataUrl: string): Promise<ImageInsight> =>
+    dataUrl.endsWith(b64(signature))
+      ? { kind: "signature", lines: [] }
+      : dataUrl.endsWith(b64(stamp))
+        ? { kind: "stamp", lines: [{ text: "BASF SE", confidence: 0.95 }] }
+        : { kind: "logo", lines: [] };
+  const doc = {
+    filename: "letter.docx",
+    target_lang: "tr-TR",
+    layout: null,
+    segments: [{ id: "p1", text: "Dear Sir", translation: "Sayın Yetkili" }],
+  };
+  const result = await deliver(doc, bytes, { inspect });
+  assert.ok(result.ok);
+  const xml = strFromU8(unzipSync(result.bytes)["word/document.xml"]);
+  assert.ok(xml.includes("Sayın Yetkili"));
+  assert.ok(xml.includes("[İMZA]"));
+  // The stamp's text was never a segment of this older document: label only.
+  assert.ok(xml.includes("[MÜHÜR]"));
+  assert.ok(xml.includes('r:embed="rId6"'), "logo was removed");
+  assert.deepEqual(
+    (result.refreshed?.layout as { marks: Array<{ kind: string; lineIds: string[] }> }).marks.map((mark) => [mark.kind, mark.lineIds]),
+    [["signature", []], ["stamp", []]],
+  );
+});
+
+test("a Word document uploaded with the new rule writes the stamp's translated text", async () => {
+  const { bytes } = await signedDocx();
+  const doc = {
+    filename: "letter.docx",
+    target_lang: "en-GB",
+    layout: { version: "docx-1", marks: [{ part: "word/media/image3.png", kind: "stamp", lineIds: ["m3-1"] }] },
+    segments: [
+      { id: "p1", text: "Sayın Yetkili", translation: "Dear Sir" },
+      { id: "m3-1", text: "Noter", translation: "Notary" },
+    ],
+  };
+  const result = await deliver(doc, bytes);
+  assert.ok(result.ok);
+  assert.equal(result.refreshed, null);
+  const xml = strFromU8(unzipSync(result.bytes)["word/document.xml"]);
+  assert.ok(xml.includes("[SEAL: Notary]"));
+  assert.ok(xml.includes('r:embed="rId5"'), "an image the layout does not mark stays");
 });

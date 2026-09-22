@@ -1,6 +1,9 @@
 import { rebuildDocx } from "./docx";
+import { findDocxMarks, type DocxLayout } from "./docx-marks";
 import { imageFormat, imageToPdf, overlayImage } from "./image-doc";
+import { markText } from "./marks";
 import { isPdf } from "./ocr";
+import type { ImageInsight } from "./ocr-layout";
 import { PLAN_VERSION, planOverlay, renderOverlay, type OverlayPlan, type ScanLayout } from "./pdf-overlay";
 import { tidyTarget } from "./qa";
 
@@ -12,6 +15,8 @@ import { tidyTarget } from "./qa";
 
 export type StoredDocument = {
   filename: string;
+  /** İmza/mühür etiketi bu dilde yazılır. */
+  target_lang?: string;
   segments: Array<{ id: string; text: string; translation: string | null } & Record<string, unknown>>;
   layout: unknown;
 };
@@ -20,8 +25,8 @@ export type Delivery =
   | { ok: true; bytes: Uint8Array; mime: string; filename: string; refreshed: Refreshed | null }
   | { ok: false; status: number; error: string; refreshed: Refreshed | null };
 
-/** İndirme sırasında yeniden ölçülen sayfa planı; çağıran kaydeder ki bir dahaki sefer tekrar ölçülmesin. */
-export type Refreshed = { layout: ScanLayout; segments: StoredDocument["segments"] };
+/** İndirme sırasında yeniden çıkarılan düzen; çağıran kaydeder ki bir dahaki sefer tekrar çıkarılmasın. */
+export type Refreshed = { layout: ScanLayout | DocxLayout; segments: StoredDocument["segments"] };
 
 const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
@@ -38,16 +43,37 @@ export function withPlacement(segments: StoredDocument["segments"], overlay: Ove
   }));
 }
 
-export async function deliver(doc: StoredDocument, original: Uint8Array): Promise<Delivery> {
+export async function deliver(
+  doc: StoredDocument,
+  original: Uint8Array,
+  options: { inspect?: (dataUrl: string) => Promise<ImageInsight> } = {},
+): Promise<Delivery> {
   const image = imageFormat(original);
+  const targetLang = doc.target_lang ?? "en";
 
   if (!isPdf(original) && !image) {
     const translations = new Map<string, string>();
     for (const segment of doc.segments) {
       if (segment.translation) translations.set(segment.id, tidyTarget(segment.text, segment.translation));
     }
+    // Düzeni olmayan eski Word belgesi: görseller şimdi sınıflandırılır. Mührün
+    // yazısı o belgede hiç segment olmadığından çevrilmemiştir; yalnızca etiket.
+    let layout = doc.layout as DocxLayout | null;
+    let refreshed: Refreshed | null = null;
+    if (layout?.version !== "docx-1") {
+      const found = await findDocxMarks(original, options.inspect);
+      layout = { version: "docx-1", marks: found.layout.marks.map((mark) => ({ ...mark, lineIds: [] })) };
+      refreshed = { layout, segments: doc.segments };
+    }
+    const sources = new Map(doc.segments.map((segment) => [segment.id, segment.text]));
+    const marks = new Map(
+      layout.marks.map((mark) => [
+        mark.part,
+        markText(mark.kind, targetLang, mark.lineIds.map((id) => translations.get(id) ?? sources.get(id) ?? "")),
+      ]),
+    );
     // Aynı dosya adı: müşterinin teslim alışkanlığı.
-    return { ok: true, bytes: rebuildDocx(original, translations), mime: DOCX_MIME, filename: doc.filename, refreshed: null };
+    return { ok: true, bytes: rebuildDocx(original, translations, marks), mime: DOCX_MIME, filename: doc.filename, refreshed };
   }
 
   let layout = doc.layout as ScanLayout | null;
@@ -82,12 +108,12 @@ export async function deliver(doc: StoredDocument, original: Uint8Array): Promis
     doc.segments.map((segment) => [segment.id, { source: segment.text, translation: segment.translation }]),
   );
   if (image) {
-    const out = await overlayImage(original, layout.overlay, texts);
+    const out = await overlayImage(original, layout.overlay, texts, targetLang);
     return { ok: true, bytes: out.bytes, mime: out.mime, filename: doc.filename, refreshed };
   }
   return {
     ok: true,
-    bytes: await renderOverlay(original, layout.overlay, texts),
+    bytes: await renderOverlay(original, layout.overlay, texts, { targetLang }),
     mime: "application/pdf",
     filename: doc.filename,
     refreshed,
