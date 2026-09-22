@@ -482,7 +482,27 @@ test("finds a signature the OCR did not separate and masks only its ink", async 
   assert.ok(mark.masks[0].rect.u1 >= 280 && mark.masks[0].rect.u0 <= 188, "mask does not span the signature");
   // The label sits in the free paper above the title, not over it.
   assert.ok(mark.area.v1 <= TITLE.y0 + 0.5, `label area ends at ${mark.area.v1.toFixed(1)}`);
-  assert.equal(itemFor(plan, LINES.title.id)?.redraw, true, "the title the signature touches must be rewritten");
+  // The printed title the blue ink crosses keeps its own black pixels: only the
+  // blue stroke where it passes is masked, so the title is not rewritten.
+  const title = itemFor(plan, LINES.title.id)!;
+  assert.notEqual(title.redraw, true);
+  const [mask] = mark.masks;
+  const bits = Buffer.from(mask.bits, "base64");
+  const du = (mask.rect.u1 - mask.rect.u0) / mask.w;
+  const dv = (mask.rect.v1 - mask.rect.v0) / mask.h;
+  let total = 0;
+  let inTitle = 0;
+  for (let y = 0; y < mask.h; y++) {
+    for (let x = 0; x < mask.w; x++) {
+      const index = y * mask.w + x;
+      if (!((bits[index >> 3] >> (index & 7)) & 1)) continue;
+      total++;
+      const u = mask.rect.u0 + (x + 0.5) * du;
+      const v = mask.rect.v0 + (y + 0.5) * dv;
+      if (u > TITLE.x0 && u < TITLE.x1 && v > TITLE.y0 && v < TITLE.y1) inTitle++;
+    }
+  }
+  assert.ok(inTitle < total * 0.15, `${inTitle} of ${total} mask pixels sit on the title`);
 });
 
 test("leaves ink alone when the classifier says it is a logo or text", async () => {
