@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { markLabels, markNote, type MarkKind } from "../../lib/ceviri/marks";
 import styles from "./lingua.module.css";
 
 type Segment = {
@@ -23,6 +24,8 @@ type Segment = {
   placement?: string | null;
   /** Yerine yazılır ama çıktıya bakılmalı (ör. harfe değen aynı renkte mühür). */
   caution?: string | null;
+  /** İmza/mühür bölgesinin içinden okunan satır: çıktıda etiketle birlikte yazılır. */
+  mark?: MarkKind | null;
   edited?: boolean;
 };
 
@@ -51,6 +54,8 @@ type Doc = {
     images: number;
     words: number;
     pages?: number;
+    signatures?: number;
+    stamps?: number;
   };
   segments: Segment[];
   instructions?: string | null;
@@ -403,6 +408,7 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
   const flagged = doc ? doc.segments.filter((s) => s.warning !== null).length : 0;
   const ocrFlagged = doc ? doc.segments.filter((s) => s.ocrWarning).length : 0;
   const kind = doc ? outputKind(doc.filename) : null;
+  const labels = markLabels(doc?.target_lang ?? targetLang);
   const isScan = kind === "pdf" || kind === "image";
   const complete = total > 0 && translated === total;
   const working = busy !== null || thinking;
@@ -493,13 +499,15 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
                         {kind === "image" ? "Görseli" : "Taranmış belgeyi"} okudum: <b>{doc.stats.pages}</b> sayfa, <b>{total}</b> çevrilecek satır
                         {doc.stats.tables > 0 && <> — <b>{doc.stats.tableCells}</b> tanesi tablo hücresi</>}.
                         Çeviri orijinal {kind === "image" ? "görselin" : "PDF'in"} üstüne, her satırın kendi
-                        yerine yazılacak; logo, tablo, fotoğraf, imza ve mühür olduğu gibi kalır.
+                        yerine yazılacak; logo, tablo ve fotoğraf olduğu gibi kalır. İmza ve mühürler
+                        kopyalanmaz, yerlerine [{labels.signature}] ve [{labels.stamp}] yazılır.
                       </>
                     ) : (
                       <>
                         Belgeyi okudum. <b>{total}</b> çevrilecek segment buldum
                         {doc.stats.tables > 0 && <> — bunların <b>{doc.stats.tableCells}</b> tanesi tablo hücresi</>}.
-                        Biçim, {doc.stats.tables} tablo ve {doc.stats.images} görsel olduğu gibi korunacak.
+                        Biçim ve tablolar olduğu gibi korunacak; imza ve mühür görsellerinin yerine
+                        [{labels.signature}] ve [{labels.stamp}] yazılır, diğer görseller kalır.
                       </>
                     )}
                   </p>
@@ -532,6 +540,11 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
                         <span><b>{doc.stats.paragraphs}</b> paragraf</span>
                         <span><b>{doc.stats.tableCells}</b> tablo hücresi</span>
                         <span><b>{doc.stats.images}</b> görsel</span>
+                        {(doc.stats.signatures ?? 0) + (doc.stats.stamps ?? 0) > 0 && (
+                          <span>
+                            <b>{doc.stats.signatures ?? 0}</b> imza, <b>{doc.stats.stamps ?? 0}</b> mühür etiketlenecek
+                          </span>
+                        )}
                         {translated > 0 && <span><b>{fromMemory}</b> segment bellekten</span>}
                         {flagged > 0 && <span style={{ color: "#ad2b31" }}><b>{flagged}</b> kontrol bekliyor</span>}
                       </div>
@@ -620,6 +633,7 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
                                     )}
                                   </div>
                                   {segment.text}
+                                  {segment.mark && <div className={styles.note}>{markNote(segment.mark, doc.target_lang)}</div>}
                                   {segment.ocrWarning && <div className={styles.ocrLine}>{segment.ocrWarning}</div>}
                                   {placementWarning(segment) && (
                                     <div className={styles.ocrLine}>{placementWarning(segment)}</div>
