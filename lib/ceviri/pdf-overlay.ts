@@ -106,7 +106,7 @@ export type OverlayPlan = {
 };
 
 /** Planlama algoritmasının sürümü; planlamayı değiştiren her iyileştirmede artırılır. */
-export const PLAN_VERSION = 5;
+export const PLAN_VERSION = 6;
 
 /** Taranmış PDF için veritabanında saklanan düzen (`ceviri_documents.layout`). */
 export type ScanLayout = {

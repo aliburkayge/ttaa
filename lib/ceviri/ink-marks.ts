@@ -35,13 +35,27 @@ export type InkMap = {
 
 /** Bundan uzun düz mürekkep koşusu çizgidir (punto). */
 const RULE_PT = 24;
+/** Renkli imzanın düz kuyruğu en fazla bu kadar uzun olur (punto); daha uzunu renkli çizgidir. */
+const FLOURISH_PT = 60;
 
-type Component = { x0: number; y0: number; x1: number; y1: number; n: number; chroma: number };
+type Component = { x0: number; y0: number; x1: number; y1: number; n: number; chroma: number; lum: number };
+
+/**
+ * Renkli mürekkep mi? Doygunluk parlaklığa oranlanır: telefonla çekilmiş
+ * sayfada koyu lacivert imza mutlak olarak az doygundur (≈ 40, parlaklık ≈ 35)
+ * ama siyah baskının (≈ 8) çok üstündedir. Mutlak eşikle (45) lacivert imza
+ * siyah sayılıyor, yalnızca çizginin böldüğü bir parçası bulunuyordu (BASF
+ * üretim tesisleri mektubu).
+ */
+export function tinted(chroma: number, lum: number): boolean {
+  return chroma > 45 || (chroma > 20 && chroma > 0.45 * Math.max(40, lum));
+}
 
 export function findInkRegions(raster: Raster, pixelsPerPoint: number): InkMap {
   const { w, h, rgb } = raster;
   const ink = new Uint8Array(w * h);
   const chromaAt = new Uint8Array(w * h);
+  const lumAt = new Uint8Array(w * h);
   for (let i = 0; i < w * h; i++) {
     const r = rgb[i * 3];
     const g = rgb[i * 3 + 1];
@@ -49,6 +63,7 @@ export function findInkRegions(raster: Raster, pixelsPerPoint: number): InkMap {
     const lum = 0.299 * r + 0.587 * g + 0.114 * b;
     const chroma = Math.max(r, g, b) - Math.min(r, g, b);
     chromaAt[i] = chroma;
+    lumAt[i] = Math.round(lum);
     // İnce renkli çizgi açık tonda kalır; siyah eşiğiyle kopuk görünürdü.
     ink[i] = lum < 170 || (chroma > 35 && lum < 225) ? 1 : 0;
   }
@@ -74,41 +89,48 @@ export function findInkRegions(raster: Raster, pixelsPerPoint: number): InkMap {
     }
   }
 
-  const labels = new Int32Array(w * h).fill(-1);
-  const comps: Component[] = [];
-  const stack: number[] = [];
-  for (let i = 0; i < w * h; i++) {
-    if (!strokes[i] || labels[i] >= 0) continue;
-    const c: Component = { x0: w, y0: h, x1: 0, y1: 0, n: 0, chroma: 0 };
-    labels[i] = comps.length;
-    stack.push(i);
-    while (stack.length) {
-      const j = stack.pop()!;
-      const x = j % w;
-      const y = (j - x) / w;
-      c.n++;
-      c.chroma += chromaAt[j];
-      if (x < c.x0) c.x0 = x;
-      if (x > c.x1) c.x1 = x;
-      if (y < c.y0) c.y0 = y;
-      if (y > c.y1) c.y1 = y;
-      for (let dy = -1; dy <= 1; dy++) {
-        const yy = y + dy;
-        if (yy < 0 || yy >= h) continue;
-        for (let dx = -1; dx <= 1; dx++) {
-          const xx = x + dx;
-          if (xx < 0 || xx >= w) continue;
-          const k = yy * w + xx;
-          if (strokes[k] && labels[k] < 0) {
-            labels[k] = comps.length;
-            stack.push(k);
+  // Bağlı bileşenler (8 komşuluk), `on` pikselleri üzerinde.
+  const label = (on: Uint8Array) => {
+    const labels = new Int32Array(w * h).fill(-1);
+    const comps: Component[] = [];
+    const stack: number[] = [];
+    for (let i = 0; i < w * h; i++) {
+      if (!on[i] || labels[i] >= 0) continue;
+      const c: Component = { x0: w, y0: h, x1: 0, y1: 0, n: 0, chroma: 0, lum: 0 };
+      labels[i] = comps.length;
+      stack.push(i);
+      while (stack.length) {
+        const j = stack.pop()!;
+        const x = j % w;
+        const y = (j - x) / w;
+        c.n++;
+        c.chroma += chromaAt[j];
+        c.lum += lumAt[j];
+        if (x < c.x0) c.x0 = x;
+        if (x > c.x1) c.x1 = x;
+        if (y < c.y0) c.y0 = y;
+        if (y > c.y1) c.y1 = y;
+        for (let dy = -1; dy <= 1; dy++) {
+          const yy = y + dy;
+          if (yy < 0 || yy >= h) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            const xx = x + dx;
+            if (xx < 0 || xx >= w) continue;
+            const k = yy * w + xx;
+            if (on[k] && labels[k] < 0) {
+              labels[k] = comps.length;
+              stack.push(k);
+            }
           }
         }
       }
+      c.chroma /= c.n;
+      c.lum /= c.n;
+      comps.push(c);
     }
-    c.chroma /= c.n;
-    comps.push(c);
-  }
+    return { labels, comps };
+  };
+  const { labels, comps } = label(strokes);
 
   const heights = comps
     .filter((c) => c.n >= 12)
@@ -122,18 +144,19 @@ export function findInkRegions(raster: Raster, pixelsPerPoint: number): InkMap {
     if (c.n < 6) return false;
     // Çok ince ve düz: kısa tablo kenarı, çizgi parçası.
     if (cw <= glyph * 0.35 || ch <= glyph * 0.35) return false;
-    if (c.chroma > 45 && c.n >= 20) return true;
+    if (tinted(c.chroma, c.lum) && c.n >= 20) return true;
     return ch > glyph * 1.9 || cw > glyph * 8;
   });
 
-  type Group = { x0: number; y0: number; x1: number; y1: number; n: number; members: number[] };
+  type Group = { x0: number; y0: number; x1: number; y1: number; n: number; members: number[]; flats: number[] };
   const groups: Group[] = [];
   comps.forEach((c, index) => {
-    if (candidate[index]) groups.push({ x0: c.x0, y0: c.y0, x1: c.x1, y1: c.y1, n: c.n, members: [index] });
+    if (candidate[index]) groups.push({ x0: c.x0, y0: c.y0, x1: c.x1, y1: c.y1, n: c.n, members: [index], flats: [] });
   });
   // Renkli mürekkep neredeyse hiç basılı yazı değildir: aynı imzanın kopuk
   // kuyruğu daha uzaktan da aynı bölgeye katılır.
-  const isColored = (group: { members: number[] }) => group.members.some((index) => comps[index].chroma > 45);
+  const isColored = (group: { members: number[] }) =>
+    group.members.some((index) => tinted(comps[index].chroma, comps[index].lum));
   for (let merged = true; merged; ) {
     merged = false;
     outer: for (let a = 0; a < groups.length; a++) {
@@ -151,12 +174,42 @@ export function findInkRegions(raster: Raster, pixelsPerPoint: number): InkMap {
             y1: Math.max(r.y1, s.y1),
             n: r.n + s.n,
             members: [...r.members, ...s.members],
+            flats: [],
           };
           groups.splice(b, 1);
           merged = true;
           break outer;
         }
       }
+    }
+  }
+
+  // Renkli imzanın uzun ve yatık kuyruğu düz çizgi diye ayıklanmıştı. Renkli
+  // ve kısa düz parçalar yakınlarındaki renkli imzaya katılır. Siyah basılı
+  // çizgi renkli değildir; renkli tablo çizgisi ise bundan uzundur.
+  const flatInk = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) if (ink[i] && !strokes[i]) flatInk[i] = 1;
+  const flat = label(flatInk);
+  const flourish = flat.comps.map(
+    (c) => c.n >= 6 && tinted(c.chroma, c.lum) && c.x1 - c.x0 + 1 <= FLOURISH_PT * pixelsPerPoint,
+  );
+  for (const group of groups) {
+    if (!isColored(group)) continue;
+    for (let grew = true; grew; ) {
+      grew = false;
+      flat.comps.forEach((c, index) => {
+        if (!flourish[index] || group.flats.includes(index)) return;
+        const gapX = glyph * 3;
+        const gapY = glyph * 1.2;
+        if (group.x0 - gapX > c.x1 || c.x0 - gapX > group.x1 || group.y0 - gapY > c.y1 || c.y0 - gapY > group.y1) return;
+        group.flats.push(index);
+        group.x0 = Math.min(group.x0, c.x0);
+        group.y0 = Math.min(group.y0, c.y0);
+        group.x1 = Math.max(group.x1, c.x1);
+        group.y1 = Math.max(group.y1, c.y1);
+        group.n += c.n;
+        grew = true;
+      });
     }
   }
 
@@ -168,17 +221,18 @@ export function findInkRegions(raster: Raster, pixelsPerPoint: number): InkMap {
     if (group.n < glyph * glyph * 1.2 || gw < glyph * 1.5 || gh < glyph * 0.8) continue;
 
     const members = new Set(group.members);
+    const flats = new Set(group.flats);
     const raw = new Uint8Array(gw * gh);
     let colored = 0;
     let total = 0;
     for (let y = group.y0; y <= group.y1; y++) {
       for (let x = group.x0; x <= group.x1; x++) {
         const index = y * w + x;
-        if (labels[index] >= 0 && members.has(labels[index])) {
+        if ((labels[index] >= 0 && members.has(labels[index])) || (flat.labels[index] >= 0 && flats.has(flat.labels[index]))) {
           raw[(y - group.y0) * gw + (x - group.x0)] = 1;
           mark[index] = 1;
           total++;
-          if (chromaAt[index] > 35) colored++;
+          if (tinted(chromaAt[index], lumAt[index])) colored++;
         }
       }
     }
@@ -297,7 +351,8 @@ export function markMask(
     const b = raster.rgb[index * 3 + 2];
     const lum = 0.299 * r + 0.587 * g + 0.114 * b;
     const chroma = Math.max(r, g, b) - Math.min(r, g, b);
-    if (map.rule[index] && keepRule(x, y, chroma, lum)) return false;
+    // İmza bölgesine katılmış düz parça (renkli kuyruk) çizgi sayılmaz.
+    if (map.rule[index] && !map.mark[index] && keepRule(x, y, chroma, lum)) return false;
     if (options.colored) return chroma > 18 && lum < 245;
     return lum < 215;
   };
@@ -320,7 +375,7 @@ export function markMask(
       const b = raster.rgb[index * 3 + 2];
       const lum = 0.299 * r + 0.587 * g + 0.114 * b;
       const chroma = Math.max(r, g, b) - Math.min(r, g, b);
-      if (map.rule[index] && keepRule(x + x0, y + y0, chroma, lum)) continue;
+      if (map.rule[index] && !map.mark[index] && keepRule(x + x0, y + y0, chroma, lum)) continue;
       if (options.colored && chroma < 25 && lum < 140) continue;
       let near = false;
       for (let dy = -reach; dy <= reach && !near; dy++) {
@@ -359,7 +414,7 @@ export function signatureShare(
         const r = raster.rgb[index * 3];
         const g = raster.rgb[index * 3 + 1];
         const b = raster.rgb[index * 3 + 2];
-        if (Math.max(r, g, b) - Math.min(r, g, b) > 35) owned++;
+        if (tinted(Math.max(r, g, b) - Math.min(r, g, b), 0.299 * r + 0.587 * g + 0.114 * b)) owned++;
       } else if (x >= mark.box.x0 && x <= mark.box.x1 && y >= mark.box.y0 && y <= mark.box.y1) {
         owned++;
       }
