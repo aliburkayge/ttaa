@@ -1,5 +1,6 @@
 import { getCeviriSupabase } from "./supabase";
 import { normalizeForMatch } from "./normalize";
+import { memoryPairs } from "./tm-store";
 import type { TermRow } from "./termbase";
 
 export type ConceptScope = { scopeType: "global" | "sector" | "client"; scopeId: string | null };
@@ -100,17 +101,23 @@ export async function lookupTerms(query: {
   clientId?: string | null;
   sectorId?: string | null;
 }): Promise<{ preferred: TermHit[]; forbidden: TermHit[] }> {
-  const { data, error } = await getCeviriSupabase().rpc("lookup_terms", {
-    p_text: normalizeForMatch(query.sourceText, query.sourceLang),
-    p_source_lang: query.sourceLang,
-    p_target_lang: query.targetLang,
-    p_client_id: query.clientId ?? null,
-    p_sector_id: query.sectorId ?? null,
-  });
+  // İngilizce varyantlar terminolojiyi de paylaşır; eşit kapsamda belgenin
+  // kendi varyantının terimi kazanır (çiftler önceliğe göre sıralı).
+  const byPair = await Promise.all(
+    memoryPairs(query.sourceLang, query.targetLang).map(async ([sourceLang, targetLang]) => {
+      const { data, error } = await getCeviriSupabase().rpc("lookup_terms", {
+        p_text: normalizeForMatch(query.sourceText, sourceLang),
+        p_source_lang: sourceLang,
+        p_target_lang: targetLang,
+        p_client_id: query.clientId ?? null,
+        p_sector_id: query.sectorId ?? null,
+      });
+      if (error) throw new Error(`lookup_terms failed: ${error.message}`);
+      return (data ?? []) as Array<Record<string, unknown>>;
+    }),
+  );
 
-  if (error) throw new Error(`lookup_terms failed: ${error.message}`);
-
-  const hits: TermHit[] = (data ?? []).map((row: Record<string, unknown>) => ({
+  const hits: TermHit[] = byPair.flat().map((row) => ({
     conceptId: row.concept_id as string,
     scopeType: row.scope_type as string,
     sourceText: row.source_text as string,

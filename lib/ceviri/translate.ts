@@ -4,6 +4,7 @@ import { searchTm, matchTier } from "./tm-store";
 import { lookupTerms, type TermHit } from "./term-store";
 import { keepUntranslated, missingProtected, tidyTarget, protectedSpans, suspiciousTarget, violatedTerms } from "./qa";
 import { arbitrate, configuredEngines, type EngineCandidate } from "./engines";
+import { languagePrompt } from "./languages";
 
 // Testler ve eski çağıranlar kuralları buradan içe aktarıyor.
 export { keepUntranslated, tidyTarget, missingProtected, protectedSpans, suspiciousTarget, violatedTerms };
@@ -84,7 +85,7 @@ function buildPrompt(input: {
 }): string {
   const lines: string[] = [];
   lines.push(
-    `Translate the segment from ${input.sourceLang} to ${input.targetLang}.`,
+    `Translate the segment from ${languagePrompt(input.sourceLang)} to ${languagePrompt(input.targetLang)}.`,
     "This is an official regulatory document. Translate faithfully; do not summarise, explain or add anything.",
     "Return ONLY the translated text, with no quotes and no commentary.",
   );

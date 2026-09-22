@@ -1,4 +1,5 @@
 import { getCeviriSupabase } from "./supabase";
+import { memoryLangs } from "./languages";
 import { normalizeForMatch, segmentHash } from "./normalize";
 import type { TmxUnit } from "./tmx";
 
@@ -117,6 +118,37 @@ export function matchTier(score: number): "exact" | "fuzzy" | "none" {
   return "none";
 }
 
+/**
+ * Belleğe bakılacak (kaynak, hedef) dil çiftleri, önceliğe göre. İngilizce
+ * varyantlar belleği paylaşır (bkz. languages.ts): önce belgenin kendi
+ * varyantı, sonra ABD ve İngiltere İngilizcesi.
+ */
+export function memoryPairs(sourceLang: string, targetLang: string): Array<[string, string]> {
+  return memoryLangs(sourceLang).flatMap((source) =>
+    memoryLangs(targetLang).map((target): [string, string] => [source, target]),
+  );
+}
+
+/**
+ * Dil çiftlerinden gelen eşleşmeler tek listede: aynı kayıt bir kez, en yüksek
+ * puana göre sıralı. Puan eşitse önceliği yüksek çift (belgenin kendi dili) önde.
+ */
+export function mergeMatches(byPair: TmMatch[][], limit: number): TmMatch[] {
+  const best = new Map<string, { match: TmMatch; rank: number }>();
+  byPair.forEach((matches, rank) => {
+    for (const match of matches) {
+      const seen = best.get(match.id);
+      if (!seen || match.score > seen.match.score) {
+        best.set(match.id, { match, rank: seen ? Math.min(seen.rank, rank) : rank });
+      }
+    }
+  });
+  return [...best.values()]
+    .sort((a, b) => b.match.score - a.match.score || a.rank - b.rank)
+    .slice(0, limit)
+    .map((entry) => entry.match);
+}
+
 export async function searchTm(query: {
   sourceText: string;
   sourceLang: string;
@@ -126,17 +158,22 @@ export async function searchTm(query: {
   limit?: number;
   minScore?: number;
 }): Promise<TmMatch[]> {
-  const { data, error } = await getCeviriSupabase().rpc("search_tm", {
-    p_source_normalized: normalizeForMatch(query.sourceText, query.sourceLang),
-    p_source_hash: segmentHash(query.sourceText, query.sourceLang),
-    p_source_lang: query.sourceLang,
-    p_target_lang: query.targetLang,
-    p_client_id: query.clientId ?? null,
-    p_sector_id: query.sectorId ?? null,
-    p_min_score: query.minScore ?? FUZZY_THRESHOLD,
-    p_limit: query.limit ?? 10,
-  });
-
-  if (error) throw new Error(`search_tm failed: ${error.message}`);
-  return (data ?? []) as TmMatch[];
+  const limit = query.limit ?? 10;
+  const byPair = await Promise.all(
+    memoryPairs(query.sourceLang, query.targetLang).map(async ([sourceLang, targetLang]) => {
+      const { data, error } = await getCeviriSupabase().rpc("search_tm", {
+        p_source_normalized: normalizeForMatch(query.sourceText, sourceLang),
+        p_source_hash: segmentHash(query.sourceText, sourceLang),
+        p_source_lang: sourceLang,
+        p_target_lang: targetLang,
+        p_client_id: query.clientId ?? null,
+        p_sector_id: query.sectorId ?? null,
+        p_min_score: query.minScore ?? FUZZY_THRESHOLD,
+        p_limit: limit,
+      });
+      if (error) throw new Error(`search_tm failed: ${error.message}`);
+      return (data ?? []) as TmMatch[];
+    }),
+  );
+  return mergeMatches(byPair, limit);
 }

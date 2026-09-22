@@ -1,5 +1,6 @@
 import { isAddressLine, localizeCountries } from "./address";
 import { missingProtected } from "./qa";
+import { languagePrompt } from "./languages";
 import { ADDRESS_NOTE } from "./translate";
 
 /**
@@ -207,7 +208,7 @@ function segmentLine(segment: ReviewSegment, locked: Set<string>): string {
 
 function phrasePrompt(group: PhraseGroup, members: ReviewSegment[], options: Options): string {
   return [
-    `You are reviewing the finished translation of one official document from ${options.sourceLang} to ${options.targetLang}.`,
+    `You are reviewing the finished translation of one official document from ${languagePrompt(options.sourceLang)} to ${languagePrompt(options.targetLang)}.`,
     `The source segments below share wording (${group.phrases.map((phrase) => `"${phrase}"`).join(", ")}). Consistency is essential: wording that is shared in the source must be translated identically in every segment that contains it — the same words, the same structure and the same word order — while the parts that differ keep their own translation.`,
     "Pick the most accurate rendering of the shared wording (the one in a locked segment if there is one) and rewrite the other segments to use exactly that rendering. Change only what consistency requires. Keep numbers, codes, names, e-mail addresses, list markers and punctuation exactly.",
     'Never change a segment with "locked": true.',
@@ -304,7 +305,7 @@ export async function alignPhrases(segments: ReviewSegment[], options: Options):
 function prompt(segments: ReviewSegment[], options: Options, locked: Set<string>): string {
   const lines = segments.filter((segment) => segment.translation?.trim()).map((segment) => segmentLine(segment, locked));
   return [
-    `You are reviewing the finished translation of one official document from ${options.sourceLang} to ${options.targetLang}.`,
+    `You are reviewing the finished translation of one official document from ${languagePrompt(options.sourceLang)} to ${languagePrompt(options.targetLang)}.`,
     "Consistency is essential: the same source wording and the same term must be translated identically everywhere in the document.",
     "Find segments where the same source phrase (three or more words) or the same term (for example a noun like \"name\") is rendered differently, and rewrite the affected translations so that every occurrence uses one rendering: the most accurate one, preferably the one used most often.",
     "Change only what consistency requires. Do not restyle, shorten, lengthen or otherwise improve anything else. Keep numbers, codes, names, e-mail addresses and punctuation exactly.",

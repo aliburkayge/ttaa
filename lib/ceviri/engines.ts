@@ -56,15 +56,21 @@ function notImplemented(name: string, envVar: string): Engine["translate"] {
   };
 }
 
+/** DeepL'de ayrı varyantı olmayan, İngiliz yazımını izleyen İngilizceler. */
+const BRITISH_SPELLING = new Set(["GB", "AU", "IE", "NZ", "ZA", "IN"]);
+
 /**
  * DeepL dil kodları: kaynakta yalnızca ana dil ("EN"), hedefte İngilizce ve
- * Portekizce için bölge zorunlu ("EN-US", "PT-BR"). Diğer hedefler ana dil.
+ * Portekizce için bölge zorunlu ("EN-US", "PT-BR"). DeepL yalnızca ABD ve
+ * İngiltere İngilizcesini bilir: Avustralya, İrlanda, Yeni Zelanda, Güney
+ * Afrika ve Hindistan İngiliz yazımını, Kanada ABD yazımını izler. Diğer
+ * hedefler ana dil.
  */
 export function deeplLang(tag: string, role: "source" | "target"): string {
   const [primary, region] = tag.split("-");
   const base = primary.toUpperCase();
   if (role === "source") return base;
-  if (base === "EN") return region?.toUpperCase() === "GB" ? "EN-GB" : "EN-US";
+  if (base === "EN") return BRITISH_SPELLING.has(region?.toUpperCase() ?? "") ? "EN-GB" : "EN-US";
   if (base === "PT") return region?.toUpperCase() === "PT" ? "PT-PT" : "PT-BR";
   return base;
 }
