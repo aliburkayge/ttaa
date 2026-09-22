@@ -200,6 +200,70 @@ for (const format of ["png", "jpeg"] as const) {
   });
 }
 
+test("rebuilds shaded, textured paper under erased text instead of a flat patch", async () => {
+  // Telefonla çekilmiş sayfa gibi: kağıt soldan sağa koyulaşıyor ve dokulu.
+  const width = 1200;
+  const height = 400;
+  const strokes: string[] = [];
+  for (let x = 100; x < 1000; x += 7) strokes.push(`<rect x="${x}" y="180" width="3" height="34" fill="#1a1a1a"/>`);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+    <defs>
+      <linearGradient id="shade" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="#e6e4dc"/><stop offset="1" stop-color="#a9a79f"/></linearGradient>
+      <filter id="grain"><feTurbulence type="fractalNoise" baseFrequency="0.35" numOctaves="2" seed="4"/><feColorMatrix type="saturate" values="0"/><feComponentTransfer><feFuncA type="linear" slope="0.12"/></feComponentTransfer><feComposite in2="SourceGraphic" operator="in"/></filter>
+    </defs>
+    <rect width="100%" height="100%" fill="url(#shade)"/>
+    <rect width="100%" height="100%" fill="url(#shade)" filter="url(#grain)"/>
+    ${strokes.join("")}</svg>`;
+  const original = new Uint8Array(await sharp(Buffer.from(svg)).png().toBuffer());
+  const pdf = await imageToPdf(original);
+  const pt = 72 / 300;
+  const only = line("x".repeat(129));
+  const plan = await planOverlay(pdf, [
+    {
+      kind: "paragraph",
+      role: "text",
+      page: 1,
+      lines: [only],
+      frame: { box: { x0: 95 * pt, y0: 175 * pt, x1: 1005 * pt, y1: 218 * pt }, pageWidth: width * pt, pageHeight: height * pt },
+    },
+  ]);
+  assert.equal(plan.unplaced.length, 0, JSON.stringify(plan.unplaced));
+  // Çeviri tek bir nokta: silinen bandın neredeyse tamamı yeniden kurulmuş kağıt olarak kalır.
+  const out = await overlayImage(original, plan, new Map([[only.id, { source: only.text, translation: "." }]]));
+  const after = await sharp(out.bytes).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  const mean = (x0: number, x1: number, y0: number, y1: number) => {
+    let sum = 0;
+    let count = 0;
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        sum += after.data[(y * width + x) * 3];
+        count++;
+      }
+    }
+    return sum / count;
+  };
+  // Silinen bant (yazının olduğu yer) ile hemen üstündeki kağıt, sol ve sağ uçta ayrı ayrı.
+  for (const [x0, x1] of [
+    [300, 400],
+    [850, 950],
+  ]) {
+    const erased = mean(x0, x1, 185, 210);
+    const paper = mean(x0, x1, 140, 165);
+    assert.ok(Math.abs(erased - paper) <= 5, `x ${x0}-${x1}: silinen ${erased.toFixed(1)}, kağıt ${paper.toFixed(1)}`);
+  }
+  // Işığın eğimi yama içinde de sürer: sağ taraf soldan belirgin koyu.
+  assert.ok(mean(300, 400, 185, 210) - mean(850, 950, 185, 210) > 20, "yama düz tek renk");
+  // Doku var: silinen bandın pikselleri tek renk değil.
+  let min = 255;
+  let max = 0;
+  for (let x = 500; x < 600; x++) {
+    const value = after.data[(195 * width + x) * 3];
+    min = Math.min(min, value);
+    max = Math.max(max, value);
+  }
+  assert.ok(max - min >= 4, `yama pürüzsüz (${min}-${max})`);
+});
+
 test("renders the overlay layer alone on a transparent page", async () => {
   const doc = await PDFDocument.create();
   doc.addPage([100, 50]);

@@ -85,7 +85,8 @@ export async function overlayImage(
   // Aynı sayfa boyutunda boş bir PDF'e yalnızca çeviri katmanı çizilir.
   const blank = await PDFDocument.create();
   blank.addPage([image.width * POINTS_PER_PIXEL, image.height * POINTS_PER_PIXEL]);
-  const layer = await renderOverlay(await blank.save(), plan, texts);
+  // Silinen yerin kağıdı görselin kendi piksellerinden kurulur.
+  const layer = await renderOverlay(await blank.save(), plan, texts, { source: await imageToPdf(original) });
   const rgba = await renderPdfPage(layer, 0, { width: image.width, height: image.height }, { transparent: true });
 
   let composed = sharp(image.data).composite([
