@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdminSession } from "../../../../../../lib/auth";
 import { getCeviriSupabase } from "../../../../../../lib/ceviri/supabase";
+import { reviewStored } from "../../../../../../lib/ceviri/review";
 import { translateSegment, type TranslatedSegment } from "../../../../../../lib/ceviri/translate";
 
 export const runtime = "nodejs";
@@ -31,7 +32,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
     const { data: doc, error } = await supabase
       .from("ceviri_documents")
-      .select("id, source_lang, target_lang, segments, status, instructions")
+      .select("id, source_lang, target_lang, segments, status, instructions, stats")
       .eq("id", id)
       .maybeSingle();
     if (error) throw new Error(error.message);
@@ -40,7 +41,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const segments = doc.segments as StoredSegment[];
     const pending = segments.filter((segment) => segment.translation === null);
     if (pending.length === 0) {
-      return NextResponse.json({ done: true, remaining: 0, segments });
+      const reviewed = await reviewStored(supabase, doc);
+      return NextResponse.json({ done: true, remaining: 0, segments: reviewed });
     }
 
     const model = process.env.OPENAI_MODEL?.trim() || "gpt-5.5-2026-04-23";
@@ -93,7 +95,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       .eq("id", id);
     if (updateError) throw new Error(updateError.message);
 
-    return NextResponse.json({ done: remaining === 0, remaining, segments: merged });
+    // Son parça: belge bir bütün olarak tutarlılık incelemesinden geçer.
+    const final = remaining === 0 ? await reviewStored(supabase, { ...doc, segments: merged }) : merged;
+    return NextResponse.json({ done: remaining === 0, remaining, segments: final });
   } catch (error) {
     if (error instanceof Error && error.message === "UNAUTHORIZED") {
       return NextResponse.json({ error: "Oturumunuz sona erdi." }, { status: 401 });

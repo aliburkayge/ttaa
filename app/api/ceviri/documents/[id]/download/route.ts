@@ -1,6 +1,7 @@
 import { requireAdminSession } from "../../../../../../lib/auth";
 import { getCeviriSupabase, CEVIRI_DOCS_BUCKET } from "../../../../../../lib/ceviri/supabase";
 import { deliver, type StoredDocument } from "../../../../../../lib/ceviri/deliver";
+import { reviewStored } from "../../../../../../lib/ceviri/review";
 
 export const runtime = "nodejs";
 // Sayfa planı yüklemede çıkarılamadıysa burada yeniden çıkarılır; uzun belgede zaman alır.
@@ -14,11 +15,13 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
 
     const { data: doc, error } = await supabase
       .from("ceviri_documents")
-      .select("filename, storage_path, segments, layout, target_lang")
+      .select("id, filename, storage_path, segments, layout, source_lang, target_lang, stats")
       .eq("id", id)
       .maybeSingle();
     if (error) throw new Error(error.message);
     if (!doc) return Response.json({ error: "Belge bulunamadı." }, { status: 404 });
+    // Bu kurallardan önce çevrilmiş belge de teslimden önce bir kez incelenir.
+    doc.segments = await reviewStored(supabase, doc);
 
     const { data: blob, error: downloadError } = await supabase.storage
       .from(CEVIRI_DOCS_BUCKET)
