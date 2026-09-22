@@ -9,6 +9,8 @@ import {
   parseTableHtml,
   textLines,
   type ImageInsight,
+  type ImageKind,
+  type LayoutBlock,
   type MistralResponse,
 } from "../lib/ceviri/ocr-layout.ts";
 
@@ -191,3 +193,20 @@ test("reads the image classifier's label and refuses anything off the list", () 
   assert.equal(parseImageKind("I think it is a stamp"), "unknown");
 });
 
+
+test("lines read from inside a signature or stamp carry the mark they belong to", () => {
+  const blocks: LayoutBlock[] = [
+    { kind: "paragraph", role: "text", page: 1, lines: [{ id: "a", text: "Body", confidence: 0.99, ocrWarning: null }] },
+    { kind: "image", page: 1, image: "stamp", lines: [{ id: "b", text: "BASF SE", confidence: 0.9, ocrWarning: null }] },
+    { kind: "image", page: 1, image: "logo", lines: [] },
+  ];
+  const marks = Object.fromEntries(layoutSegments(blocks).map((segment) => [segment.id, segment.mark]));
+  assert.deepEqual(marks, { a: null, b: "stamp" });
+});
+
+test("counts signatures and stamps; a signed stamp counts as both", () => {
+  const image = (kind: ImageKind): LayoutBlock => ({ kind: "image", page: 1, image: kind, lines: [] });
+  const stats = layoutStats([image("signature"), image("stamp"), image("signature_stamp"), image("logo"), image("unknown")], 1);
+  assert.equal(stats.signatures, 2);
+  assert.equal(stats.stamps, 2);
+});

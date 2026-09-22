@@ -5,6 +5,7 @@ import { getCeviriSupabase, CEVIRI_DOCS_BUCKET } from "../../../../lib/ceviri/su
 import { parseDocx } from "../../../../lib/ceviri/docx";
 import { IMAGE_FORMATS, imageFormat, imageToPdf } from "../../../../lib/ceviri/image-doc";
 import { activeOcrProvider, isPdf, ocrToSegments } from "../../../../lib/ceviri/ocr";
+import type { MarkKind } from "../../../../lib/ceviri/marks";
 import { layoutStats } from "../../../../lib/ceviri/ocr-layout";
 import { planOverlay, type OverlayPlan, type ScanLayout } from "../../../../lib/ceviri/pdf-overlay";
 
@@ -27,6 +28,8 @@ type ParsedSegment = {
   placement?: string | null;
   /** Yazılabilir ama çıktıya bakılmalı (ör. harfe değen aynı renkte mühür). */
   caution?: string | null;
+  /** İmza/mühür bölgesinin içinden okunan satır: çıktıda etiketle birlikte yazılır. */
+  mark?: MarkKind | null;
 };
 
 /** Son belgeler: kaldığı yerden devam edebilmek için. */
@@ -135,13 +138,14 @@ export async function POST(request: Request) {
       );
 
       parsed = {
-        segments: ocrToSegments(result).map(({ id, text, kind, order, page, ocrWarning: warning }) => ({
+        segments: ocrToSegments(result).map(({ id, text, kind, order, page, ocrWarning: warning, mark }) => ({
           id,
           text,
           kind,
           order,
           page,
           ocrWarning: warning,
+          mark,
           placement: unplaced.get(id) ?? overlayError,
           caution: cautions.get(id) ?? null,
         })),

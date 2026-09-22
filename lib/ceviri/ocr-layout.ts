@@ -1,3 +1,5 @@
+import { isMark, type MarkKind } from "./marks";
+
 /**
  * OCR çıktısından belge yapısı (sayfa → başlık / paragraf / tablo / görsel).
  *
@@ -72,6 +74,8 @@ export type LayoutSegment = {
   page: number;
   confidence: number | null;
   ocrWarning: string | null;
+  /** Satır bir imza/mühür bölgesinin içinden okunduysa: çıktıda etiketle birlikte yazılır. */
+  mark: MarkKind | null;
 };
 
 // ---------- Mistral yanıt tipleri (yalnızca kullandığımız alanlar) ----------
@@ -333,7 +337,7 @@ export function layoutFromMistral(
 /** Düzenden, okunma sırasıyla çevrilecek segmentler. */
 export function layoutSegments(blocks: LayoutBlock[]): LayoutSegment[] {
   const segments: LayoutSegment[] = [];
-  const push = (line: OcrLine, kind: LayoutSegment["kind"], page: number) =>
+  const push = (line: OcrLine, kind: LayoutSegment["kind"], page: number, mark: MarkKind | null = null) =>
     segments.push({
       id: line.id,
       text: line.text,
@@ -342,13 +346,15 @@ export function layoutSegments(blocks: LayoutBlock[]): LayoutSegment[] {
       page,
       confidence: line.confidence,
       ocrWarning: line.ocrWarning,
+      mark,
     });
 
   for (const block of blocks) {
     if (block.kind === "table") {
       for (const row of block.rows) for (const cell of row) for (const line of cell.lines) push(line, "table-cell", block.page);
     } else {
-      for (const line of block.lines) push(line, "paragraph", block.page);
+      const mark = block.kind === "image" && isMark(block.image) ? block.image : null;
+      for (const line of block.lines) push(line, "paragraph", block.page, mark);
     }
   }
   return segments;
@@ -361,6 +367,8 @@ export function layoutStats(blocks: LayoutBlock[], pages: number | null) {
     tableCells: segments.filter((segment) => segment.kind === "table-cell").length,
     tables: blocks.filter((block) => block.kind === "table").length,
     images: blocks.filter((block) => block.kind === "image").length,
+    signatures: blocks.filter((block) => block.kind === "image" && (block.image === "signature" || block.image === "signature_stamp")).length,
+    stamps: blocks.filter((block) => block.kind === "image" && (block.image === "stamp" || block.image === "signature_stamp")).length,
     words: segments.reduce((total, segment) => total + (segment.text.match(/\S+/g) ?? []).length, 0),
     pages: pages ?? 0,
   };

@@ -168,11 +168,20 @@ function asDataUrl(base64: string): string {
 /** İmza ve mühür alanlarının yanında basılı metin olabilir: imzacının adı, unvanı. */
 const READ_TEXT_INSIDE: ReadonlySet<ImageKind> = new Set(["signature", "stamp", "signature_stamp"]);
 
-async function inspectImage(dataUrl: string): Promise<ImageInsight> {
+/**
+ * Görselin türü ve içindeki basılı yazı. Yazı okunamazsa tür yine döner:
+ * imza/mühür etiketi yazının okunmasına bağlı değildir.
+ */
+export async function inspectImage(dataUrl: string): Promise<ImageInsight> {
   const kind = await classifyImage(dataUrl, process.env.OPENAI_MODEL?.trim() || "gpt-5.5-2026-04-23");
   if (!READ_TEXT_INSIDE.has(kind)) return { kind, lines: [] };
 
-  const body = await mistralOcr({ type: "image_url", image_url: dataUrl }, {});
+  let body: MistralResponse;
+  try {
+    body = await mistralOcr({ type: "image_url", image_url: dataUrl }, {});
+  } catch {
+    return { kind, lines: [] };
+  }
   const lines = (body.pages ?? []).flatMap((page) =>
     (page.blocks ?? [])
       .filter((block) => block.type !== "image" && block.content?.trim())
