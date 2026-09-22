@@ -1,6 +1,7 @@
 import { degrees, PDFDocument, rgb, type PDFFont } from "pdf-lib";
 import { classifyFamily, fontsFor, type Family } from "./fonts";
 import { reconstructPaper } from "./inpaint";
+import { isMark, markText, type MarkKind } from "./marks";
 import type { Box, LayoutBlock, OcrLine } from "./ocr-layout";
 import { openScan, pageGeometry, type ScanPage } from "./pdf-scan";
 import { tidyTarget } from "./qa";
@@ -11,8 +12,12 @@ import { tidyTarget } from "./qa";
  * Kural (müşteri): yüklenen belge görsel olarak ve tablo düzeni olarak hiç
  * değişmez. Sayfanın kendisi aynen kalır; yalnızca çevrilen satırın kendi
  * harfleri silinir ve çeviri aynı konuma, ölçülen punto, kalınlık, mürekkep
- * rengi ve eğiklikle yazılır. Logo, çizgi, fotoğraf, imza ve mühür
- * piksellerine dokunulmaz — hangi renkte olurlarsa olsunlar.
+ * rengi ve eğiklikle yazılır. Logo, çizgi ve fotoğraf piksellerine
+ * dokunulmaz — hangi renkte olurlarsa olsunlar.
+ *
+ * İmza ve mühür istisnadır (müşteri kuralı, 2026-09-22): çeviride kopyalanmaz.
+ * Bölgenin tamamı silinir ve yerine köşeli parantez içinde hedef dilde etiket
+ * yazılır: [İMZA], [MÜHÜR: mührün çevrilmiş yazısı]. Bkz. marks.ts.
  *
  *  - planOverlay (yüklemede): taramayı ölçer, her satırın nereye yazılacağını
  *    ve hangi piksellerin silineceğini kaydeder; yerleştirilemeyen satırları
@@ -76,6 +81,13 @@ export type OverlayItem = {
   room?: number;
   background: Color;
   ink: Color;
+  /**
+   * İmza/mühür bölgesi: bölgenin tamamı silinir, yerine hedef dilde etiket
+   * yazılır (bkz. marks.ts). `lineIds` bölgenin içinden okunan satırlardır.
+   */
+  mark?: MarkKind;
+  /** Bir işaret bölgesi bu satırın üstünü de sildi: çevirisi değişmese de yeniden yazılır. */
+  redraw?: boolean;
 };
 
 export type OverlayPlan = {
@@ -93,7 +105,7 @@ export type OverlayPlan = {
 };
 
 /** Planlama algoritmasının sürümü; planlamayı değiştiren her iyileştirmede artırılır. */
-export const PLAN_VERSION = 3;
+export const PLAN_VERSION = 4;
 
 /** Taranmış PDF için veritabanında saklanan düzen (`ceviri_documents.layout`). */
 export type ScanLayout = {
@@ -543,7 +555,7 @@ function weightedMedianColor(items: Array<{ color: Color; weight: number }>): Co
  * kurulur. Izgara bundan daha geniş örneklenir ki kenardan kesilen bir mühür
  * halkası küçük yaylara bölünüp harf sanılmasın.
  */
-function survey(frame: Frame, context: Rect, rowRegion: Rect, options: { cluster: boolean }): Survey {
+function survey(frame: Frame, context: Rect, rowRegion: Rect): Survey {
   const grid = sample(frame, context);
   const { labels, comps } = components(grid, frame.textColor);
   const step = grid.step;
@@ -604,7 +616,7 @@ function survey(frame: Frame, context: Rect, rowRegion: Rect, options: { cluster
 
   const rows: Row[] = [];
   for (const band of bands) {
-    let members = comps
+    const members = comps
       .map((c, i) => i)
       .filter((i) => {
         if (!eligible[i]) return false;
@@ -613,74 +625,6 @@ function survey(frame: Frame, context: Rect, rowRegion: Rect, options: { cluster
       });
     if (!members.length) continue;
 
-    if (options.cluster) {
-      // Mühür alanında yazı satırını mührün ve imzanın kendi parçalarından
-      // ayıran üç şey:
-      //
-      // 1. Boy. Satır, gerçek harf boyundaki parçalardan kurulur. İmzanın
-      //    siyah çizgiyi kestiği yerlerde kalan küçük koyu kırıntılar satır
-      //    oluşturamaz (DELAN SC: kırıntılar isim satırıyla birleşip onu
-      //    imzanın üstüne kadar uzatıyordu).
-      // 2. Taban çizgisi. Bir satırın harfleri aynı çizgiye oturur (kuyruklu
-      //    harfler biraz aşağı iner); mühür halkasındaki harfler çember
-      //    boyunca farklı yüksekliklerdedir.
-      // 3. Kelime boşluğu. Satır, harf yüksekliğinden küçük boşluklarla
-      //    bitişik tek kümedir; daha uzaktaki parçalar başka şeydir.
-      //
-      // i noktası, virgül gibi küçük parçalar yalnızca bu kümenin yatay
-      // kapsamı içindeyse satıra katılır.
-      const small = typical * 0.35;
-      const isBig = (i: number) => (comps[i].y1 - comps[i].y0 + 1) * step >= small;
-      let big = members.filter(isBig);
-      if (!big.length) continue;
-
-      const bottoms = new Map<number, number>();
-      for (const i of big) bottoms.set(comps[i].y1, (bottoms.get(comps[i].y1) ?? 0) + comps[i].count);
-      let baseline = -1;
-      let baselineWeight = -1;
-      for (const [bottom] of bottoms) {
-        // Yarım puntoluk tarama titremesi aynı çizgi sayılır.
-        let weight = 0;
-        for (const [other, count] of bottoms) if (Math.abs(other - bottom) * step <= 0.5) weight += count;
-        if (weight > baselineWeight) {
-          baselineWeight = weight;
-          baseline = bottom;
-        }
-      }
-      big = big.filter((i) => {
-        const offset = (comps[i].y1 - baseline) * step; // + aşağı
-        return offset >= -typical * 0.2 && offset <= typical * 0.5;
-      });
-      if (big.length < 2) continue;
-
-      // Sütun başına gerçek piksel sayısı: parçanın tüm sayısını kapladığı
-      // her sütuna eklemek geniş bir lekeyi bütün satırdan "ağır" gösteriyordu.
-      const set = new Set(big);
-      const columns = new Array<number>(grid.w).fill(0);
-      for (let index = 0; index < labels.length; index++) if (set.has(labels[index])) columns[index % grid.w]++;
-      const wordGap = Math.min(6, Math.max(2.5, typical * 0.8));
-      const clusters = runs(columns.map((count) => count > 0), Math.round(wordGap / step));
-      let best = clusters[0];
-      let bestInk = -1;
-      for (const cluster of clusters) {
-        let ink = 0;
-        for (let x = cluster.from; x <= cluster.to; x++) ink += columns[x];
-        if (ink > bestInk) {
-          bestInk = ink;
-          best = cluster;
-        }
-      }
-      const slack = Math.round(1 / step);
-      const top = Math.min(...big.map((i) => comps[i].y0));
-      members = members.filter((i) => {
-        const c = comps[i];
-        if (c.x0 < best.from - slack || c.x1 > best.to + slack) return false;
-        if (set.has(i)) return true;
-        // Küçük parça: kümenin içinde ve satırın dikey kapsamına yakın.
-        return !isBig(i) && c.y0 >= top - Math.round(typical * 0.4 / step);
-      }).filter((i) => set.has(i) || !isBig(i));
-      if (!members.length) continue;
-    }
     rows.push(makeRow(grid, labels, comps, members));
   }
 
@@ -726,13 +670,12 @@ function makeRow(grid: Grid, labels: Int32Array, comps: Component[], members: nu
  *    birleştirilse satırın başını ya da sonunu yanlış yere taşır.
  *  - Yarım satır yüksekliğinden kısa bir satır, komşu satırın kutuya taşan
  *    kuyruğudur; en yakın satırla birleştirilir.
- *  - Tam boylu satırlar: `exact` ise (her OCR satırı tek bir satıra eşlenecek,
- *    ör. mühür bloğu) en yakınlar birleştirilir. Değilse olduğu gibi kalır:
+ *  - Tam boylu satırlar olduğu gibi kalır:
  *    OCR'ın tek satır saydığı bir adres taramada iki satıra kırılmış olabilir
  *    ve iki satır ayrı ayrı ölçülmelidir; birleştirilince punto iki satır
  *    yüksekliğinden tahmin edilip dev çıkıyordu (DELAN SC 2. sayfa).
  */
-function fitToLines(survey: Survey, found: Row[], expected: number, exact: boolean): Row[] {
+function fitToLines(survey: Survey, found: Row[], expected: number): Row[] {
   const list = [...found];
   const widest = Math.max(0, ...list.map((row) => row.u1 - row.u0));
   while (list.length > expected) {
@@ -751,7 +694,7 @@ function fitToLines(survey: Survey, found: Row[], expected: number, exact: boole
     const heights = list.map((row) => row.v1 - row.v0);
     const typicalHeight = median(heights);
     const fragment = heights.findIndex((height) => height < typicalHeight * 0.5);
-    if (fragment < 0 && !exact) break;
+    if (fragment < 0) break;
 
     let best = 0;
     let bestGap = Infinity;
@@ -1227,6 +1170,29 @@ function grow(rect: Rect, dx: number, dy: number): Rect {
   return { u0: rect.u0 - dx, v0: rect.v0 - dy, u1: rect.u1 + dx, v1: rect.v1 + dy };
 }
 
+function intersects(a: Rect, b: Rect): boolean {
+  return a.u0 < b.u1 && a.u1 > b.u0 && a.v0 < b.v1 && a.v1 > b.v0;
+}
+
+/** `rect`'ten delikler çıkarıldıktan sonra kalan dikdörtgenler. */
+export function subtractRects(rect: Rect, holes: Rect[]): Rect[] {
+  let pieces = [rect];
+  for (const hole of holes) {
+    pieces = pieces.flatMap((piece) => {
+      if (!intersects(piece, hole)) return [piece];
+      const v0 = Math.max(piece.v0, hole.v0);
+      const v1 = Math.min(piece.v1, hole.v1);
+      const out: Rect[] = [];
+      if (hole.v0 > piece.v0) out.push({ ...piece, v1: hole.v0 });
+      if (hole.v1 < piece.v1) out.push({ ...piece, v0: hole.v1 });
+      if (hole.u0 > piece.u0) out.push({ u0: piece.u0, v0, u1: hole.u0, v1 });
+      if (hole.u1 < piece.u1) out.push({ u0: hole.u1, v0, u1: piece.u1, v1 });
+      return out;
+    });
+  }
+  return pieces.filter((piece) => piece.u1 - piece.u0 > 0.5 && piece.v1 - piece.v0 > 0.5);
+}
+
 type Measured = Omit<OverlayItem, "fontSize" | "bold"> & {
   estimate: number;
   column: string | null;
@@ -1551,9 +1517,31 @@ function assignBold(items: Array<{ page: number; fontSize: number; weight: numbe
 
 /** Paragraf ve mühür bölgelerinde ızgaranın çevreye taşma payı (punto). */
 const CONTEXT_MARGIN = 12;
+/** İmza/mühür bölgesi OCR kutusundan bu kadar geniş silinir: kutular mürekkebi sıkı sarar. */
+const MARK_MARGIN = 2;
+/** Sayfada punto ölçülecek başka satır yoksa etiketin puntosu. */
+const MARK_FONT_SIZE = 10;
+const MARK_KEPT =
+  "İmza/mühür bölgesi yerine yazılamayan bir satıra değiyor; o kısım silinmedi. Çıktıyı kontrol edin.";
+
+function isMarkBlock(block: LayoutBlock): boolean {
+  return block.kind === "image" && isMark(block.image);
+}
+
+type PendingMark = {
+  page: number;
+  kind: MarkKind;
+  region: Rect;
+  lineIds: string[];
+  background: Color;
+  ink: Color;
+  erase: Rect[];
+  caution: string | null;
+};
 
 export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): Promise<OverlayPlan> {
   const measured: Measured[] = [];
+  const marks: PendingMark[] = [];
   const unplaced: OverlayPlan["unplaced"] = [];
   const skip = (lines: OcrLine[], reason: string) =>
     unplaced.push(...lines.map((line) => ({ id: line.id, reason })));
@@ -1568,7 +1556,7 @@ export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): 
     for (let index = 0; index < scan.pageCount; index++) {
       const onPage = blocks
         .map((block, blockIndex) => ({ block, blockIndex }))
-        .filter(({ block }) => block.page === index + 1 && blockLines(block).length > 0);
+        .filter(({ block }) => block.page === index + 1 && (blockLines(block).length > 0 || isMarkBlock(block)));
       if (!onPage.length) continue;
 
       let page: ScanPage;
@@ -1587,6 +1575,7 @@ export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): 
       skews[index] = skew;
       const frame: Frame = { page, skew, textColor: pageInk(page), ...frameFor(page, skew) };
       for (const { block, blockIndex } of onPage) placeBlock(block, blockIndex, frame);
+      settleMarks(index + 1, frame);
     }
   } finally {
     await scan.close();
@@ -1606,22 +1595,30 @@ export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): 
     const box = toFrame(block.frame.box, block.frame, frame);
 
     if (block.kind === "image") {
-      // Mühürlü/imzalı bloğun içindeki basılı yazı (imzacı adı, unvanı). Her
-      // satır kendi başına çevrilir ki değişmeyen isim satırına dokunulmasın.
-      const region = grow(box, 1, 1);
-      const site = survey(frame, grow(box, CONTEXT_MARGIN, CONTEXT_MARGIN), region, { cluster: true });
-      const found = fitToLines(site, site.rows.filter((row) => !isSpeck(row)), block.lines.length, true);
-      if (found.length !== block.lines.length) {
-        skip(allLines, "Mühür/imza alanındaki yazı satırları ayırt edilemedi; yerinde çevrilmedi.");
+      if (!isMark(block.image)) {
+        skip(allLines, "Görselin içindeki yazı yerinde çevrilmedi; görsel olduğu gibi kaldı.");
         return;
       }
-      block.lines.forEach((line, index) => {
-        const row = found[index];
-        // Satırın alanı: kendi şeridi, sağa doğru bloğun kenarına kadar.
-        const lineRegion = { u0: region.u0, v0: row.v0 - 1, u1: region.u1, v1: row.v1 + 1 };
-        measured.push(
-          itemFrom(frame, block.page, site, [row], lineRegion, [line], { align: "left", column: null, extend: true }),
-        );
+      // İmza/mühür kopyalanmaz: bölgenin tamamı silinir, yerine etiket yazılır.
+      // İçinden okunan satırlar ayrıca yerleştirilmez; etiketle birlikte yazılır.
+      const page = frame.page;
+      const grown = grow(box, MARK_MARGIN, MARK_MARGIN);
+      const region = {
+        u0: Math.max(0, grown.u0),
+        v0: Math.max(0, grown.v0),
+        u1: Math.min(page.width, grown.u1),
+        v1: Math.min(page.height, grown.v1),
+      };
+      const site = survey(frame, grow(region, CONTEXT_MARGIN, CONTEXT_MARGIN), region);
+      marks.push({
+        page: block.page,
+        kind: block.image,
+        region,
+        lineIds: allLines.map((line) => line.id),
+        background: site.paper,
+        ink: frame.textColor,
+        erase: [region],
+        caution: null,
       });
       return;
     }
@@ -1646,7 +1643,7 @@ export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): 
           // dışına taşmaz: harfe değen tablo çizgisi onunla tek parça olup
           // harfi "işaret" gösterirdi.
           const region = grow(cells[r][c], -0.4, -0.4);
-          const site = survey(frame, region, region, { cluster: false });
+          const site = survey(frame, region, region);
           const text = leadingRows(site.rows);
           if (!text.length) {
             skip(cell.lines, "Taramada bu satırın yazısı bulunamadı.");
@@ -1687,7 +1684,7 @@ export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): 
     // görünüyordu.
     const alignFor = (rows: Row[]): Placement["align"] => (rows.length >= 2 && align === "center" ? "auto" : align);
     const region = grow(box, 1.5, 1);
-    const site = survey(frame, grow(box, CONTEXT_MARGIN, CONTEXT_MARGIN), box, { cluster: false });
+    const site = survey(frame, grow(box, CONTEXT_MARGIN, CONTEXT_MARGIN), box);
     const natural = site.rows.filter((row) => !isSpeck(row));
     const ocrLine = (box.v1 - box.v0) / block.lines.length;
 
@@ -1716,7 +1713,7 @@ export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): 
       return;
     }
 
-    const text = fitToLines(site, natural, block.lines.length, false);
+    const text = fitToLines(site, natural, block.lines.length);
     if (!text.length) {
       skip(block.lines, "Taramada bu satırın yazısı bulunamadı.");
       return;
@@ -1728,6 +1725,28 @@ export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): 
     measured.push(
       itemFrom(frame, block.page, site, text, region, block.lines, { align: alignFor(text), column: null, extend: true, ocrLine }),
     );
+  }
+
+  // Yerine yazılamayan bir satır işaret bölgesinin altında kalıyorsa o kısım
+  // silinmez: yeniden yazılamayacak bir satır silinip kaybolmamalı.
+  function settleMarks(pageNo: number, frame: Frame) {
+    const lost = new Set(unplaced.map((entry) => entry.id));
+    const holes = blocks
+      .filter(
+        (block) =>
+          block.page === pageNo &&
+          block.frame &&
+          !isMarkBlock(block) &&
+          blockLines(block).some((line) => lost.has(line.id)),
+      )
+      .map((block) => toFrame(block.frame!.box, block.frame!, frame));
+    for (const mark of marks) {
+      if (mark.page !== pageNo) continue;
+      const touching = holes.filter((hole) => intersects(hole, mark.region));
+      if (!touching.length) continue;
+      mark.erase = subtractRects(mark.region, touching);
+      mark.caution = MARK_KEPT;
+    }
   }
 
   // Aynı tablo sütunundaki hücreler aynı puntoyla yazılmıştır; tek satırlık,
@@ -1774,7 +1793,42 @@ export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): 
   );
   const items: OverlayItem[] = sized.map((item, index) => ({ ...item, bold: bold[index], family: families[index] }));
 
-  return { version: PLAN_VERSION, pages: skews.map((skew) => ({ skew })), items, unplaced };
+  // Etiket, sayfanın gövde yazısının puntosuyla ve yazı rengiyle yazılır.
+  const markItems: OverlayItem[] = marks.map((mark) => {
+    const peers = items.filter((item) => item.page === mark.page).map((item) => item.fontSize);
+    const fontSize = peers.length ? Math.round(median(peers) * 4) / 4 : MARK_FONT_SIZE;
+    return {
+      page: mark.page,
+      lineIds: mark.lineIds,
+      area: mark.region,
+      erase: mark.erase,
+      masks: [],
+      caution: mark.caution,
+      align: "center",
+      fontSize,
+      leading: fontSize * 1.25,
+      bold: false,
+      weight: 0,
+      family: fallback,
+      background: mark.background,
+      ink: mark.ink,
+      mark: mark.kind,
+    };
+  });
+  const underMark = (item: OverlayItem) =>
+    marks.some(
+      (mark) =>
+        mark.page === item.page &&
+        [...item.erase, ...item.masks.map((mask) => mask.rect)].some((rect) => intersects(rect, mark.region)),
+    );
+
+  return {
+    version: PLAN_VERSION,
+    pages: skews.map((skew) => ({ skew })),
+    // İşaretler önce çizilir; sildikleri alana değen satırlar sonra yeniden yazılır.
+    items: [...markItems, ...items.map((item) => (underMark(item) ? { ...item, redraw: true } : item))],
+    unplaced,
+  };
 }
 
 function blockLines(block: LayoutBlock): OcrLine[] {
@@ -1879,6 +1933,8 @@ export async function renderOverlay(
      * belgede çeviri katmanı boş bir sayfaya çizildiği için görselin PDF'i verilir.
      */
     source?: Uint8Array;
+    /** Çevirinin dili: imza/mühür etiketi bu dilde yazılır. */
+    targetLang?: string;
   } = {},
 ): Promise<Uint8Array> {
   const doc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
@@ -1909,14 +1965,16 @@ export async function renderOverlay(
     return page;
   };
 
-  for (const item of plan.items) {
+  // İşaretler önce: bölgeyi silerler, üstüne değen satırlar ardından yazılır.
+  const ordered = [...plan.items].sort((a, b) => Number(Boolean(b.mark)) - Number(Boolean(a.mark)));
+  for (const item of ordered) {
     const page = pdfPages[item.page - 1];
     if (!page) continue;
     const lines = item.lineIds.map((id) => texts.get(id));
     const changed = lines.some(
       (line) => line?.translation && tidyTarget(line.source, line.translation).trim() !== line.source.trim(),
     );
-    if (!changed) continue;
+    if (!item.mark && !changed && !item.redraw) continue;
 
     // Planlamayla aynı geometri: görünür alan (CropBox ∩ MediaBox) ve /Rotate.
     const geometry = pageGeometry(page);
@@ -1974,9 +2032,10 @@ export async function renderOverlay(
     const font = await fontFor(item.family ?? "serif", item.bold);
     const width = item.area.u1 - item.area.u0;
     const height = item.area.v1 - item.area.v0;
-    const content = lines.map((line) =>
+    const texted = lines.map((line) =>
       line?.translation?.trim() ? tidyTarget(line.source, line.translation.trim()) : line?.source || "",
     );
+    const content = item.mark ? markText(item.mark, options.targetLang ?? "en", texted) : texted;
 
     // Sığdırma sırası: önce kendi alanında en çok %20 küçülerek; olmazsa
     // alttaki boş kağıda taşarak; o da olmazsa daha çok küçülerek. Uzun bir
@@ -2003,6 +2062,9 @@ export async function renderOverlay(
         wrapped: content.flatMap((text) => wrap(text, font, 4.5, width)),
       };
     const { size, leading, wrapped } = fitted;
+    // Etiket bölgenin ortasına oturur; çeviri satırı orijinal şeridin üstüne.
+    const block = (wrapped.length - 1) * leading + size * 0.9;
+    const top = item.mark ? item.area.v0 + Math.max(0, (height - block) / 2) : item.area.v0;
 
     wrapped.forEach((line, index) => {
       const lineWidth = font.widthOfTextAtSize(line, size);
@@ -2013,7 +2075,7 @@ export async function renderOverlay(
             ? item.area.u1 - lineWidth
             : item.area.u0;
       // Yazının üst kenarı orijinal şeridin üstüne oturur; Times'ta çıkıntı ≈ 0,72 em.
-      const baseline = item.area.v0 + size * 0.72 + index * leading;
+      const baseline = top + size * 0.72 + index * leading;
       const at = place(p, baseline);
       page.drawText(line, { x: at.x, y: at.y, size, font, color: toColor(item.ink), rotate });
       if (item.underline && line.trim()) {

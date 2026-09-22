@@ -3,8 +3,8 @@ import test from "node:test";
 import { degrees, PDFArray, PDFDocument, PDFName, PDFRawStream } from "pdf-lib";
 import sharp from "sharp";
 import type { LayoutBlock, OcrLine } from "../lib/ceviri/ocr-layout.ts";
-import { planOverlay, renderOverlay, type OverlayPlan, type Rect } from "../lib/ceviri/pdf-overlay.ts";
-import { displayToPage, imagePlacement, loadScanPages, unpackGray1bpp } from "../lib/ceviri/pdf-scan.ts";
+import { planOverlay, renderOverlay, subtractRects, type OverlayPlan, type Rect } from "../lib/ceviri/pdf-overlay.ts";
+import { displayToPage, imagePlacement, loadScanPages, renderPdfPage, unpackGray1bpp } from "../lib/ceviri/pdf-scan.ts";
 
 /**
  * A synthetic "scan": a page image with a two-column table, black bars
@@ -189,8 +189,10 @@ test("sees a sideways-stored scan upright", async () => {
 for (const rotated of [false, true]) {
   test(`places every line of the table into its own cell${rotated ? " (sideways scan)" : ""}`, async () => {
     const plan = await planOverlay(await scannedPdf({ rotated }), BLOCKS);
-    const unplaced = plan.unplaced.map((entry) => entry.id);
-    assert.deepEqual(unplaced, [LINES.stampText.id]);
+    assert.deepEqual(plan.unplaced, []);
+    const mark = plan.items.find((item) => item.mark);
+    assert.equal(mark?.mark, "signature_stamp");
+    assert.deepEqual(mark?.lineIds, [LINES.stampText.id]);
 
     const t = TABLE;
     const cells = {
@@ -240,7 +242,7 @@ test("measures a skewed scan and still finds every table cell", async () => {
   const plan = await planOverlay(await scannedPdf({ skew: 0.3 }), BLOCKS);
   const measured = (plan.pages[0].skew * 180) / Math.PI;
   assert.ok(Math.abs(measured - 0.3) < 0.05, `skew ${measured.toFixed(3)}°`);
-  assert.deepEqual(plan.unplaced.map((entry) => entry.id), [LINES.stampText.id]);
+  assert.deepEqual(plan.unplaced, []);
 });
 
 test("reports a table whose lines do not match the OCR instead of guessing", async () => {
@@ -262,9 +264,9 @@ function contentStreams(doc: PDFDocument): number {
   return contents instanceof PDFArray ? contents.size() : contents instanceof PDFRawStream ? 1 : 0;
 }
 
-test("leaves the page untouched when nothing changes", async () => {
+test("leaves the page untouched when nothing changes and there is no signature or stamp", async () => {
   const pdf = await scannedPdf();
-  const plan = await planOverlay(pdf, BLOCKS);
+  const plan = await planOverlay(pdf, BLOCKS.filter((block) => block.kind !== "image"));
   const texts = new Map(
     Object.values(LINES).map((l) => [l.id, { source: l.text, translation: l.text }]),
   );
@@ -289,11 +291,14 @@ test("writes a translation onto the page, keeping page count and size", async ()
 
 /**
  * The signatory block from the customer's form: a blue stamp, and printed
- * black name/title lines whose first letters touch the stamp's ring. Inside
- * the ring sits a small dark patch whose blue JPEG has faded towards grey.
+ * black name/title lines whose first letters touch the stamp's ring.
+ *
+ * Customer rule: a translation never copies a signature or a stamp. The
+ * whole region is cleared and a bracketed label is written in its place.
  */
 const STAMP = { cx: 40, cy: 212, r: 16 };
 const SIGNATORY = { x0: 52, name: [203, 209], title: [211, 217] };
+const STAMP_BOX = { x0: 22, y0: 196, x1: 125, y1: 219 };
 
 function stampSvg(): string {
   const px = (value: number) => value * PX;
@@ -308,105 +313,110 @@ function stampSvg(): string {
 const NAME = line("Jane Example");
 const TITLE_LINE = line("Head of Supply");
 const STAMP_BLOCKS: LayoutBlock[] = [
-  { kind: "image", page: 1, image: "signature_stamp", lines: [NAME, TITLE_LINE], frame: frame(22, 196, 125, 219) },
+  {
+    kind: "image",
+    page: 1,
+    image: "signature_stamp",
+    lines: [NAME, TITLE_LINE],
+    frame: frame(STAMP_BOX.x0, STAMP_BOX.y0, STAMP_BOX.x1, STAMP_BOX.y1),
+  },
 ];
 
-test("finds the printed lines inside a stamp block and ignores the blue ink", async () => {
+test("cuts the holes out of a rectangle and keeps the rest", () => {
+  const rect: Rect = { u0: 0, v0: 0, u1: 10, v1: 10 };
+  assert.deepEqual(subtractRects(rect, []), [rect]);
+  assert.deepEqual(subtractRects(rect, [{ u0: 20, v0: 20, u1: 30, v1: 30 }]), [rect]);
+  const pieces = subtractRects(rect, [{ u0: 4, v0: 4, u1: 6, v1: 6 }]);
+  assert.equal(pieces.length, 4);
+  const area = pieces.reduce((sum, p) => sum + (p.u1 - p.u0) * (p.v1 - p.v0), 0);
+  assert.equal(area, 100 - 4);
+  assert.deepEqual(subtractRects(rect, [{ u0: -1, v0: -1, u1: 11, v1: 11 }]), []);
+});
+
+test("turns a signed stamp into one mark that clears the whole region", async () => {
   const plan = await planOverlay(await scannedPdf({ extra: stampSvg() }), STAMP_BLOCKS);
   assert.deepEqual(plan.unplaced, []);
-  const name = itemFor(plan, NAME.id)!;
-  const title = itemFor(plan, TITLE_LINE.id)!;
-  assert.ok(name.area.v0 < title.area.v0, "lines out of order");
-  for (const item of [name, title]) {
-    assert.ok(item.masks.length > 0, "a solid box would erase the stamp's ring");
-    assert.equal(item.erase.length, 0);
-    assert.equal(item.caution, null, "blue stamp and black text are separable by colour");
-    assert.ok(Math.abs(item.area.u0 - SIGNATORY.x0) < 1.5, `starts at ${item.area.u0.toFixed(1)}, text starts at ${SIGNATORY.x0}`);
-    for (const rect of item.erase) assert.ok(rect.u0 > STAMP.cx, "erases into the stamp");
-  }
+  assert.equal(plan.items.length, 1, "printed lines must not be placed on their own");
+  const [mark] = plan.items;
+  assert.equal(mark.mark, "signature_stamp");
+  assert.deepEqual(mark.lineIds, [NAME.id, TITLE_LINE.id]);
+  assert.equal(mark.align, "center");
+  assert.equal(mark.erase.length, 1);
+  const [rect] = mark.erase;
+  assert.ok(rect.u0 <= STAMP_BOX.x0 && rect.u1 >= STAMP_BOX.x1, "does not reach across the region");
+  assert.ok(rect.v0 <= STAMP_BOX.y0 && rect.v1 >= STAMP_BOX.y1, "does not reach across the region");
+  assert.equal(mark.caution, null);
 });
 
-test("lets a longer translation run on into blank space to the right", async () => {
-  const plan = await planOverlay(await scannedPdf({ extra: stampSvg() }), STAMP_BLOCKS);
-  const title = itemFor(plan, TITLE_LINE.id)!;
-  assert.ok(title.area.u1 > 200, `area ends at ${title.area.u1.toFixed(1)}`);
-  assert.ok(title.area.u1 <= PAGE.width - 25);
+test("a signature with no printed text still becomes a mark", async () => {
+  const blocks: LayoutBlock[] = [{ kind: "image", page: 1, image: "signature", lines: [], frame: frame(30, 150, 110, 180) }];
+  const plan = await planOverlay(await scannedPdf(), blocks);
+  assert.equal(plan.items.length, 1);
+  assert.equal(plan.items[0].mark, "signature");
+  assert.deepEqual(plan.items[0].lineIds, []);
 });
 
-test("draws a pixel patch, not a box, over text inside a stamp", async () => {
+test("leaves a logo and an unidentified image alone", async () => {
+  const blocks: LayoutBlock[] = [
+    { kind: "image", page: 1, image: "logo", lines: [], frame: frame(30, 150, 110, 180) },
+    { kind: "image", page: 1, image: "unknown", lines: [], frame: frame(150, 150, 250, 195) },
+  ];
+  const plan = await planOverlay(await scannedPdf(), blocks);
+  assert.equal(plan.items.length, 0);
+});
+
+test("removes the stamp's ink and writes the label in its place", async () => {
   const pdf = await scannedPdf({ extra: stampSvg() });
   const plan = await planOverlay(pdf, STAMP_BLOCKS);
   const texts = new Map([
     [NAME.id, { source: NAME.text, translation: NAME.text }],
     [TITLE_LINE.id, { source: TITLE_LINE.text, translation: "Tedarik Müdürü" }],
   ]);
-  const out = await PDFDocument.load(await renderOverlay(pdf, plan, texts));
-  const patches = [...out.context.enumerateIndirectObjects()].filter(
-    ([, object]) => object instanceof PDFRawStream && object.dict.has(PDFName.of("SMask")),
-  );
-  // Exactly one see-through patch, for the one changed line; the unchanged
-  // name line and the stamp get nothing.
-  assert.equal(patches.length, 1);
-});
-
-/**
- * Colour is not the rule, it is a hint: a stamp can be black like the text.
- * A black ring with small black letters around it, next to a black
- * signatory line — once clear of the text, once touching it.
- */
-function blackStampSvg(textStart: number): string {
-  const px = (value: number) => value * PX;
-  const ringLetters = [0, 40, 80, 120, 160, 200, 240, 280, 320]
-    .map((deg) => {
-      const rad = (deg * Math.PI) / 180;
-      const x = STAMP.cx + (STAMP.r - 4) * Math.cos(rad);
-      const y = STAMP.cy + (STAMP.r - 4) * Math.sin(rad);
-      return `<rect x="${px(x - 1)}" y="${px(y - 1.5)}" width="${px(2)}" height="${px(3)}" fill="#141414"/>`;
-    })
-    .join("");
-  return [
-    `<circle cx="${px(STAMP.cx)}" cy="${px(STAMP.cy)}" r="${px(STAMP.r)}" fill="none" stroke="#141414" stroke-width="${px(1.6)}"/>`,
-    ringLetters,
-    bar(textStart, SIGNATORY.name[0], 90, SIGNATORY.name[1]),
-    bar(textStart, SIGNATORY.title[0], 120, SIGNATORY.title[1]),
-  ].join("");
-}
-
-function overlapsRing(rect: Rect): boolean {
-  // Does the rectangle reach the ring's stroke (radius ±1 pt)?
-  const nearest = (value: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, value));
-  const x = nearest(STAMP.cx, rect.u0, rect.u1);
-  const y = nearest(STAMP.cy, rect.v0, rect.v1);
-  const closest = Math.hypot(x - STAMP.cx, y - STAMP.cy);
-  const corners = [
-    [rect.u0, rect.v0], [rect.u1, rect.v0], [rect.u0, rect.v1], [rect.u1, rect.v1],
-  ].map(([u, v]) => Math.hypot(u - STAMP.cx, v - STAMP.cy));
-  return closest <= STAMP.r + 1 && Math.max(...corners) >= STAMP.r - 1;
-}
-
-test("keeps a black stamp and its black letters when the text stands clear of it", async () => {
-  const start = STAMP.cx + STAMP.r + 3; // 3 pt clear of the ring
-  const plan = await planOverlay(await scannedPdf({ extra: blackStampSvg(start) }), STAMP_BLOCKS);
-  assert.deepEqual(plan.unplaced, []);
-  for (const id of [NAME.id, TITLE_LINE.id]) {
-    const item = itemFor(plan, id)!;
-    assert.ok(Math.abs(item.area.u0 - start) < 1.5, `starts at ${item.area.u0.toFixed(1)}, text at ${start}`);
-    assert.equal(item.caution, null);
-    for (const rect of item.erase) assert.equal(overlapsRing(rect), false, "box reaches the black ring");
-    for (const mask of item.masks) assert.ok(mask.rect.u0 > STAMP.cx, "mask reaches into the stamp");
+  const out = await renderOverlay(pdf, plan, texts, { targetLang: "tr-TR" });
+  const scale = 2;
+  const width = PAGE.width * scale;
+  const height = PAGE.height * scale;
+  const rgba = await renderPdfPage(out, 0, { width, height });
+  const at = (u: number, v: number) => {
+    const offset = (Math.round(v * scale) * width + Math.round(u * scale)) * 4;
+    return [rgba[offset], rgba[offset + 1], rgba[offset + 2]];
+  };
+  // The ring's left edge sits outside where the centred label can reach.
+  const [r, g, b] = at(STAMP.cx - STAMP.r, STAMP.cy);
+  assert.ok(b - r < 25 && r > 200 && g > 200, `ring still there: ${r},${g},${b}`);
+  let ink = 0;
+  for (let v = STAMP_BOX.y0; v < STAMP_BOX.y1; v += 0.5) {
+    for (let u = STAMP_BOX.x0; u < STAMP_BOX.x1; u += 0.5) {
+      const [lr, lg, lb] = at(u, v);
+      if (lr + lg + lb < 300) ink++;
+    }
   }
+  assert.ok(ink > 30, "no label was written");
 });
 
-test("protects a black stamp that touches the text and says so", async () => {
-  const start = STAMP.cx + STAMP.r - 1; // first strokes run into the ring
-  const plan = await planOverlay(await scannedPdf({ extra: blackStampSvg(start) }), STAMP_BLOCKS);
-  const title = itemFor(plan, TITLE_LINE.id);
-  assert.ok(title, "line was not placed");
-  assert.match(String(title.caution), /aynı renkte/);
-  // Whatever is erased must stay off the ring: the letters fused with it are
-  // left in place (hence the caution), the ring itself is never cut.
-  for (const rect of title.erase) assert.equal(overlapsRing(rect), false, "box cuts the black ring");
-  for (const mask of title.masks) assert.ok(mask.rect.u0 > STAMP.cx, "mask reaches into the stamp");
+test("redraws a line the cleared region runs into, even when it does not change", async () => {
+  const blocks: LayoutBlock[] = [
+    { kind: "paragraph", role: "title", page: 1, lines: [LINES.title], frame: frame(TITLE.x0, TITLE.y0, TITLE.x1, TITLE.y1) },
+    { kind: "image", page: 1, image: "stamp", lines: [], frame: frame(180, 18, 230, 45) },
+  ];
+  const plan = await planOverlay(await scannedPdf(), blocks);
+  const title = itemFor(plan, LINES.title.id)!;
+  assert.equal(title.redraw, true);
+  assert.equal(plan.items[0].mark, "stamp", "marks are drawn first");
+});
+
+test("does not clear the part of a mark that covers a line it could not place", async () => {
+  const wrongTable: LayoutBlock = {
+    kind: "table",
+    page: 1,
+    rows: [[{ colspan: 1, lines: [line("only row")] }]],
+    frame: frame(TABLE.x0, TABLE.y0, TABLE.x1, TABLE.y1),
+  };
+  const stamp: LayoutBlock = { kind: "image", page: 1, image: "stamp", lines: [], frame: frame(240, 40, 295, 80) };
+  const plan = await planOverlay(await scannedPdf(), [wrongTable, stamp]);
+  const mark = plan.items.find((item) => item.mark)!;
+  for (const rect of mark.erase) assert.equal(overlaps(rect, TABLE), false, "erases into a line that stays as it is");
+  assert.match(String(mark.caution), /silinmedi/);
 });
 
 test("erases a printed line but not the red initials written over it", async () => {
@@ -436,6 +446,6 @@ test("reads a black-and-white scan and finds the table cells in it", async () =>
   assert.ok((pages[0].luminance(150, 45) ?? 0) > 200, "blank area reads dark");
 
   const plan = await planOverlay(pdf, BLOCKS);
-  assert.deepEqual(plan.unplaced.map((entry) => entry.id), [LINES.stampText.id]);
+  assert.deepEqual(plan.unplaced, []);
   assert.ok(itemFor(plan, LINES.weightValue.id), "two-line cell was not placed");
 });
