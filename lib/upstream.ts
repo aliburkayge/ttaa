@@ -39,6 +39,10 @@ export async function fetchWithRetry(
         signal: AbortSignal.timeout(options.timeoutMs),
       });
       if (!canRetry || !transientStatus(response.status) || attempt === attempts) return response;
+      // Kota/kredi bitti: beklemekle geçmez, tekrar denemek yalnızca geciktirir.
+      if (response.status === 429 && /insufficient_quota|credit_balance/.test(await response.clone().text().catch(() => ""))) {
+        return response;
+      }
       const retryAfter = retryAfterMilliseconds(response);
       const backoff = retryAfter || Math.min(10_000, 650 * 2 ** (attempt - 1) + Math.floor(Math.random() * 350));
       await wait(backoff);

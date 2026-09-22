@@ -1,9 +1,10 @@
 import { rebuildDocx } from "./docx";
 import { findDocxMarks, type DocxLayout } from "./docx-marks";
 import { imageFormat, imageToPdf, overlayImage } from "./image-doc";
+import { classifyDefault } from "./image-kind";
 import { markText } from "./marks";
 import { isPdf } from "./ocr";
-import type { ImageInsight } from "./ocr-layout";
+import type { ImageInsight, ImageKind } from "./ocr-layout";
 import { PLAN_VERSION, planOverlay, renderOverlay, type OverlayPlan, type ScanLayout } from "./pdf-overlay";
 import { tidyTarget } from "./qa";
 
@@ -46,7 +47,10 @@ export function withPlacement(segments: StoredDocument["segments"], overlay: Ove
 export async function deliver(
   doc: StoredDocument,
   original: Uint8Array,
-  options: { inspect?: (dataUrl: string) => Promise<ImageInsight> } = {},
+  options: {
+    inspect?: (dataUrl: string) => Promise<ImageInsight>;
+    classify?: (dataUrl: string) => Promise<ImageKind>;
+  } = {},
 ): Promise<Delivery> {
   const image = imageFormat(original);
   const targetLang = doc.target_lang ?? "en";
@@ -88,7 +92,7 @@ export async function deliver(
     // Yeniden ölçülemezse eski plan kullanılır. OCR blokları kayıtlı
     // olduğundan yeniden yüklemeye ve OCR'a gerek yok: plan şimdi çıkarılır.
     try {
-      const overlay = await planOverlay(pdfBytes, layout.blocks);
+      const overlay = await planOverlay(pdfBytes, layout.blocks, { classify: options.classify ?? classifyDefault });
       layout = { ...layout, overlay, overlayError: null };
       refreshed = { layout, segments: withPlacement(doc.segments, overlay) };
     } catch (cause) {

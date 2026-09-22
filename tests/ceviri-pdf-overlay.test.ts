@@ -449,3 +449,57 @@ test("reads a black-and-white scan and finds the table cells in it", async () =>
   assert.deepEqual(plan.unplaced, []);
   assert.ok(itemFor(plan, LINES.weightValue.id), "two-line cell was not placed");
 });
+
+// ---------- OCR'ın ayırmadığı imza (BASF mektubu gibi) ----------
+
+/** A blue signature scribble whose tail runs into the title's last letters. */
+function scribbleSvg(): string {
+  const px = (value: number) => value * PX;
+  return `<path d="M ${px(181)} ${px(36)} C ${px(196)} ${px(2)}, ${px(212)} ${px(30)}, ${px(228)} ${px(14)} S ${px(255)} ${px(4)}, ${px(282)} ${px(18)}" fill="none" stroke="#2f5bd0" stroke-width="${px(1.1)}"/>`;
+}
+const TITLE_BLOCK: LayoutBlock = {
+  kind: "paragraph",
+  role: "title",
+  page: 1,
+  lines: [LINES.title],
+  frame: frame(TITLE.x0, TITLE.y0, TITLE.x1, TITLE.y1),
+};
+
+test("finds a signature the OCR did not separate and masks only its ink", async () => {
+  const seen: string[] = [];
+  const plan = await planOverlay(await scannedPdf({ extra: scribbleSvg() }), [TITLE_BLOCK], {
+    classify: async (dataUrl) => {
+      seen.push(dataUrl);
+      return "signature";
+    },
+  });
+  assert.ok(seen.length >= 1 && seen.every((url) => url.startsWith("data:image/jpeg;base64,")));
+  const mark = plan.items.find((item) => item.mark);
+  assert.ok(mark, "signature was not found");
+  assert.equal(mark.mark, "signature");
+  assert.equal(mark.erase.length, 0, "a box would take the printed text around the signature");
+  assert.equal(mark.masks.length, 1);
+  assert.ok(mark.masks[0].rect.u1 >= 280 && mark.masks[0].rect.u0 <= 188, "mask does not span the signature");
+  // The label sits in the free paper above the title, not over it.
+  assert.ok(mark.area.v1 <= TITLE.y0 + 0.5, `label area ends at ${mark.area.v1.toFixed(1)}`);
+  assert.equal(itemFor(plan, LINES.title.id)?.redraw, true, "the title the signature touches must be rewritten");
+});
+
+test("leaves ink alone when the classifier says it is a logo or text", async () => {
+  for (const kind of ["logo", "text", "unknown"] as const) {
+    const plan = await planOverlay(await scannedPdf({ extra: scribbleSvg() }), [TITLE_BLOCK], { classify: async () => kind });
+    assert.equal(plan.items.some((item) => item.mark), false, kind);
+  }
+});
+
+test("takes a line the OCR read out of the signature itself off the page", async () => {
+  const misread = line("Jill Hollman");
+  const blocks: LayoutBlock[] = [
+    TITLE_BLOCK,
+    { kind: "paragraph", role: "text", page: 1, lines: [misread], frame: frame(214, 4, 284, 22) },
+  ];
+  const plan = await planOverlay(await scannedPdf({ extra: scribbleSvg() }), blocks, { classify: async () => "signature" });
+  assert.equal(itemFor(plan, misread.id), undefined, "the misread signature would be written as text");
+  assert.match(plan.unplaced.find((entry) => entry.id === misread.id)?.reason ?? "", /İmzanın kendisi/);
+  assert.ok(itemFor(plan, LINES.title.id), "the printed title was taken with it");
+});

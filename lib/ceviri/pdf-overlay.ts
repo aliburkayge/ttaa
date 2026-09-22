@@ -1,8 +1,9 @@
 import { degrees, PDFDocument, rgb, type PDFFont } from "pdf-lib";
 import { classifyFamily, fontsFor, type Family } from "./fonts";
 import { reconstructPaper } from "./inpaint";
+import { findInkRegions, inkShare, type InkMap, type InkRegion } from "./ink-marks";
 import { isMark, markText, type MarkKind } from "./marks";
-import type { Box, LayoutBlock, OcrLine } from "./ocr-layout";
+import type { Box, ImageKind, LayoutBlock, OcrLine } from "./ocr-layout";
 import { openScan, pageGeometry, type ScanPage } from "./pdf-scan";
 import { tidyTarget } from "./qa";
 
@@ -1523,6 +1524,103 @@ const MARK_MARGIN = 2;
 const MARK_FONT_SIZE = 10;
 const MARK_KEPT =
   "İmza/mühür bölgesi yerine yazılamayan bir satıra değiyor; o kısım silinmedi. Çıktıyı kontrol edin.";
+const SIGNATURE_READ = "İmzanın kendisi yazı gibi okunmuş; çıktıda imza yerine etiket yazılır.";
+/** Gevşek imza/mühür araması için sayfanın örneklendiği ızgara adımı (punto). */
+const INK_STEP = 0.6;
+/** Bir satırın mürekkebinin bu kadarı imza mürekkebiyse OCR imzayı yazı sanıp okumuştur. */
+const SIGNATURE_SHARE = 0.6;
+
+export type PlanOptions = {
+  /**
+   * Görsel sınıflandırıcı. Verilirse OCR'ın ayrı bölge olarak vermediği imza
+   * ve mühürler taramanın kendisinden aranır (bkz. ink-marks.ts); her aday
+   * kırpılıp buna sorulur. Verilmezse yalnızca OCR'ın ayırdığı bölgeler işlenir.
+   */
+  classify?: (dataUrl: string) => Promise<ImageKind>;
+};
+
+function packBits(bits: Uint8Array): string {
+  const out = Buffer.alloc(Math.ceil(bits.length / 8));
+  bits.forEach((bit, index) => {
+    if (bit) out[index >> 3] |= 1 << (index & 7);
+  });
+  return out.toString("base64");
+}
+
+/** Taramanın bir bölgesi, sınıflandırıcıya gönderilecek JPEG olarak. */
+async function cropDataUrl(frame: Frame, rect: Rect): Promise<string> {
+  const step = 0.35;
+  const w = Math.max(1, Math.round((rect.u1 - rect.u0) / step));
+  const h = Math.max(1, Math.round((rect.v1 - rect.v0) / step));
+  const raw = Buffer.alloc(w * h * 3, 255);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const { u, v } = frame.toDisplay(rect.u0 + (x + 0.5) * step, rect.v0 + (y + 0.5) * step);
+      const color = frame.page.rgb(u, v);
+      if (color) raw.set(color, (y * w + x) * 3);
+    }
+  }
+  const { default: sharp } = await import("sharp");
+  const jpeg = await sharp(raw, { raw: { width: w, height: h, channels: 3 } }).jpeg({ quality: 88 }).toBuffer();
+  return `data:image/jpeg;base64,${jpeg.toString("base64")}`;
+}
+
+/** Sayfanın tamamı, düzeltilmiş koordinatta kaba bir ızgarada. */
+function pageRaster(frame: Frame): { w: number; h: number; rgb: Uint8Array } {
+  const w = Math.max(1, Math.ceil(frame.page.width / INK_STEP));
+  const h = Math.max(1, Math.ceil(frame.page.height / INK_STEP));
+  const rgb = new Uint8Array(w * h * 3).fill(255);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const { u, v } = frame.toDisplay((x + 0.5) * INK_STEP, (y + 0.5) * INK_STEP);
+      const color = frame.page.rgb(u, v);
+      if (color) rgb.set(color, (y * w + x) * 3);
+    }
+  }
+  return { w, h, rgb };
+}
+
+function regionRect(region: InkRegion): Rect {
+  return { u0: region.x0 * INK_STEP, v0: region.y0 * INK_STEP, u1: (region.x1 + 1) * INK_STEP, v1: (region.y1 + 1) * INK_STEP };
+}
+
+function rasterRect(rect: Rect) {
+  return { x0: rect.u0 / INK_STEP, y0: rect.v0 / INK_STEP, x1: rect.u1 / INK_STEP - 1, y1: rect.v1 / INK_STEP - 1 };
+}
+
+/** Öğenin yazısının taramadaki yeri: silinecek şeritlerin birleşimi. */
+function textRect(item: { erase: Rect[]; masks: Mask[]; area: Rect }): Rect {
+  const rects = [...item.erase, ...item.masks.map((mask) => mask.rect)];
+  if (!rects.length) return item.area;
+  return {
+    u0: Math.min(...rects.map((r) => r.u0)),
+    v0: Math.min(...rects.map((r) => r.v0)),
+    u1: Math.max(...rects.map((r) => r.u1)),
+    v1: Math.max(...rects.map((r) => r.v1)),
+  };
+}
+
+function rowsRect(rows: Row[]): Rect {
+  return {
+    u0: Math.min(...rows.map((row) => row.u0)) - 1,
+    v0: Math.min(...rows.map((row) => row.v0)) - 1,
+    u1: Math.max(...rows.map((row) => row.u1)) + 1,
+    v1: Math.max(...rows.map((row) => row.v1)) + 1,
+  };
+}
+
+/** İşaret maskesinin bir dikdörtgenle kesişen yerinde silinecek piksel var mı? */
+function maskTouches(mask: { rect: Rect; w: number; h: number; data: Uint8Array }, rect: Rect): boolean {
+  if (!intersects(mask.rect, rect)) return false;
+  const du = (mask.rect.u1 - mask.rect.u0) / mask.w;
+  const dv = (mask.rect.v1 - mask.rect.v0) / mask.h;
+  const x0 = Math.max(0, Math.floor((rect.u0 - mask.rect.u0) / du));
+  const x1 = Math.min(mask.w - 1, Math.ceil((rect.u1 - mask.rect.u0) / du));
+  const y0 = Math.max(0, Math.floor((rect.v0 - mask.rect.v0) / dv));
+  const y1 = Math.min(mask.h - 1, Math.ceil((rect.v1 - mask.rect.v0) / dv));
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (mask.data[y * mask.w + x]) return true;
+  return false;
+}
 
 function isMarkBlock(block: LayoutBlock): boolean {
   return block.kind === "image" && isMark(block.image);
@@ -1536,12 +1634,21 @@ type PendingMark = {
   background: Color;
   ink: Color;
   erase: Rect[];
+  masks: Mask[];
+  /** Taramadan bulunan işaretin pikselleri: yalnızca bunlara değen satırlar yeniden yazılır. */
+  pixels: { rect: Rect; w: number; h: number; data: Uint8Array } | null;
   caution: string | null;
 };
 
-export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): Promise<OverlayPlan> {
+export async function planOverlay(
+  pdfBytes: Uint8Array,
+  blocks: LayoutBlock[],
+  options: PlanOptions = {},
+): Promise<OverlayPlan> {
   const measured: Measured[] = [];
   const marks: PendingMark[] = [];
+  /** El yazısı gibi görünüp yerine yazılmayan satırlar: imza olabilirler. */
+  const handwritten: Array<{ page: number; rect: Rect; lineIds: string[] }> = [];
   const unplaced: OverlayPlan["unplaced"] = [];
   const skip = (lines: OcrLine[], reason: string) =>
     unplaced.push(...lines.map((line) => ({ id: line.id, reason })));
@@ -1575,6 +1682,7 @@ export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): 
       skews[index] = skew;
       const frame: Frame = { page, skew, textColor: pageInk(page), ...frameFor(page, skew) };
       for (const { block, blockIndex } of onPage) placeBlock(block, blockIndex, frame);
+      if (options.classify) await findLooseMarks(frame, index + 1, options.classify);
       settleMarks(index + 1, frame);
     }
   } finally {
@@ -1618,6 +1726,8 @@ export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): 
         background: site.paper,
         ink: frame.textColor,
         erase: [region],
+        masks: [],
+        pixels: null,
         caution: null,
       });
       return;
@@ -1698,6 +1808,7 @@ export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): 
         const rows = groups[index];
         if (looksHandwritten(site, rows, [line])) {
           skip([line], HANDWRITTEN);
+          handwritten.push({ page: block.page, rect: rowsRect(rows), lineIds: [line.id] });
           return;
         }
         const lineRegion = {
@@ -1720,6 +1831,7 @@ export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): 
     }
     if (looksHandwritten(site, text, block.lines)) {
       skip(block.lines, HANDWRITTEN);
+      handwritten.push({ page: block.page, rect: rowsRect(text), lineIds: block.lines.map((line) => line.id) });
       return;
     }
     measured.push(
@@ -1727,10 +1839,89 @@ export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): 
     );
   }
 
+  // OCR'ın ayrı bölge olarak vermediği imza ve mühürler: taramada harf boyunu
+  // aşan ya da renkli mürekkep kümeleri ve el yazısı gibi görünen satırlar.
+  // Her aday kırpılıp sınıflandırıcıya sorulur; yalnızca imza/mühür denirse
+  // işaret olur. Silme maskeyle yapılır: imzanın çevresindeki basılı yazı kalır.
+  async function findLooseMarks(frame: Frame, pageNo: number, classify: NonNullable<PlanOptions["classify"]>) {
+    const map: InkMap = findInkRegions(pageRaster(frame), 1 / INK_STEP);
+    const absorb = (ids: string[]) => {
+      for (const entry of unplaced) if (ids.includes(entry.id)) entry.reason = SIGNATURE_READ;
+    };
+
+    for (const region of map.regions) {
+      const rect = regionRect(region);
+      if (marks.some((mark) => mark.page === pageNo && intersects(mark.region, rect))) continue;
+      const kind = await classify(await cropDataUrl(frame, grow(rect, 4, 4)));
+      if (!isMark(kind)) continue;
+
+      // OCR imzayı yazı sanıp okuduysa ("Jill Hollman") o satır çeviriye
+      // girmez: mürekkebinin çoğu imzanın mürekkebidir. İmzanın üstünden
+      // geçtiği basılı isimde bu oran düşüktür; o satır yerinde kalır.
+      for (let i = measured.length - 1; i >= 0; i--) {
+        const item = measured[i];
+        if (item.page !== pageNo) continue;
+        const text = textRect(item);
+        if (!intersects(text, rect) || inkShare(map, rasterRect(text)) < SIGNATURE_SHARE) continue;
+        measured.splice(i, 1);
+        unplaced.push(...item.lineIds.map((id) => ({ id, reason: SIGNATURE_READ })));
+      }
+      for (const hand of handwritten) if (hand.page === pageNo && intersects(hand.rect, rect)) absorb(hand.lineIds);
+      // Taramada harf olarak bulunamayan satır da ("yazısı bulunamadı"): kutusu
+      // çoğunlukla imzanın içindeyse okunan şey imzanın kendisidir.
+      for (const block of blocks) {
+        if (block.page !== pageNo || block.kind !== "paragraph" || !block.frame) continue;
+        const box = toFrame(block.frame.box, block.frame, frame);
+        const overlap =
+          Math.max(0, Math.min(box.u1, rect.u1) - Math.max(box.u0, rect.u0)) *
+          Math.max(0, Math.min(box.v1, rect.v1) - Math.max(box.v0, rect.v0));
+        if (overlap >= (box.u1 - box.u0) * (box.v1 - box.v0) * SIGNATURE_SHARE) absorb(block.lines.map((line) => line.id));
+      }
+
+      const w = region.x1 - region.x0 + 1;
+      const h = region.y1 - region.y0 + 1;
+      marks.push({
+        page: pageNo,
+        kind,
+        region: rect,
+        lineIds: [],
+        background: region.paper,
+        ink: frame.textColor,
+        erase: [],
+        masks: [{ rect, w, h, bits: packBits(region.bits), paper: region.paper }],
+        pixels: { rect, w, h, data: region.bits },
+        caution: null,
+      });
+    }
+
+    // El yazısı stilindeki imza ("Jennifer Drobish") harf boyundadır; mürekkep
+    // kümesi olarak bulunmaz. OCR onu okuyup satır yaptıysa satırın yeri sorulur.
+    for (const hand of handwritten) {
+      if (hand.page !== pageNo) continue;
+      if (marks.some((mark) => mark.page === pageNo && intersects(mark.region, hand.rect))) continue;
+      const kind = await classify(await cropDataUrl(frame, grow(hand.rect, 3, 3)));
+      if (!isMark(kind)) continue;
+      absorb(hand.lineIds);
+      marks.push({
+        page: pageNo,
+        kind,
+        region: hand.rect,
+        lineIds: [],
+        background: survey(frame, grow(hand.rect, CONTEXT_MARGIN, CONTEXT_MARGIN), hand.rect).paper,
+        ink: frame.textColor,
+        erase: [hand.rect],
+        masks: [],
+        pixels: null,
+        caution: null,
+      });
+    }
+  }
+
   // Yerine yazılamayan bir satır işaret bölgesinin altında kalıyorsa o kısım
-  // silinmez: yeniden yazılamayacak bir satır silinip kaybolmamalı.
+  // silinmez: yeniden yazılamayacak bir satır silinip kaybolmamalı. İmzanın
+  // kendisi olan satır (yazı gibi okunmuş imza) bundan sayılmaz.
   function settleMarks(pageNo: number, frame: Frame) {
-    const lost = new Set(unplaced.map((entry) => entry.id));
+    const lost = new Set(unplaced.filter((entry) => entry.reason !== SIGNATURE_READ).map((entry) => entry.id));
     const holes = blocks
       .filter(
         (block) =>
@@ -1741,10 +1932,10 @@ export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): 
       )
       .map((block) => toFrame(block.frame!.box, block.frame!, frame));
     for (const mark of marks) {
-      if (mark.page !== pageNo) continue;
+      if (mark.page !== pageNo || !mark.erase.length) continue;
       const touching = holes.filter((hole) => intersects(hole, mark.region));
       if (!touching.length) continue;
-      mark.erase = subtractRects(mark.region, touching);
+      mark.erase = mark.erase.flatMap((rect) => subtractRects(rect, touching));
       mark.caution = MARK_KEPT;
     }
   }
@@ -1793,6 +1984,21 @@ export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): 
   );
   const items: OverlayItem[] = sized.map((item, index) => ({ ...item, bold: bold[index], family: families[index] }));
 
+  // Taramadan bulunan imza çoğu zaman basılı ismin üstündedir: etiket imzanın
+  // yazı olmayan kısmına (isim satırının üstüne ya da altına) yazılır.
+  const labelArea = (mark: PendingMark, fontSize: number): Rect => {
+    const texts = items
+      .filter((item) => item.page === mark.page)
+      .map(textRect)
+      .filter((rect) => intersects(rect, mark.region));
+    if (!texts.length) return mark.region;
+    const top = Math.min(...texts.map((rect) => rect.v0));
+    if (top - mark.region.v0 >= fontSize * 0.9) return { ...mark.region, v1: top };
+    const bottom = Math.max(...texts.map((rect) => rect.v1));
+    if (mark.region.v1 - bottom >= fontSize * 0.9) return { ...mark.region, v0: bottom };
+    return mark.region;
+  };
+
   // Etiket, sayfanın gövde yazısının puntosuyla ve yazı rengiyle yazılır.
   const markItems: OverlayItem[] = marks.map((mark) => {
     const peers = items.filter((item) => item.page === mark.page).map((item) => item.fontSize);
@@ -1800,9 +2006,9 @@ export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): 
     return {
       page: mark.page,
       lineIds: mark.lineIds,
-      area: mark.region,
+      area: mark.pixels ? labelArea(mark, fontSize) : mark.region,
       erase: mark.erase,
-      masks: [],
+      masks: mark.masks,
       caution: mark.caution,
       align: "center",
       fontSize,
@@ -1816,11 +2022,12 @@ export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): 
     };
   });
   const underMark = (item: OverlayItem) =>
-    marks.some(
-      (mark) =>
-        mark.page === item.page &&
-        [...item.erase, ...item.masks.map((mask) => mask.rect)].some((rect) => intersects(rect, mark.region)),
-    );
+    marks.some((mark) => {
+      if (mark.page !== item.page) return false;
+      const rects = [...item.erase, ...item.masks.map((mask) => mask.rect)];
+      const pixels = mark.pixels;
+      return pixels ? rects.some((rect) => maskTouches(pixels, rect)) : rects.some((rect) => intersects(rect, mark.region));
+    });
 
   return {
     version: PLAN_VERSION,

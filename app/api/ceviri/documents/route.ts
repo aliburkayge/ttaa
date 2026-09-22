@@ -5,6 +5,7 @@ import { getCeviriSupabase, CEVIRI_DOCS_BUCKET } from "../../../../lib/ceviri/su
 import { parseDocx } from "../../../../lib/ceviri/docx";
 import { findDocxMarks, type DocxLayout } from "../../../../lib/ceviri/docx-marks";
 import { IMAGE_FORMATS, imageFormat, imageToPdf } from "../../../../lib/ceviri/image-doc";
+import { classifyDefault } from "../../../../lib/ceviri/image-kind";
 import { activeOcrProvider, isPdf, ocrToSegments } from "../../../../lib/ceviri/ocr";
 import type { MarkKind } from "../../../../lib/ceviri/marks";
 import { layoutStats } from "../../../../lib/ceviri/ocr-layout";
@@ -128,7 +129,8 @@ export async function POST(request: Request) {
       let overlayError: string | null = null;
       if (!result.demo) {
         try {
-          overlay = await planOverlay(pdfBytes, result.blocks);
+          // Sınıflandırıcı, OCR'ın ayırmadığı imza/mühürleri bulmak için.
+          overlay = await planOverlay(pdfBytes, result.blocks, { classify: classifyDefault });
         } catch (cause) {
           overlayError = cause instanceof Error ? cause.message : "Sayfa düzeni ölçülemedi.";
         }

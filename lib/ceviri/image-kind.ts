@@ -56,6 +56,11 @@ export async function classifyImage(dataUrl: string, model: string): Promise<Ima
   return kind === "unknown" ? classifyWithMistral(dataUrl) : kind;
 }
 
+/** Uygulamanın varsayılan modeliyle sınıflandırma (yükleme ve indirme bunu kullanır). */
+export function classifyDefault(dataUrl: string): Promise<ImageKind> {
+  return classifyImage(dataUrl, process.env.OPENAI_MODEL?.trim() || "gpt-5.5-2026-04-23");
+}
+
 async function classifyWithMistral(dataUrl: string): Promise<ImageKind> {
   const key = process.env.MISTRAL_API_KEY?.trim();
   if (!key) return "unknown";

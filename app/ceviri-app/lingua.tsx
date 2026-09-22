@@ -31,6 +31,8 @@ type Segment = {
 
 /** Yerleşim uyarısı yalnızca metni gerçekten değişecek satırda anlamlıdır. */
 function placementWarning(segment: Segment): string | null {
+  // İmzanın yazı gibi okunmuş hâli: çevirisi ne olursa olsun çıktıya yazılmaz.
+  if (segment.placement?.startsWith("İmzanın kendisi")) return segment.placement;
   if (!segment.translation || segment.translation.trim() === segment.text.trim()) return null;
   if (segment.placement) return `Çeviri PDF'te bu satırın yerine yazılamayacak: ${segment.placement}`;
   return segment.caution ?? null;
