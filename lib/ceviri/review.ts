@@ -3,7 +3,7 @@ import { askModel } from "./llm";
 import type { getCeviriSupabase } from "./supabase";
 
 /** İnceleme kuralları değişince artırılır: eski belgeler bir sonraki indirmede yeniden incelenir. */
-export const REVIEW_VERSION = 2;
+export const REVIEW_VERSION = 3;
 
 type StoredDoc = {
   id: string;

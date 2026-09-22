@@ -69,18 +69,20 @@ export function isAddressLine(text: string): boolean {
 
 /**
  * Adreste yalnızca ülke adı çevrilir. Ülke, satırın tamamı ya da virgülle
- * veya tireyle ayrılmış bir parçasıdır; bir sokak adının içindeki ülke adına
- * dokunulmaz ("12 Jordan Street").
+ * veya tireyle ayrılmış son parçasıdır: bir sokak adının içindeki ülke adına
+ * ("12 Jordan Street") ve ortadaki eyalete ("Sparks - Georgia - 31647 - USA")
+ * dokunulmaz.
  */
 export function localizeCountries(text: string, targetLang: string): string {
   const base = targetLang.split("-")[0].toLowerCase();
   if (base === "en") return text;
   const target = new Intl.DisplayNames([targetLang, base], { type: "region", fallback: "none" });
-  return text
-    .split(PART_SEPARATOR)
+  const parts = text.split(PART_SEPARATOR);
+  const last = parts.findLastIndex((part, index) => index % 2 === 0 && part.trim());
+  return parts
     .map((part, index) => {
       // Tek sıradakiler ayırıcıların kendisidir.
-      if (index % 2 === 1) return part;
+      if (index !== last) return part;
       const country = countryOf(part);
       if (!country) return part;
       const name = country.abbreviation && country.code === "US" && US_SHORT[base] ? US_SHORT[base] : target.of(country.code);

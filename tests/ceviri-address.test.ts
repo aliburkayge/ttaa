@@ -54,6 +54,14 @@ test("a list item whose address parts are separated by dashes", () => {
   assert.equal(isAddressLine("- Confirmation from the US EPA to BASF"), false);
 });
 
+test("a US state named like a country stays a state; only the last part is the country", () => {
+  assert.equal(
+    localizeCountries("- 14284 Highway 41 North - Sparks - Georgia - 31647 - USA", "tr-TR"),
+    "- 14284 Highway 41 North - Sparks - Georgia - 31647 - ABD",
+  );
+  assert.equal(localizeCountries("Tbilisi, Georgia", "tr-TR"), "Tbilisi, Gürcistan");
+});
+
 test("leaves a street that merely contains a country-like word alone", () => {
   assert.equal(localizeCountries("12 Jordan Street", "tr-TR"), "12 Jordan Street");
 });
