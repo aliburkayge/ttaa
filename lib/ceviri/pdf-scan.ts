@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import path from "node:path";
 import { inflateSync } from "node:zlib";
 import {
@@ -133,7 +134,12 @@ async function decodeWithPdfjs(bytes: Uint8Array, pageNumber: number): Promise<R
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
   // pdf.js sonda "/" ister; Windows'ta path.sep ters eğik çizgi olduğundan
   // ayırıcılar düzeltilip sona elle eklenir.
-  const wasmUrl = path.join(process.cwd(), "node_modules", "pdfjs-dist", "wasm").split(path.sep).join("/") + "/";
+  // process.cwd() yanlış: sunucu süreci farklı bir kök dizinden başlatılabilir
+  // (Next'in "dev <klasör>" argümanı yalnızca proje kökünü değiştirir, çalışma
+  // dizinini değil). Paketin kendi konumundan yol bulmak her ortamda doğru.
+  const resolve = createRequire(import.meta.url).resolve;
+  const wasmUrl =
+    path.join(resolve("pdfjs-dist/package.json"), "..", "wasm").split(path.sep).join("/") + "/";
   const task = pdfjs.getDocument({
     data: new Uint8Array(bytes),
     wasmUrl,
