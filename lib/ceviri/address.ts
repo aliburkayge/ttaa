@@ -48,9 +48,14 @@ function countryOf(part: string): { code: string; abbreviation: boolean } | null
   return code ? { code, abbreviation: false } : null;
 }
 
+/** Adres parçalarını ayıran virgül ya da boşluklu tire ("… Boulevard - St. Louis - Missouri"). */
+const PART_SEPARATOR = /(,|\s[-–]\s)/;
+
 export function isAddressLine(text: string): boolean {
-  const line = text.trim();
-  if (!line || line.length > 90 || line.split(/\s+/).length > 12) return false;
+  // Liste işareti ("- ", "• ") adresin parçası değildir.
+  const line = text.trim().replace(/^[-–•·]\s+/, "");
+  const words = line.split(/\s+/).filter((word) => !/^[-–]$/.test(word));
+  if (!line || line.length > 90 || words.length > 12) return false;
   if (countryOf(line)) return true;
   if (BOX.test(line)) return true;
   if (/^\d+[a-z]?(?:[-–]\d+[a-z]?)?\s+\S/i.test(line) && STREET_WORD.test(line)) return true;
@@ -64,16 +69,18 @@ export function isAddressLine(text: string): boolean {
 
 /**
  * Adreste yalnızca ülke adı çevrilir. Ülke, satırın tamamı ya da virgülle
- * ayrılmış bir parçasıdır; bir sokak adının içindeki ülke adına dokunulmaz
- * ("12 Jordan Street").
+ * veya tireyle ayrılmış bir parçasıdır; bir sokak adının içindeki ülke adına
+ * dokunulmaz ("12 Jordan Street").
  */
 export function localizeCountries(text: string, targetLang: string): string {
   const base = targetLang.split("-")[0].toLowerCase();
   if (base === "en") return text;
   const target = new Intl.DisplayNames([targetLang, base], { type: "region", fallback: "none" });
   return text
-    .split(",")
-    .map((part) => {
+    .split(PART_SEPARATOR)
+    .map((part, index) => {
+      // Tek sıradakiler ayırıcıların kendisidir.
+      if (index % 2 === 1) return part;
       const country = countryOf(part);
       if (!country) return part;
       const name = country.abbreviation && country.code === "US" && US_SHORT[base] ? US_SHORT[base] : target.of(country.code);
@@ -82,5 +89,5 @@ export function localizeCountries(text: string, targetLang: string): string {
       const trailing = part.match(/\s*$/)?.[0] ?? "";
       return `${leading}${name}${trailing}`;
     })
-    .join(",");
+    .join("");
 }

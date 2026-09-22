@@ -19,6 +19,8 @@ export async function askModel(prompt: string): Promise<string> {
         body: JSON.stringify({
           model: process.env.MISTRAL_TEXT_MODEL?.trim() || "mistral-large-latest",
           response_format: { type: "json_object" },
+          // İnceleme her çalıştırmada aynı sonucu vermeli.
+          temperature: 0,
           messages: [{ role: "user", content: prompt }],
         }),
         cache: "no-store",

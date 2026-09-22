@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { harmonize, reviewDocument, unifyRepeats } from "../lib/ceviri/consistency.ts";
+import { alignPhrases, harmonize, reviewDocument, sharedPhrases, unifyRepeats } from "../lib/ceviri/consistency.ts";
 
 type Seg = { id: string; text: string; translation: string | null; source: string | null };
 const seg = (id: string, text: string, translation: string, source = "engine"): Seg => ({ id, text, translation, source });
@@ -70,11 +70,98 @@ test("refuses fixes that touch a locked line, drop a protected number or make no
   assert.deepEqual(await harmonize(DOC, { sourceLang: "en-US", targetLang: "tr-TR", ask }), []);
 });
 
+test("a line written in capitals stays in capitals", async () => {
+  const segments = [
+    seg("c1", "UNITED STATES ENVIRONMENTAL PROTECTION AGENCY", "AMERİKA BİRLEŞİK DEVLETLERİ ÇEVRE KORUMA AJANSI"),
+    seg("c2", "U.S. Environmental Protection Agency", "ABD Çevre Koruma Ajansı"),
+  ];
+  const ask = async () =>
+    JSON.stringify({ changes: [{ id: "c1", translation: "AMERİKA BİRLEŞİK DEVLETLERİ Çevre Koruma Ajansı" }] });
+  assert.deepEqual(await harmonize(segments, { sourceLang: "en-US", targetLang: "tr-TR", ask }), []);
+});
+
 test("a model that fails leaves the translation as it was", async () => {
   const ask = async () => {
     throw new Error("no credits");
   };
   assert.deepEqual(await harmonize(DOC, { sourceLang: "en-US", targetLang: "tr-TR", ask }), []);
+});
+
+const LIST = [
+  seg("e1", "1) Notification to and Confirmation from the US EPA of Legal Entity Name and Address Change in the USA", "1) ABD’deki tüzel kişilik adı ve adres değişikliğinin ABD EPA’ya bildirilmesi ve EPA tarafından onaylanması"),
+  seg("e2", "2) Notification to and Confirmation from the US EPA of Zip Code Update by United States Postal Service", "2) ABD Posta Servisi tarafından yapılan posta kodu güncellemesine ilişkin ABD EPA’ya yapılan bildirim ve alınan onay"),
+  seg("a1", "Attachment #1: Notification to and Confirmation from the US EPA of Legal Entity Name and Address Change in the USA", "Ek #1: ABD’deki tüzel kişilik adı ve adres değişikliğinin ABD EPA’ya bildirilmesi ve EPA tarafından onaylanması"),
+  seg("a2", "Attachment #2: Notification to and Confirmation from the US EPA of Zip Code Update by United States Postal Service", "Ek #2: ABD Posta Servisi tarafından yapılan posta kodu güncellemesine ilişkin ABD EPA’ya yapılan bildirim ve alınan onay"),
+  seg("n1", "Current name and address: BASF Corporation", "Mevcut adı ve adresi: BASF Corporation"),
+  seg("n2", "New name and address: BASF Agricultural Solutions US LLC", "Yeni ad ve adres: BASF Agricultural Solutions US LLC"),
+  seg("b1", "BASF Agricultural Solutions US LLC will continue to operate", "BASF Agricultural Solutions US LLC faaliyetine devam edecek"),
+  seg("x1", "Sincerely,", "Saygılarımla,"),
+];
+
+test("finds the groups of lines that share source wording", () => {
+  const groups = sharedPhrases(LIST).map((group) => [...group.ids].sort());
+  assert.deepEqual(groups, [
+    ["a1", "a2", "e1", "e2"],
+    ["n1", "n2"],
+  ]);
+});
+
+const ALIGNED_E2 = "2) ABD Posta Servisi tarafından yapılan posta kodu güncellemesinin ABD EPA’ya bildirilmesi ve EPA tarafından onaylanması";
+const ALIGNED_A2 = "Ek #2: ABD Posta Servisi tarafından yapılan posta kodu güncellemesinin ABD EPA’ya bildirilmesi ve EPA tarafından onaylanması";
+
+test("makes shared wording read the same, asking about one group at a time", async () => {
+  const prompts: string[] = [];
+  const ask = async (prompt: string) => {
+    prompts.push(prompt);
+    if (prompt.includes('"id":"e1"'))
+      return JSON.stringify({ changes: [{ id: "e2", translation: ALIGNED_E2 }, { id: "a2", translation: ALIGNED_A2 }] });
+    return JSON.stringify({ changes: [{ id: "n1", translation: "Mevcut ad ve adres: BASF Corporation", reason: "ad ve adres" }] });
+  };
+  const changes = await alignPhrases(LIST, { sourceLang: "en-US", targetLang: "tr-TR", ask });
+  assert.equal(prompts.length, 2);
+  assert.doesNotMatch(prompts[0], /"id":"n1"/);
+  assert.deepEqual(
+    changes.map(({ id, translation }) => [id, translation]),
+    [
+      ["e2", ALIGNED_E2],
+      ["a2", ALIGNED_A2],
+      ["n1", "Mevcut ad ve adres: BASF Corporation"],
+    ],
+  );
+});
+
+test("refuses a group rewrite that does not make the shared wording more alike", async () => {
+  const ask = async (prompt: string) =>
+    prompt.includes('"id":"e1"')
+      ? JSON.stringify({ changes: [{ id: "e2", translation: "2) ABD Posta Servisi’nin posta kodu güncellemesine dair EPA’ya bildirim ve EPA’dan onay" }] })
+      : JSON.stringify({ changes: [] });
+  assert.deepEqual(await alignPhrases(LIST, { sourceLang: "en-US", targetLang: "tr-TR", ask }), []);
+});
+
+test("a line that repeats word for word gets the aligned wording too", async () => {
+  const segments = [...LIST, seg("e2b", LIST[1].text, LIST[1].translation as string)];
+  const ask = async (prompt: string) => {
+    assert.doesNotMatch(prompt, /"id":"e2b"/);
+    return prompt.includes('"id":"e1"')
+      ? JSON.stringify({ changes: [{ id: "e2", translation: ALIGNED_E2 }, { id: "a2", translation: ALIGNED_A2 }] })
+      : JSON.stringify({ changes: [] });
+  };
+  const changes = await alignPhrases(segments, { sourceLang: "en-US", targetLang: "tr-TR", ask });
+  assert.deepEqual(changes.map((change) => change.id).sort(), ["a2", "e2", "e2b"]);
+});
+
+test("review keeps the aligned lines as they are when it harmonizes the rest", async () => {
+  const prompts: string[] = [];
+  const ask = async (prompt: string) => {
+    prompts.push(prompt);
+    if (prompt.includes("share wording") && prompt.includes('"id":"e1"'))
+      return JSON.stringify({ changes: [{ id: "e2", translation: ALIGNED_E2 }, { id: "a2", translation: ALIGNED_A2 }] });
+    if (prompt.includes("share wording")) return JSON.stringify({ changes: [] });
+    return JSON.stringify({ changes: [{ id: "e2", translation: "2) başka bir çeviri, ABD Posta Servisi" }] });
+  };
+  const result = await reviewDocument(LIST, { sourceLang: "en-US", targetLang: "tr-TR", ask });
+  assert.equal(result.segments.find((s) => s.id === "e2")?.translation, ALIGNED_E2);
+  assert.match(prompts.at(-1) as string, /"id":"e2"[^\n]*"locked":true/);
 });
 
 test("review puts addresses back, unifies repeats, then harmonizes", async () => {

@@ -47,6 +47,13 @@ test("translates only the country names in an address", () => {
   assert.equal(localizeCountries("United States", "tr-TR"), "Amerika Birleşik Devletleri");
 });
 
+test("a list item whose address parts are separated by dashes", () => {
+  const line = "- 3568 Tree Court Industrial Boulevard - St. Louis - Missouri - 63122 - USA";
+  assert.equal(isAddressLine(line), true);
+  assert.equal(localizeCountries(line, "tr-TR"), "- 3568 Tree Court Industrial Boulevard - St. Louis - Missouri - 63122 - ABD");
+  assert.equal(isAddressLine("- Confirmation from the US EPA to BASF"), false);
+});
+
 test("leaves a street that merely contains a country-like word alone", () => {
   assert.equal(localizeCountries("12 Jordan Street", "tr-TR"), "12 Jordan Street");
 });
