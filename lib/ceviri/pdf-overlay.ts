@@ -106,7 +106,7 @@ export type OverlayPlan = {
 };
 
 /** Planlama algoritmasının sürümü; planlamayı değiştiren her iyileştirmede artırılır. */
-export const PLAN_VERSION = 4;
+export const PLAN_VERSION = 5;
 
 /** Taranmış PDF için veritabanında saklanan düzen (`ceviri_documents.layout`). */
 export type ScanLayout = {
@@ -887,6 +887,22 @@ function looksHandwritten(site: Survey, rows: Row[], lines: OcrLine[]): boolean 
 }
 
 /**
+ * Satırın harf mürekkebinin ne kadarı yazı renginden (hafifçe de olsa) başka
+ * tonda: gerçek yazı satırında ≈ 0, imza kırıntısında yarıya yakın.
+ */
+function tintedShare(site: Survey, row: Row): number {
+  let total = 0;
+  let tinted = 0;
+  for (const index of row.members) {
+    if (!site.glyph[index]) continue;
+    const comp = site.comps[index];
+    total += comp.count;
+    if (hueDistance(comp.color, site.textColor) >= 0.08) tinted += comp.count;
+  }
+  return total ? tinted / total : 0;
+}
+
+/**
  * Taramadaki satırları OCR satırlarına sırayla eşler: her OCR satırı bir ya da
  * birkaç ardışık tarama satırına (paragrafta kırılan satır) düşer, hiçbir
  * satıra ait olmayan ince kırıntılar (yazıya değen imzanın parçaları) dışarıda
@@ -906,8 +922,14 @@ function alignRowsToLines(site: Survey, rows: Row[], lines: OcrLine[]): Row[][] 
   const dense = rows.filter((_, i) => parts[i] >= densest * 0.25).map((row) => row.v1 - row.v0);
   const typical = dense.length ? median(dense) : median(rows.map((row) => row.v1 - row.v0));
   // İnce ve seyrek satır kırıntıdır; atlanması neredeyse bedava. Gerçek bir
-  // yazı satırını atlamak ise pahalı: silinmeden kalırdı.
-  const skip = rows.map((row, i) => (row.v1 - row.v0 < typical * 0.6 && parts[i] < densest * 0.25 ? 0.02 : 5));
+  // yazı satırını atlamak ise pahalı: silinmeden kalırdı. Kısa ve mürekkebi
+  // yazı renginden sapan satır da kırıntıdır: mavi imzanın siyah imza
+  // çizgisine değdiği yerde tarama gri-mavi parçalar bırakır (BASF 1. sayfa:
+  // "Christine Keating" bu parçalara yazılmış, unvan isim satırını almıştı).
+  const debris = (row: Row, i: number) =>
+    (row.v1 - row.v0 < typical * 0.6 && parts[i] < densest * 0.25) ||
+    (row.v1 - row.v0 < typical * 0.8 && tintedShare(site, row) >= 0.3);
+  const skip = rows.map((row, i) => (debris(row, i) ? 0.02 : 5));
   const fit = (have: number, want: number) =>
     have >= want ? 0.15 * ((have - want) / want) : 2 * ((want - have) / want);
 

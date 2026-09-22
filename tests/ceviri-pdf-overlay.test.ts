@@ -656,3 +656,32 @@ test("a block does not take over the line of the block above it", async () => {
   assert.ok(top && below, "a line was not placed");
   assert.ok(below.area.v0 > 42, `second line starts at ${below.area.v0.toFixed(1)}, inside the first line`);
 });
+
+test("bluish bits of a signature above the name are not taken for the name's line", async () => {
+  // The OCR gives name, title and company as one block whose box also covers
+  // the signature. Where the blue ink meets the black signature line the
+  // scan blends it into small grey-blue bits, a short row above the name.
+  const debris: string[] = [];
+  for (let x = 182; x < 280; x += 4.5) {
+    debris.push(`<rect x="${x * PX}" y="${43.5 * PX}" width="${1.2 * PX}" height="${3 * PX}" fill="#6a7a92"/>`);
+  }
+  const extra =
+    debris.join("") +
+    `<rect x="${180 * PX}" y="${47.6 * PX}" width="${110 * PX}" height="${0.6 * PX}" fill="#111"/>` +
+    textLine(180, 212, 51, 4.2, 1.9) +
+    textLine(180, 252, 61, 4.2, 1.9) +
+    textLine(180, 234, 71, 4.2, 1.9);
+  const name = line("Christine Keating");
+  const title = line("Head of US Crop Protection Regulatory Affairs");
+  const company = line("BASF Agricultural Solutions US LLC");
+  const blocks: LayoutBlock[] = [
+    { kind: "paragraph", role: "text", page: 1, lines: [name, title, company], frame: frame(178, 30, 292, 80) },
+  ];
+  const plan = await planOverlay(await scannedPdf({ extra, bare: true }), blocks);
+  const top = itemFor(plan, name.id);
+  const below = itemFor(plan, title.id);
+  assert.ok(top && below, "a line was not placed");
+  const rect = (item: NonNullable<typeof top>) => [...item.erase, ...item.masks.map((mask) => mask.rect)];
+  assert.ok(Math.min(...rect(top).map((r) => r.v0)) > 47, "the name was placed on the signature's bits");
+  assert.ok(Math.min(...rect(below).map((r) => r.v0)) > 57, "the title took over the name's line");
+});
