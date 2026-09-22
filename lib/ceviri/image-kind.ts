@@ -17,6 +17,7 @@ const KINDS: readonly ImageKind[] = [
   "logo",
   "photo",
   "barcode",
+  "text",
 ];
 
 const PROMPT = [
@@ -28,6 +29,7 @@ const PROMPT = [
   "- logo: a company or institution logo",
   "- photo: a photograph, product picture, drawing or diagram",
   "- barcode: a barcode or QR code",
+  "- text: only printed or typed text (no signature, stamp or logo)",
   'Reply with JSON only: {"kind": "<label>"}',
 ].join("\n");
 
@@ -44,11 +46,56 @@ type ResponsesBody = {
 };
 
 /**
- * `dataUrl` bir "data:image/jpeg;base64,..." adresidir. Anahtar yoksa ya da
- * çağrı başarısızsa "unknown" döner: görsel Word'e olduğu gibi konur ve
- * inceleyene bildirilir — imza sanılıp silinmez, logo sanılıp uydurulmaz.
+ * `dataUrl` bir "data:image/jpeg;base64,..." adresidir. OpenAI yanıt vermezse
+ * (anahtar yok, kredi bitti, hata) aynı soru Mistral'in görsel modeline
+ * sorulur. İkisi de yanıt vermezse "unknown" döner: görsel olduğu gibi kalır
+ * ve inceleyene bildirilir — imza sanılıp silinmez, logo sanılıp uydurulmaz.
  */
 export async function classifyImage(dataUrl: string, model: string): Promise<ImageKind> {
+  const kind = await classifyWithOpenAI(dataUrl, model);
+  return kind === "unknown" ? classifyWithMistral(dataUrl) : kind;
+}
+
+async function classifyWithMistral(dataUrl: string): Promise<ImageKind> {
+  const key = process.env.MISTRAL_API_KEY?.trim();
+  if (!key) return "unknown";
+  try {
+    const response = await fetchWithRetry(
+      "https://api.mistral.ai/v1/chat/completions",
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: process.env.MISTRAL_VISION_MODEL?.trim() || "mistral-medium-latest",
+          response_format: { type: "json_object" },
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: PROMPT },
+                { type: "image_url", image_url: dataUrl },
+              ],
+            },
+          ],
+        }),
+        cache: "no-store",
+      },
+      {
+        upstream: "Mistral (görsel türü)",
+        timeoutMs: integerEnv("MISTRAL_TIMEOUT_MS", 60_000),
+        maxAttempts: 3,
+        retryUnsafe: true,
+      },
+    );
+    if (!response.ok) return "unknown";
+    const body = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    return parseImageKind(body.choices?.[0]?.message?.content ?? "");
+  } catch {
+    return "unknown";
+  }
+}
+
+async function classifyWithOpenAI(dataUrl: string, model: string): Promise<ImageKind> {
   const key = process.env.OPENAI_API_KEY?.trim();
   if (!key) return "unknown";
 

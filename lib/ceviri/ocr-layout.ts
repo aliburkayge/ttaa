@@ -26,6 +26,7 @@ export type ImageKind =
   | "logo"
   | "photo"
   | "barcode"
+  | "text"
   | "unknown";
 
 export type OcrLine = {
