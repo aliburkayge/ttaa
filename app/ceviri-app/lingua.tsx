@@ -111,6 +111,7 @@ function tagFor(source: string | null, engine?: string | null) {
     return { label, cls: styles.tagEngine };
   }
   if (source === "human") return { label: "DÜZELTİLDİ", cls: styles.tagTm };
+  if (source === "rule") return { label: "ADRES", cls: styles.tagTable };
   if (source === "untouched") return { label: "HATA", cls: styles.tagFail };
   return null;
 }

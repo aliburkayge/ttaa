@@ -1,4 +1,5 @@
 import { fetchWithRetry, integerEnv } from "../upstream";
+import { isAddressLine, localizeCountries } from "./address";
 import { searchTm, matchTier } from "./tm-store";
 import { lookupTerms, type TermHit } from "./term-store";
 import { keepUntranslated, missingProtected, tidyTarget, protectedSpans, suspiciousTarget, violatedTerms } from "./qa";
@@ -50,7 +51,9 @@ export async function askOpenAI(prompt: string, model: string): Promise<string> 
   return text;
 }
 
-export type SegmentSource = "tm-exact" | "tm-fuzzy" | "engine" | "untouched";
+export type SegmentSource = "tm-exact" | "tm-fuzzy" | "engine" | "rule" | "untouched";
+
+export const ADDRESS_NOTE = "Adres: çevrilmez, yalnızca ülke adı çevrilir (müşteri kuralı).";
 
 export type TranslatedSegment = {
   id: string;
@@ -141,6 +144,22 @@ export async function translateSegment(
     instructions?: string | null;
   },
 ): Promise<TranslatedSegment> {
+  // Müşteri kuralı: adres çevrilmez, yalnızca ülke adı. Bellekteki eski bir
+  // çeviri ("100 Park Caddesi") de kullanılmaz.
+  if (isAddressLine(segment.text)) {
+    return {
+      id: segment.id,
+      text: segment.text,
+      translation: localizeCountries(segment.text, options.targetLang),
+      source: "rule",
+      score: null,
+      terms: [],
+      forbidden: [],
+      note: ADDRESS_NOTE,
+      warning: null,
+    };
+  }
+
   const query = {
     sourceText: segment.text,
     sourceLang: options.sourceLang,
