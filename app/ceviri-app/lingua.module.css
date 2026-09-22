@@ -107,7 +107,9 @@
     #f2f3f7;
   filter: blur(17px);
   opacity: .85;
+  animation: orbFloat 6s ease-in-out infinite;
 }
+@keyframes orbFloat { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
 .helloTitle { font-size: 18px; font-weight: 500; color: var(--ink-soft); margin: 0; }
 .helloText { font-size: 14px; font-weight: 400; color: var(--ink-mute); margin: 4px 0 0; }
 
@@ -124,40 +126,6 @@
 }
 .chip:hover { border-color: #dcdce2; color: var(--ink); }
 
-.recent {
-  width: 100%;
-  max-width: 520px;
-  margin: 30px auto 0;
-  text-align: left;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.recentHead { font-size: 12px; color: var(--ink-mute); margin: 0 4px 4px; }
-.recentItem {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  width: 100%;
-  border: 1px solid var(--line);
-  background: var(--surface);
-  border-radius: 12px;
-  padding: 10px 14px;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  min-width: 0;
-}
-.recentItem:hover { border-color: #dcdce2; }
-.recentItem:disabled { cursor: default; opacity: .6; }
-.recentName {
-  font-size: 13.5px;
-  color: var(--ink);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.recentMeta { font-size: 12px; color: var(--ink-mute); }
 
 /* ---------- mesajlar ---------- */
 
@@ -264,11 +232,43 @@
 
 .dock { flex: 0 0 auto; padding: 0 20px 20px; }
 .dockInner { width: min(760px, 100%); margin: 0 auto; }
+/* Kutunun çevresinde Lingua'nın renkleri döner; yazarken hızlanır ve parlar. */
+@property --ring {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+@keyframes ringSpin { to { --ring: 360deg; } }
 .composer {
+  position: relative;
   background: var(--surface);
   border-radius: 24px;
   box-shadow: var(--lift);
   padding: 16px;
+}
+.composer::before,
+.composer::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  z-index: -1;
+  border-radius: 26px;
+  background: conic-gradient(from var(--ring), #c9b8ff, #ffc2d1, #ffe0b8, #a8e6d0, #bcd4ff, #c9b8ff);
+  animation: ringSpin 6s linear infinite;
+  pointer-events: none;
+}
+.composer::after {
+  inset: -10px;
+  border-radius: 34px;
+  filter: blur(18px);
+  opacity: .4;
+  transition: opacity .4s;
+}
+.composer:focus-within::after, .composerDrag::after { opacity: .85; }
+.composer:focus-within::before, .composer:focus-within::after,
+.composerDrag::before, .composerDrag::after { animation-duration: 2.5s; }
+@media (prefers-reduced-motion: reduce) {
+  .composer::before, .composer::after { animation: none; }
 }
 .composerDrag { box-shadow: var(--lift), 0 0 0 2px #c9b8ff inset; }
 .composerText {
@@ -280,15 +280,12 @@
   background: var(--surface); color: var(--ink-soft); cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center; font-size: 14px;
 }
-.iconBtn:hover { border-color: #dcdce2; color: var(--ink); }
+.iconBtn { transition: transform .2s, border-color .2s; }
+.iconBtn:hover:not(:disabled) { border-color: #dcdce2; color: var(--ink); transform: rotate(-12deg); }
 .iconBtn:disabled { opacity: .4; cursor: default; }
 .model {
   font-size: 12.5px; color: var(--ink-mute); padding-left: 3px;
   display: inline-flex; align-items: center; gap: 6px;
-}
-.langPick {
-  border: 1px solid var(--line); border-radius: 999px; background: var(--surface);
-  color: var(--ink-soft); font: inherit; font-size: 12.5px; padding: 6px 9px; cursor: pointer;
 }
 .send {
   margin-left: auto; width: 36px; height: 36px; border-radius: 999px; border: 0; cursor: pointer;
@@ -298,6 +295,8 @@
     radial-gradient(circle at 44% 74%, #9fe3cb 0%, transparent 58%),
     #e6e8ef;
 }
+.send { transition: transform .2s; }
+.send:hover:not(:disabled) { transform: scale(1.08); }
 .send:disabled { opacity: .5; cursor: default; }
 
 .err {
@@ -313,6 +312,8 @@
   .seg { grid-template-columns: 1fr; }
   .segSrc { border-right: 0; border-bottom: 1px solid var(--line-soft); }
   .streamInner, .dockInner { padding-left: 14px; padding-right: 14px; }
+  /* Dar ekranda motor yolu yazısı sığmaz; dil seçiciler ve gönder düğmesi kalır. */
+  .model { display: none; }
 }
 
 .ocrWarn {

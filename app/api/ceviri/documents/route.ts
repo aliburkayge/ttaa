@@ -8,6 +8,7 @@ import { IMAGE_FORMATS, imageFormat, imageToPdf } from "../../../../lib/ceviri/i
 import { classifyDefault } from "../../../../lib/ceviri/image-kind";
 import { activeOcrProvider, isPdf, ocrToSegments } from "../../../../lib/ceviri/ocr";
 import type { MarkKind } from "../../../../lib/ceviri/marks";
+import { escapeLike, KIND_PATTERNS, parseLibraryQuery, toLibraryItem } from "../../../../lib/ceviri/library";
 import { layoutStats } from "../../../../lib/ceviri/ocr-layout";
 import { planOverlay, type OverlayPlan, type ScanLayout } from "../../../../lib/ceviri/pdf-overlay";
 
@@ -34,30 +35,48 @@ type ParsedSegment = {
   mark?: MarkKind | null;
 };
 
-/** Son belgeler: kaldığı yerden devam edebilmek için. */
-export async function GET() {
+/**
+ * Kütüphane: belgeler en yeniden eskiye, 30'ar 30'ar (`offset`, `limit`),
+ * dosya adında arama (`q`) ve türe göre süzme (`kind`: pdf, word, image).
+ * `count` süzmeye uyan bütün belgelerin sayısıdır. `stats=1` ile kütüphane
+ * başlığındaki sayılar da gelir.
+ */
+export async function GET(request: Request) {
   try {
     await requireAdminSession();
-    const { data, error } = await getCeviriSupabase()
+    const params = new URL(request.url).searchParams;
+    const query = parseLibraryQuery(params);
+    const supabase = getCeviriSupabase();
+
+    let select = supabase
       .from("ceviri_documents")
-      .select("id, filename, created_at, source_lang, target_lang, segments")
+      .select("id, filename, created_at, source_lang, target_lang, stats, segments", { count: "exact" })
       .order("created_at", { ascending: false })
-      .limit(20);
+      .range(query.offset, query.offset + query.limit - 1);
+    if (query.q) select = select.ilike("filename", `%${escapeLike(query.q)}%`);
+    if (query.kind !== "all") {
+      select = select.or(KIND_PATTERNS[query.kind].map((pattern) => `filename.ilike.${pattern.replace(/%/g, "*")}`).join(","));
+    }
+    const { data, error, count } = await select;
     if (error) throw new Error(error.message);
-    return NextResponse.json({
-      documents: (data ?? []).map((doc) => {
-        const segments = (doc.segments ?? []) as Array<{ translation: string | null }>;
-        return {
-          id: doc.id,
-          filename: doc.filename,
-          created_at: doc.created_at,
-          source_lang: doc.source_lang,
-          target_lang: doc.target_lang,
-          total: segments.length,
-          translated: segments.filter((segment) => segment.translation !== null).length,
-        };
-      }),
-    });
+
+    let stats: { total: number; today: number; week: number } | undefined;
+    if (params.get("stats") === "1") {
+      const now = new Date();
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const since = (from: Date | null) => {
+        const head = supabase.from("ceviri_documents").select("id", { count: "exact", head: true });
+        return from ? head.gte("created_at", from.toISOString()) : head;
+      };
+      const [all, day, week] = await Promise.all([
+        since(null),
+        since(today),
+        since(new Date(today.getTime() - 6 * 86_400_000)),
+      ]);
+      stats = { total: all.count ?? 0, today: day.count ?? 0, week: week.count ?? 0 };
+    }
+
+    return NextResponse.json({ documents: (data ?? []).map(toLibraryItem), count: count ?? 0, stats });
   } catch (error) {
     if (error instanceof Error && error.message === "UNAUTHORIZED") {
       return NextResponse.json({ error: "Oturumunuz sona erdi." }, { status: 401 });

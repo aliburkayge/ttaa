@@ -2,7 +2,11 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { LibraryItem } from "../../lib/ceviri/library";
 import { markLabels, markNote, type MarkKind } from "../../lib/ceviri/marks";
+import { AllDocsCard, DocCard, QuickView } from "./doc-card";
+import LanguagePicker from "./language-picker";
+import cards from "./library.module.css";
 import styles from "./lingua.module.css";
 
 type Segment = {
@@ -64,17 +68,8 @@ type Doc = {
   chat?: ChatMessage[] | null;
 };
 
-const LANGS = ["en-US", "tr-TR", "de-DE", "ru-RU", "es-ES", "it-IT", "el-GR", "pl-PL"];
-
-type RecentDoc = {
-  id: string;
-  filename: string;
-  created_at: string;
-  source_lang: string;
-  target_lang: string;
-  total: number;
-  translated: number;
-};
+/** Ana sayfada gösterilen son belge sayısı; hepsi kütüphanede. */
+const RECENT = 5;
 
 /** Kabul edilen dosyalar: Word, PDF ve görsel. Çıktı her zaman aynı biçimde döner. */
 const ACCEPT = ".docx,.pdf,.jpg,.jpeg,.png,.webp,.tif,.tiff";
@@ -143,7 +138,11 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [ocrWarning, setOcrWarning] = useState<string | null>(null);
   const [ocrDemo, setOcrDemo] = useState(false);
-  const [recent, setRecent] = useState<RecentDoc[] | null>(null);
+  const [recent, setRecent] = useState<LibraryItem[] | null>(null);
+  const [libraryCount, setLibraryCount] = useState(0);
+  const [peek, setPeek] = useState<LibraryItem | null>(null);
+  const [swapped, setSwapped] = useState(false);
+  const [now, setNow] = useState(() => new Date());
   const [downloading, setDownloading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -166,9 +165,13 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
 
   const loadRecent = useCallback(async () => {
     try {
-      const res = await fetch("/api/ceviri/documents");
+      const res = await fetch(`/api/ceviri/documents?limit=${RECENT}`);
       const payload = await res.json();
-      if (res.ok) setRecent(payload.documents as RecentDoc[]);
+      if (res.ok) {
+        setRecent(payload.documents as LibraryItem[]);
+        setLibraryCount(Number(payload.count) || 0);
+        setNow(new Date());
+      }
     } catch {
       setRecent([]);
     }
@@ -424,6 +427,7 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
           Lingua
         </Link>
         <span className={styles.topSpacer} />
+        <Link className={styles.topLink} href="/ceviri-app/kutuphane">Kütüphane</Link>
         <Link className={styles.topLink} href="/ceviri-app/bellek">Bellek</Link>
         <Link className={styles.topLink} href="/">Panel</Link>
       </div>
@@ -447,24 +451,29 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
                 <Link className={styles.chip} href="/ceviri-app/bellek">Bellekte ara</Link>
               </div>
               {recent && recent.length > 0 && (
-                <div className={styles.recent}>
-                  <div className={styles.recentHead}>Son belgeler — kaldığınız yerden devam edin</div>
-                  {recent.map((item) => (
-                    <button
-                      className={styles.recentItem}
-                      type="button"
-                      key={item.id}
-                      onClick={() => void open(item.id)}
-                      disabled={busy !== null}
-                    >
-                      <span className={styles.recentName}>{item.filename}</span>
-                      <span className={styles.recentMeta}>
-                        {item.source_lang} → {item.target_lang} ·{" "}
-                        {item.translated === item.total ? "çevrildi" : `${item.translated}/${item.total} çevrildi`} ·{" "}
-                        {new Date(item.created_at).toLocaleString("tr-TR", { dateStyle: "short", timeStyle: "short" })}
-                      </span>
-                    </button>
-                  ))}
+                <div className={`${cards.tokens} ${cards.recent}`}>
+                  <div className={cards.recentHead}>
+                    <b>Kaldığınız yerden devam edin</b>
+                    <span>son {Math.min(RECENT, recent.length)} belge</span>
+                    <Link className={cards.all} href="/ceviri-app/kutuphane">
+                      Kütüphane <i>→</i>
+                    </Link>
+                  </div>
+                  <div className={cards.row}>
+                    {recent.slice(0, RECENT).map((item, index) => (
+                      <DocCard
+                        key={item.id}
+                        doc={item}
+                        index={index}
+                        now={now}
+                        onOpen={(picked) => {
+                          if (busy === null) void open(picked.id);
+                        }}
+                        onPeek={setPeek}
+                      />
+                    ))}
+                    <AllDocsCard count={libraryCount} index={Math.min(RECENT, recent.length)} />
+                  </div>
                 </div>
               )}
             </div>
@@ -784,25 +793,24 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
               >
                 📎
               </button>
-              <select
-                className={styles.langPick}
-                value={sourceLang}
-                onChange={(event) => setSourceLang(event.target.value)}
-                aria-label="Kaynak dil"
-                disabled={doc !== null}
-              >
-                {LANGS.map((lang) => <option key={lang} value={lang}>{lang}</option>)}
-              </select>
-              <span className={styles.model}>→</span>
-              <select
-                className={styles.langPick}
-                value={targetLang}
-                onChange={(event) => setTargetLang(event.target.value)}
-                aria-label="Hedef dil"
-                disabled={doc !== null}
-              >
-                {LANGS.map((lang) => <option key={lang} value={lang}>{lang}</option>)}
-              </select>
+              <div className={cards.tokens} style={{ display: "contents" }}>
+                <LanguagePicker label="Kaynak dil" value={sourceLang} onChange={setSourceLang} disabled={doc !== null} />
+                <button
+                  className={swapped ? `${cards.swap} ${cards.swapTurned}` : cards.swap}
+                  type="button"
+                  title="Dilleri değiştir"
+                  aria-label="Kaynak ve hedef dili değiştir"
+                  disabled={doc !== null}
+                  onClick={() => {
+                    setSourceLang(targetLang);
+                    setTargetLang(sourceLang);
+                    setSwapped((current) => !current);
+                  }}
+                >
+                  ⇄
+                </button>
+                <LanguagePicker label="Hedef dil" value={targetLang} onChange={setTargetLang} disabled={doc !== null} />
+              </div>
               <span
                 className={styles.model}
                 title="Önce çeviri belleği; bellekte olmayan cümleler açık motorlara gider, kurallara göre biri seçilir."
@@ -820,6 +828,16 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
           </div>
         </div>
       </div>
+      {peek && (
+        <QuickView
+          doc={peek}
+          onClose={() => setPeek(null)}
+          onOpen={(picked) => {
+            setPeek(null);
+            void open(picked.id);
+          }}
+        />
+      )}
     </div>
   );
 }
