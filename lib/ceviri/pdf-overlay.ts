@@ -626,10 +626,61 @@ function survey(frame: Frame, context: Rect, rowRegion: Rect): Survey {
       });
     if (!members.length) continue;
 
-    rows.push(makeRow(grid, labels, comps, members));
+    for (const line of splitLines(members, band, typical)) rows.push(makeRow(grid, labels, comps, line));
   }
 
   return { grid, labels, comps, glyph, textColor, paper, rows: rows.sort((a, b) => a.v0 - b.v0) };
+
+  /**
+   * Tek satır aralıklı metinde bir satırın kuyrukları (g, p, y) sonrakinin
+   * uzun harflerine değer; satırlar arasında boş piksel satırı kalmaz ve
+   * paragraf tek bir bant görünür (BASF 6. sayfa: 3 satır tek 37 puntoluk
+   * "satır" ölçülüp 26 punto yazılıyordu). Satırın gövdesi (x yüksekliği)
+   * izdüşümde belirgin bir tepe, satır arası belirgin bir çukurdur; çukur
+   * sıfıra inmese de. Bant çukurlardan bölünür.
+   */
+  function splitLines(members: number[], band: { from: number; to: number }, typical: number): number[][] {
+    if ((band.to - band.from + 1) * step <= typical * 1.8) return [members];
+    const raw = perRow.slice(band.from, band.to + 1);
+    const win = Math.max(1, Math.round((typical * 0.15) / step));
+    const smooth = raw.map((_, k) => {
+      let sum = 0;
+      let count = 0;
+      for (let d = -win; d <= win; d++) {
+        const value = raw[k + d];
+        if (value === undefined) continue;
+        sum += value;
+        count++;
+      }
+      return sum / count;
+    });
+    const highest = Math.max(...smooth);
+    const minGap = Math.round((typical * 0.9) / step);
+    const peaks: number[] = [];
+    for (let k = 0; k < smooth.length; k++) {
+      if (smooth[k] < highest * 0.45) continue;
+      if (smooth[k] < (smooth[k - 1] ?? -1) || smooth[k] < (smooth[k + 1] ?? -1)) continue;
+      const last = peaks[peaks.length - 1];
+      if (last !== undefined && k - last < minGap) {
+        if (smooth[k] > smooth[last]) peaks[peaks.length - 1] = k;
+      } else {
+        peaks.push(k);
+      }
+    }
+    const cuts: number[] = [];
+    for (let p = 0; p + 1 < peaks.length; p++) {
+      let low = peaks[p];
+      for (let k = peaks[p]; k <= peaks[p + 1]; k++) if (smooth[k] < smooth[low]) low = k;
+      if (smooth[low] < Math.min(smooth[peaks[p]], smooth[peaks[p + 1]]) * 0.5) cuts.push(band.from + low);
+    }
+    if (!cuts.length) return [members];
+    const groups: number[][] = cuts.map(() => []).concat([[]]);
+    for (const i of members) {
+      const cy = (comps[i].y0 + comps[i].y1) / 2;
+      groups[cuts.filter((cut) => cut < cy).length].push(i);
+    }
+    return groups.filter((group) => group.length > 0);
+  }
 }
 
 function makeRow(grid: Grid, labels: Int32Array, comps: Component[], members: number[]): Row {
@@ -1374,6 +1425,50 @@ const SINGLE_LINE_CORE_RATIO = 1 / 0.72;
 /** Tek satır aralıklı yazıda satır aralığı ≈ 1,15 em (Word'ün "tek" aralığı). */
 const LEADING_EM = 1.15;
 
+/**
+ * Bir sayfada yazı birkaç puntoda yazılır: gövde, başlık, dipnot. Tek tek
+ * ölçümler gürültülüdür (imza değen satır, kuyruksuz kısa satır); aynı
+ * paragraf stilindeki satırların farklı puntoda yazılması yazıyı dalgalı
+ * gösterir (müşteri: "punto ve font orijinaldeki gibi olmalı"). Sayfanın
+ * ağırlıklı punto kümeleri bulunur; bir kümeye %16'dan yakın ölçüm o kümenin
+ * puntosuna çekilir. Gerçekten farklı puntolar (başlık, dipnot) kalır.
+ */
+export function snapSizes(items: Array<{ page: number; size: number; weight: number }>): number[] {
+  const result = items.map((item) => item.size);
+  for (const page of new Set(items.map((item) => item.page))) {
+    const onPage = items
+      .map((item, index) => ({ ...item, index }))
+      .filter((item) => item.page === page)
+      .sort((a, b) => a.size - b.size);
+    const total = onPage.reduce((sum, item) => sum + item.weight, 0);
+    const clusters: Array<typeof onPage> = [];
+    for (const item of onPage) {
+      const last = clusters[clusters.length - 1];
+      if (last && item.size <= last[last.length - 1].size * 1.06) last.push(item);
+      else clusters.push([item]);
+    }
+    const centers = clusters
+      .filter((cluster) => cluster.reduce((sum, item) => sum + item.weight, 0) >= total * 0.25)
+      .map((cluster) => {
+        const half = cluster.reduce((sum, item) => sum + item.weight, 0) / 2;
+        let seen = 0;
+        for (const item of cluster) {
+          seen += item.weight;
+          if (seen >= half) return item.size;
+        }
+        return cluster[cluster.length - 1].size;
+      });
+    for (const item of onPage) {
+      let nearest: number | null = null;
+      for (const center of centers) {
+        if (nearest === null || Math.abs(center - item.size) < Math.abs(nearest - item.size)) nearest = center;
+      }
+      if (nearest !== null && Math.abs(item.size / nearest - 1) <= 0.16) result[item.index] = nearest;
+    }
+  }
+  return result;
+}
+
 function medianOrNull(values: number[]): number | null {
   return values.length ? median(values) : null;
 }
@@ -1454,7 +1549,11 @@ function sizeSingleLines(measured: Measured[]): Array<{ size: number; leading: n
     // ortancası. Satır aralığı her zaman 1,15 em değildir (adres blokları
     // çoğu zaman daha açık yazılır); yalnızca harf ölçüsü yoksa ondan çıkarılır.
     const measuredSizes = chain.filter((member) => measured[member].core).map((member) => result[member].size);
-    const size = measuredSizes.length * 2 >= chain.length ? median(measuredSizes) : leading / LEADING_EM;
+    // Yazı kendi satır aralığından büyük olamaz: imza değen satırda harf ölçüsü şişer.
+    const size = Math.min(
+      measuredSizes.length * 2 >= chain.length ? median(measuredSizes) : leading / LEADING_EM,
+      leading / 1.05,
+    );
     for (const member of chain) result[member] = { size, leading };
   }
   return result;
@@ -2006,8 +2105,14 @@ export async function planOverlay(
   }
 
   const sizes = sizeSingleLines(measured);
+  const raw = measured.map((item, index) =>
+    item.column ? median(byColumn.get(item.column) ?? [item.estimate]) : sizes[index].size,
+  );
+  const inkWidth = (item: Measured) =>
+    [...item.erase, ...item.masks.map((mask) => mask.rect)].reduce((sum, rect) => sum + (rect.u1 - rect.u0), 0);
+  const snapped = snapSizes(measured.map((item, index) => ({ page: item.page, size: raw[index], weight: inkWidth(item) || 1 })));
   const sized = measured.map((item, index) => {
-    const size = item.column ? median(byColumn.get(item.column) ?? [item.estimate]) : sizes[index].size;
+    const size = snapped[index];
     return {
       page: item.page,
       lineIds: item.lineIds,
@@ -2233,6 +2338,10 @@ export async function renderOverlay(
     return page;
   };
 
+  // Önce bütün yamalar, sonra bütün yazılar: sonraki satırın yaması, alttaki
+  // boş kağıda taşan bir önceki satırın harflerini kesmesin (BASF 6. sayfa:
+  // harflerin alt yarısı yamanın altında kalıyor, yazı dalgalı görünüyordu).
+  const writers: Array<() => Promise<void>> = [];
   // İşaretler önce: bölgeyi silerler, üstüne değen satırlar ardından yazılır.
   const ordered = [...plan.items].sort((a, b) => Number(Boolean(b.mark)) - Number(Boolean(a.mark)));
   for (const item of ordered) {
@@ -2297,6 +2406,7 @@ export async function renderOverlay(
       });
     }
 
+    writers.push(async () => {
     const font = await fontFor(item.family ?? "serif", item.bold);
     const width = item.area.u1 - item.area.u0;
     const height = item.area.v1 - item.area.v0;
@@ -2305,10 +2415,8 @@ export async function renderOverlay(
     );
     const content = item.mark ? markText(item.mark, options.targetLang ?? "en", texted) : texted;
 
-    // Sığdırma sırası: önce kendi alanında en çok %20 küçülerek; olmazsa
-    // alttaki boş kağıda taşarak; o da olmazsa daha çok küçülerek. Uzun bir
-    // unvan eskiden kendi dar şeridine 5 puntoya kadar küçültülüp iki satıra
-    // sıkıştırılıyordu.
+    // Punto orijinaldeki gibi kalır (müşteri): uzun çeviri önce aynı puntoyla
+    // alttaki boş kağıda taşar. Küçültme yalnızca son çaredir; önce en çok %10.
     const fitWithin = (limit: number, floor: number) => {
       for (let trial = item.fontSize; trial >= floor - 1e-6; trial -= 0.25) {
         const trialLeading = item.leading * (trial / item.fontSize);
@@ -2322,8 +2430,9 @@ export async function renderOverlay(
     };
     const room = item.room ?? 0;
     const fitted =
-      fitWithin(height, item.fontSize * 0.8) ??
-      fitWithin(height + room, item.fontSize * 0.8) ??
+      fitWithin(height, item.fontSize) ??
+      fitWithin(height + room, item.fontSize) ??
+      fitWithin(height + room, item.fontSize * 0.9) ??
       fitWithin(height + room, 4.5) ?? {
         size: 4.5,
         leading: item.leading * (4.5 / item.fontSize),
@@ -2356,7 +2465,9 @@ export async function renderOverlay(
         });
       }
     });
+    });
   }
+  for (const write of writers) await write();
 
   await (scan as Awaited<ReturnType<typeof openScan>> | null)?.close();
   return doc.save();

@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { degrees, PDFArray, PDFDocument, PDFName, PDFRawStream } from "pdf-lib";
 import sharp from "sharp";
+import { inflateSync } from "node:zlib";
 import type { LayoutBlock, OcrLine } from "../lib/ceviri/ocr-layout.ts";
-import { planOverlay, renderOverlay, subtractRects, type OverlayPlan, type Rect } from "../lib/ceviri/pdf-overlay.ts";
+import { planOverlay, renderOverlay, snapSizes, subtractRects, type OverlayPlan, type Rect } from "../lib/ceviri/pdf-overlay.ts";
 import { displayToPage, imagePlacement, loadScanPages, renderPdfPage, unpackGray1bpp } from "../lib/ceviri/pdf-scan.ts";
 
 /**
@@ -28,7 +29,7 @@ function bar(x0: number, y0: number, x1: number, y1: number) {
   return strokes.join("");
 }
 
-function scanSvg(skewDegrees: number, extra = ""): string {
+function scanSvg(skewDegrees: number, extra = "", bare = false): string {
   const line = (x0: number, y0: number, x1: number, y1: number) =>
     `<line x1="${x0 * PX}" y1="${y0 * PX}" x2="${x1 * PX}" y2="${y1 * PX}" stroke="#000" stroke-width="${0.8 * PX}"/>`;
   const t = TABLE;
@@ -53,12 +54,12 @@ function scanSvg(skewDegrees: number, extra = ""): string {
   const cy = (PAGE.height * PX) / 2;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${PAGE.width * PX}" height="${PAGE.height * PX}">
 <rect width="100%" height="100%" fill="#fbfaf7"/>
-<g transform="rotate(${skewDegrees} ${cx} ${cy})">${parts.join("")}${extra}</g></svg>`;
+<g transform="rotate(${skewDegrees} ${cx} ${cy})">${bare ? "" : parts.join("")}${extra}</g></svg>`;
 }
 
 /** `rotated`: stored landscape and shown upright through /Rotate 270, like the customer's scans. */
-async function scannedPdf(options: { skew?: number; rotated?: boolean; extra?: string } = {}): Promise<Uint8Array> {
-  let image = sharp(Buffer.from(scanSvg(options.skew ?? 0, options.extra)));
+async function scannedPdf(options: { skew?: number; rotated?: boolean; extra?: string; bare?: boolean } = {}): Promise<Uint8Array> {
+  let image = sharp(Buffer.from(scanSvg(options.skew ?? 0, options.extra, options.bare)));
   if (options.rotated) image = image.rotate(90);
   const jpeg = await image.jpeg({ quality: 92 }).toBuffer();
 
@@ -522,4 +523,103 @@ test("takes a line the OCR read out of the signature itself off the page", async
   assert.equal(itemFor(plan, misread.id), undefined, "the misread signature would be written as text");
   assert.match(plan.unplaced.find((entry) => entry.id === misread.id)?.reason ?? "", /İmzanın kendisi/);
   assert.ok(itemFor(plan, LINES.title.id), "the printed title was taken with it");
+});
+
+// ---------- sıkı satır aralıklı paragraf (BASF 6. sayfa) ----------
+
+/**
+ * A line of lowercase text with ascenders and descenders: in single-spaced
+ * text the descenders of one line reach the ascenders of the next, so there is
+ * no blank pixel row between the lines at all.
+ */
+function textLine(x0: number, x1: number, top: number, xHeight: number, reach: number): string {
+  const strokes: string[] = [];
+  let i = 0;
+  for (let x = x0; x + 0.7 <= x1; x += 1.6, i++) {
+    const y0 = i % 4 === 0 ? top - reach : top;
+    const y1 = i % 5 === 0 ? top + xHeight + reach : top + xHeight;
+    strokes.push(`<rect x="${x * PX}" y="${y0 * PX}" width="${0.7 * PX}" height="${(y1 - y0) * PX}" fill="#111"/>`);
+  }
+  return strokes.join("");
+}
+
+test("tells apart the lines of a single-spaced paragraph whose descenders touch the next line", async () => {
+  const tops = [38, 45, 52];
+  const extra = tops.map((top) => textLine(30, 270, top, 4.2, 1.9)).join("");
+  const paragraph = line("The United States Postal Service recently changed the zip code for the address");
+  const blocks: LayoutBlock[] = [{ kind: "paragraph", role: "text", page: 1, lines: [paragraph], frame: frame(28, 35, 272, 58.5) }];
+  const plan = await planOverlay(await scannedPdf({ extra }), blocks);
+  const item = itemFor(plan, paragraph.id);
+  assert.ok(item, "paragraph was not placed");
+  assert.ok(Math.abs(item.leading - 7) < 0.7, `line spacing ${item.leading.toFixed(2)}, the lines are 7 pt apart`);
+  assert.ok(item.fontSize > 5 && item.fontSize < 7.5, `font size ${item.fontSize}`);
+  assert.equal(item.erase.length + item.masks.length >= 3, true, "each line should be erased on its own");
+});
+
+function streamText(stream: PDFRawStream): string {
+  const raw = Buffer.from(stream.getContents());
+  const filter = String(stream.dict.get(PDFName.of("Filter")) ?? "");
+  return (filter.includes("FlateDecode") ? inflateSync(raw) : raw).toString("latin1");
+}
+
+test("writes a longer translation at the original size, running on into the blank paper below", async () => {
+  const tops = [38, 45, 52];
+  const extra = tops.map((top) => textLine(30, 270, top, 4.2, 1.9)).join("");
+  const paragraph = line("The United States Postal Service recently changed the zip code for the address");
+  const blocks: LayoutBlock[] = [{ kind: "paragraph", role: "text", page: 1, lines: [paragraph], frame: frame(28, 35, 272, 58.5) }];
+  // Nothing below the paragraph but paper.
+  const pdf = await scannedPdf({ extra, bare: true });
+  const plan = await planOverlay(pdf, blocks);
+  const item = itemFor(plan, paragraph.id)!;
+  assert.ok((item.room ?? 0) > 20, `room below ${item.room}`);
+  // Four lines' worth of translation into a three-line paragraph.
+  const long = "Amerika Birleşik Devletleri Posta Servisi kısa süre önce adresin posta kodunu değiştirmiştir; ".repeat(4).trim();
+  const out = await renderOverlay(pdf, plan, new Map([[paragraph.id, { source: paragraph.text, translation: long }]]));
+  const doc = await PDFDocument.load(out);
+  const content = contentStreams(doc);
+  assert.ok(content > 0);
+  // The size the text was drawn at is in the content stream as "<size> Tf".
+  const streams = [...doc.context.enumerateIndirectObjects()]
+    .filter(([, object]) => object instanceof PDFRawStream)
+    .map(([, object]) => streamText(object as PDFRawStream));
+  const sizes = streams.flatMap((text) => [...text.matchAll(/([\d.]+) Tf/g)].map((match) => Number(match[1])));
+  assert.ok(sizes.length > 0, "no text drawn");
+  for (const size of sizes) assert.ok(Math.abs(size - item.fontSize) < 0.01, `drawn at ${size}, measured ${item.fontSize}`);
+});
+
+test("draws every patch before any text, so a patch never cuts through a neighbour's letters", async () => {
+  const pdf = await scannedPdf();
+  const plan = await planOverlay(pdf, BLOCKS.filter((block) => block.kind !== "image"));
+  const texts = new Map(Object.values(LINES).map((l) => [l.id, { source: l.text, translation: `${l.text} çeviri` }]));
+  const doc = await PDFDocument.load(await renderOverlay(pdf, plan, texts));
+  const contents = doc.getPages()[0].node.Contents();
+  const streams = contents instanceof PDFArray ? contents.asArray().map((ref) => doc.context.lookup(ref)) : [contents];
+  const ops = streams
+    .filter((stream): stream is PDFRawStream => stream instanceof PDFRawStream)
+    .map(streamText)
+    .join("\n");
+  const lastImage = ops.lastIndexOf(" Do");
+  const firstText = ops.indexOf("BT");
+  assert.ok(firstText > 0 && lastImage > 0);
+  assert.ok(lastImage < firstText, "a paper patch is drawn after some text");
+});
+
+test("brings stray single-line measurements back to the page's own text size", () => {
+  const body = { page: 1, weight: 100 };
+  const items = [
+    { ...body, size: 11.25 },
+    { ...body, size: 11.25 },
+    { ...body, size: 11.0 },
+    { ...body, size: 12.75 }, // measurement noise
+    { ...body, size: 10.25 },
+    { page: 1, size: 8.75, weight: 90 }, // footer: a real, smaller size
+    { page: 1, size: 8.75, weight: 90 },
+    { page: 1, size: 16, weight: 20 }, // heading: really larger
+    { page: 2, size: 12.75, weight: 100 }, // another page, its own sizes
+  ];
+  const snapped = snapSizes(items);
+  assert.deepEqual(snapped.slice(0, 5), [11.25, 11.25, 11.25, 11.25, 11.25]);
+  assert.deepEqual(snapped.slice(5, 7), [8.75, 8.75]);
+  assert.equal(snapped[7], 16);
+  assert.equal(snapped[8], 12.75);
 });
