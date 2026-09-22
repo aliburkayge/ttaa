@@ -685,3 +685,41 @@ test("bluish bits of a signature above the name are not taken for the name's lin
   assert.ok(Math.min(...rect(top).map((r) => r.v0)) > 47, "the name was placed on the signature's bits");
   assert.ok(Math.min(...rect(below).map((r) => r.v0)) > 57, "the title took over the name's line");
 });
+
+test("a translation running on into the paper below keeps a gap before the next line", async () => {
+  const NEXT = 76;
+  const tops = [30, 42, 54];
+  const extra = tops.map((top) => textLine(30, 270, top, 7, 3)).join("") + textLine(30, 200, NEXT, 7, 3);
+  const paragraph = line("The United States Postal Service recently changed the zip code for the address");
+  const next = line("Registration Division");
+  const blocks: LayoutBlock[] = [
+    { kind: "paragraph", role: "text", page: 1, lines: [paragraph], frame: frame(28, 26, 272, 65) },
+    { kind: "paragraph", role: "text", page: 1, lines: [next], frame: frame(28, NEXT - 3.5, 202, NEXT + 10.5) },
+  ];
+  const pdf = await scannedPdf({ extra, bare: true });
+  const plan = await planOverlay(pdf, blocks);
+  const item = itemFor(plan, paragraph.id)!;
+  const below = itemFor(plan, next.id)!;
+  // Two lines more than the original three: it shrinks and also runs on below.
+  const long = "posta kodu değişti ".repeat(15).trim();
+  const out = await renderOverlay(
+    pdf,
+    plan,
+    new Map([
+      [paragraph.id, { source: paragraph.text, translation: long }],
+      [next.id, { source: next.text, translation: "Tescil Bölümü" }],
+    ]),
+  );
+  const doc = await PDFDocument.load(out);
+  const drawn = [...doc.context.enumerateIndirectObjects()]
+    .filter(([, object]) => object instanceof PDFRawStream)
+    .map(([, object]) => streamText(object as PDFRawStream))
+    .flatMap((text) => [...text.matchAll(/([\d.]+) Tf[\s\S]*?([\d.-]+) ([\d.-]+) Tm/g)])
+    .map((match) => ({ size: Number(match[1]), v: PAGE.height - Number(match[3]) }))
+    .sort((a, b) => a.v - b.v);
+  const last = drawn.filter((entry) => entry.v < below.area.v0).at(-1)!;
+  assert.ok(last, "the paragraph was not drawn");
+  const bottom = last.v + last.size * 0.22;
+  const gap = below.area.v0 + 1 - bottom;
+  assert.ok(gap >= item.leading * 0.2 - 0.25, `only ${gap.toFixed(2)} pt left before the next line (leading ${item.leading.toFixed(2)})`);
+});

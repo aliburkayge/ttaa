@@ -2469,7 +2469,11 @@ export async function renderOverlay(
       }
       return null;
     };
-    const room = item.room ?? 0;
+    // Alttaki boşluğa taşan yazı bir sonraki satıra yapışmaz: arada satır
+    // aralığının en az beşte biri kalır (BASF 2. sayfa: uzayan ek başlığının
+    // son satırı alttaki maddelere değiyordu). Pay, sığma ölçüsünün
+    // yuvarlamasını da karşılar: yazının dibi ≈ 0,94 punto, ölçü 0,9 sayar.
+    const room = Math.max(0, (item.room ?? 0) - (item.leading * 0.2 + item.fontSize * 0.04 - 0.5));
     const fitted =
       fitWithin(height, item.fontSize) ??
       fitWithin(height + room, item.fontSize) ??
