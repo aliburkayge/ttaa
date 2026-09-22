@@ -623,3 +623,36 @@ test("brings stray single-line measurements back to the page's own text size", (
   assert.equal(snapped[7], 16);
   assert.equal(snapped[8], 12.75);
 });
+
+test("a line the OCR read with confidence is never taken for the signature crossing it", async () => {
+  const name = { id: "name1", text: "Christine Keating", confidence: 0.99, ocrWarning: null };
+  // The scribble crosses a printed line drawn right under it.
+  const extra = scribbleSvg() + bar(186, 30, 250, 36);
+  const blocks: LayoutBlock[] = [
+    TITLE_BLOCK,
+    { kind: "paragraph", role: "text", page: 1, lines: [name], frame: frame(184, 29, 252, 37) },
+  ];
+  const plan = await planOverlay(await scannedPdf({ extra }), blocks, { classify: async () => "signature" });
+  assert.equal(
+    plan.unplaced.some((entry) => entry.id === name.id && /İmzanın kendisi/.test(entry.reason)),
+    false,
+    "a printed name read at 99% was dropped as a signature",
+  );
+});
+
+test("a block does not take over the line of the block above it", async () => {
+  // Two single lines 7 pt apart whose ascenders and descenders touch; the
+  // second OCR box is a little too tall and reaches into the first line.
+  const extra = textLine(30, 150, 38, 4.2, 1.9) + textLine(30, 200, 45, 4.2, 1.9);
+  const first = line("Christine Keating");
+  const second = line("Head of US Crop Protection Regulatory Affairs");
+  const blocks: LayoutBlock[] = [
+    { kind: "paragraph", role: "text", page: 1, lines: [first], frame: frame(28, 35, 152, 44) },
+    { kind: "paragraph", role: "text", page: 1, lines: [second], frame: frame(28, 39, 202, 52) },
+  ];
+  const plan = await planOverlay(await scannedPdf({ extra, bare: true }), blocks);
+  const top = itemFor(plan, first.id);
+  const below = itemFor(plan, second.id);
+  assert.ok(top && below, "a line was not placed");
+  assert.ok(below.area.v0 > 42, `second line starts at ${below.area.v0.toFixed(1)}, inside the first line`);
+});

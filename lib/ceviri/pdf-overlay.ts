@@ -1226,6 +1226,16 @@ function intersects(a: Rect, b: Rect): boolean {
   return a.u0 < b.u1 && a.u1 > b.u0 && a.v0 < b.v1 && a.v1 > b.v0;
 }
 
+function area(rect: Rect): number {
+  return Math.max(0, rect.u1 - rect.u0) * Math.max(0, rect.v1 - rect.v0);
+}
+
+function overlapArea(a: Rect, b: Rect): number {
+  return (
+    Math.max(0, Math.min(a.u1, b.u1) - Math.max(a.u0, b.u0)) * Math.max(0, Math.min(a.v1, b.v1) - Math.max(a.v0, b.v0))
+  );
+}
+
 /** `rect`'ten delikler çıkarıldıktan sonra kalan dikdörtgenler. */
 export function subtractRects(rect: Rect, holes: Rect[]): Rect[] {
   let pieces = [rect];
@@ -1916,7 +1926,13 @@ export async function planOverlay(
     const alignFor = (rows: Row[]): Placement["align"] => (rows.length >= 2 && align === "center" ? "auto" : align);
     const region = grow(box, 1.5, 1);
     const site = survey(frame, grow(box, CONTEXT_MARGIN, CONTEXT_MARGIN), box);
-    const natural = site.rows.filter((row) => !isSpeck(row));
+    // Önceki bir bloğun yazdığı satır bu bloğun değildir: OCR kutusu biraz
+    // uzun gelince üstteki satıra uzanıyordu (BASF 1. sayfa: unvan bloğu
+    // üstündeki "Christine Keating" satırını da alıp silmiş, unvanı oraya yazmıştı).
+    const claimed = measured.filter((item) => item.page === block.page).map(textRect);
+    const natural = site.rows.filter(
+      (row) => !isSpeck(row) && !claimed.some((rect) => overlapArea(rect, row) >= area(row) * 0.6),
+    );
     const ocrLine = (box.v1 - box.v0) / block.lines.length;
 
     // Blok birden çok OCR satırıysa her satır kendi tarama satırlarına
@@ -1998,8 +2014,11 @@ export async function planOverlay(
         // imza geçen basılı "Sincerely," %99 güvenle okunmuştu.
         const strokes = inkShare(map, rasterRect(text));
         const unsure = item.lineIds.some((id) => (confidence.get(id) ?? 1) < LOW_CONFIDENCE);
+        // Renkli imzada da OCR'ın emin okuduğu satır ancak mürekkebinin neredeyse
+        // tamamı imzanınsa imzadır: üstünden mavi imza geçen basılı "Christine
+        // Keating" %99 güvenle okunmuş ama imzaya sayılmıştı.
         const isSignature = region.colored
-          ? share >= SIGNATURE_SHARE
+          ? share >= SIGNATURE_SHARE && (unsure || share >= 0.85)
           : share >= SIGNATURE_INSIDE && strokes >= SIGNATURE_STROKES && (unsure || strokes >= 0.7);
         if (!isSignature) continue;
         measured.splice(i, 1);
