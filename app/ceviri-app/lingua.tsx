@@ -59,6 +59,44 @@ type Doc = {
 
 const LANGS = ["en-US", "tr-TR", "de-DE", "ru-RU", "es-ES", "it-IT", "el-GR", "pl-PL"];
 
+type RecentDoc = {
+  id: string;
+  filename: string;
+  created_at: string;
+  source_lang: string;
+  target_lang: string;
+  total: number;
+  translated: number;
+};
+
+/** Kabul edilen dosyalar: Word, PDF ve görsel. Çıktı her zaman aynı biçimde döner. */
+const ACCEPT = ".docx,.pdf,.jpg,.jpeg,.png,.webp,.tif,.tiff";
+
+function outputKind(filename: string): "word" | "pdf" | "image" {
+  const name = filename.toLowerCase();
+  if (name.endsWith(".docx")) return "word";
+  if (name.endsWith(".pdf")) return "pdf";
+  return "image";
+}
+
+/** Belgenin kimliği adres çubuğunda durur: sayfa yenilense ya da geri gelinse iş kaldığı yerden sürer. */
+function rememberDocument(id: string | null) {
+  const url = new URL(window.location.href);
+  if (id) url.searchParams.set("belge", id);
+  else url.searchParams.delete("belge");
+  window.history.replaceState(null, "", url);
+}
+
+function filenameFrom(disposition: string | null, fallback: string): string {
+  const match = disposition ? /filename\*=UTF-8''([^;]+)/i.exec(disposition) : null;
+  if (!match) return fallback;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return fallback;
+  }
+}
+
 function tagFor(source: string | null, engine?: string | null) {
   if (source === "tm-exact" || source === "tm-fuzzy") return { label: "BELLEK", cls: styles.tagTm };
   if (source === "engine") {
@@ -97,6 +135,8 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [ocrWarning, setOcrWarning] = useState<string | null>(null);
   const [ocrDemo, setOcrDemo] = useState(false);
+  const [recent, setRecent] = useState<RecentDoc[] | null>(null);
+  const [downloading, setDownloading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const streamRef = useRef<HTMLDivElement>(null);
@@ -104,6 +144,61 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
   useEffect(() => {
     streamRef.current?.scrollTo({ top: streamRef.current.scrollHeight, behavior: "smooth" });
   }, [doc?.segments.length, chat.length, busy, thinking]);
+
+  const show = useCallback((payload: { document: Doc; ocrWarning?: unknown; ocrDemo?: unknown }) => {
+    const opened = payload.document;
+    setDoc(opened);
+    setChat(opened.chat ?? []);
+    setInstructions(opened.instructions ?? null);
+    setOcrWarning(typeof payload.ocrWarning === "string" ? payload.ocrWarning : null);
+    setOcrDemo(payload.ocrDemo === true);
+    setSavedIds(new Set());
+    rememberDocument(opened.id);
+  }, []);
+
+  const loadRecent = useCallback(async () => {
+    try {
+      const res = await fetch("/api/ceviri/documents");
+      const payload = await res.json();
+      if (res.ok) setRecent(payload.documents as RecentDoc[]);
+    } catch {
+      setRecent([]);
+    }
+  }, []);
+
+  const open = useCallback(
+    async (id: string) => {
+      setBusy("Belge açılıyor…");
+      setError(null);
+      try {
+        const res = await fetch(`/api/ceviri/documents/${id}`);
+        const payload = await res.json();
+        if (!res.ok) throw new Error(payload.error ?? "Belge açılamadı.");
+        show(payload);
+      } catch (cause) {
+        rememberDocument(null);
+        setError(cause instanceof Error ? cause.message : "Belge açılamadı.");
+      } finally {
+        setBusy(null);
+      }
+    },
+    [show],
+  );
+
+  // Açılışta: adres çubuğunda bir belge varsa onu aç; son belgeler her zaman listelenir.
+  useEffect(() => {
+    const id = new URL(window.location.href).searchParams.get("belge");
+    let cancelled = false;
+    void (async () => {
+      await Promise.resolve();
+      if (cancelled) return;
+      if (id) await open(id);
+      await loadRecent();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, loadRecent]);
 
   function grow(element: HTMLTextAreaElement) {
     element.style.height = "auto";
@@ -122,20 +217,14 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
         const res = await fetch("/api/ceviri/documents", { method: "POST", body: form });
         const payload = await res.json();
         if (!res.ok) throw new Error(payload.error ?? "Yükleme başarısız.");
-        const uploaded = payload.document as Doc;
-        setDoc(uploaded);
-        setChat(uploaded.chat ?? []);
-        setInstructions(uploaded.instructions ?? null);
-        setOcrWarning(typeof payload.ocrWarning === "string" ? payload.ocrWarning : null);
-        setOcrDemo(payload.ocrDemo === true);
-        setSavedIds(new Set());
+        show(payload);
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : "Yükleme başarısız.");
       } finally {
         setBusy(null);
       }
     },
-    [sourceLang, targetLang],
+    [sourceLang, targetLang, show],
   );
 
   async function translate(current: Doc) {
@@ -177,7 +266,7 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
         {
           role: "assistant",
           content:
-            "Önce bir belge yükleyin — ataç simgesine basın ya da .docx / .pdf dosyasını buraya bırakın. " +
+            "Önce bir belge yükleyin — ataç simgesine basın ya da Word, PDF ya da görsel dosyasını buraya bırakın. " +
             "Belge geldikten sonra nasıl çevrileceğini buradan anlatabilirsiniz.",
           at: now,
         },
@@ -264,6 +353,46 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
     setInstructions(null);
     setError(null);
     setOcrWarning(null);
+    rememberDocument(null);
+    void loadRecent();
+  }
+
+  /**
+   * İndirme sayfanın içinden yapılır: hata olursa tarayıcı bir JSON sayfasına
+   * gitmez, sohbette gösterilir ve belge ekranda kalır. Başarılı indirmeden
+   * sonra belge yeniden okunur; sayfa planı indirme sırasında yeniden
+   * çıkarıldıysa satır uyarıları da tazelenir.
+   */
+  async function download() {
+    if (!doc || downloading) return;
+    setDownloading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/ceviri/documents/${doc.id}/download`);
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        throw new Error(payload.error ?? "İndirme başarısız.");
+      }
+      const blob = await res.blob();
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = filenameFrom(res.headers.get("content-disposition"), doc.filename);
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(link.href), 60_000);
+      const fresh = await fetch(`/api/ceviri/documents/${doc.id}`);
+      if (fresh.ok) {
+        const payload = await fresh.json();
+        setDoc((current) =>
+          current && current.id === doc.id ? { ...current, segments: payload.document.segments } : current,
+        );
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "İndirme başarısız.");
+    } finally {
+      setDownloading(false);
+    }
   }
 
   const translated = doc ? doc.segments.filter((s) => s.translation !== null).length : 0;
@@ -273,7 +402,8 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
     : 0;
   const flagged = doc ? doc.segments.filter((s) => s.warning !== null).length : 0;
   const ocrFlagged = doc ? doc.segments.filter((s) => s.ocrWarning).length : 0;
-  const isScan = doc ? doc.filename.toLowerCase().endsWith(".pdf") : false;
+  const kind = doc ? outputKind(doc.filename) : null;
+  const isScan = kind === "pdf" || kind === "image";
   const complete = total > 0 && translated === total;
   const working = busy !== null || thinking;
 
@@ -307,6 +437,27 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
                 </button>
                 <Link className={styles.chip} href="/ceviri-app/bellek">Bellekte ara</Link>
               </div>
+              {recent && recent.length > 0 && (
+                <div className={styles.recent}>
+                  <div className={styles.recentHead}>Son belgeler — kaldığınız yerden devam edin</div>
+                  {recent.map((item) => (
+                    <button
+                      className={styles.recentItem}
+                      type="button"
+                      key={item.id}
+                      onClick={() => void open(item.id)}
+                      disabled={busy !== null}
+                    >
+                      <span className={styles.recentName}>{item.filename}</span>
+                      <span className={styles.recentMeta}>
+                        {item.source_lang} → {item.target_lang} ·{" "}
+                        {item.translated === item.total ? "çevrildi" : `${item.translated}/${item.total} çevrildi`} ·{" "}
+                        {new Date(item.created_at).toLocaleString("tr-TR", { dateStyle: "short", timeStyle: "short" })}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -339,10 +490,10 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
                   <p className={styles.botText}>
                     {isScan ? (
                       <>
-                        Taranmış belgeyi okudum: <b>{doc.stats.pages}</b> sayfa, <b>{total}</b> çevrilecek satır
+                        {kind === "image" ? "Görseli" : "Taranmış belgeyi"} okudum: <b>{doc.stats.pages}</b> sayfa, <b>{total}</b> çevrilecek satır
                         {doc.stats.tables > 0 && <> — <b>{doc.stats.tableCells}</b> tanesi tablo hücresi</>}.
-                        Çeviri orijinal PDF&apos;in üstüne, her satırın kendi yerine yazılacak; logo, tablo,
-                        fotoğraf, imza ve mühür olduğu gibi kalır.
+                        Çeviri orijinal {kind === "image" ? "görselin" : "PDF'in"} üstüne, her satırın kendi
+                        yerine yazılacak; logo, tablo, fotoğraf, imza ve mühür olduğu gibi kalır.
                       </>
                     ) : (
                       <>
@@ -408,9 +559,20 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
                           </button>
                         )}
                         {complete && (
-                          <a className={styles.primary} href={`/api/ceviri/documents/${doc.id}/download`}>
-                            {isScan ? "PDF olarak indir" : "Word olarak indir"}
-                          </a>
+                          <button
+                            className={styles.primary}
+                            type="button"
+                            onClick={() => void download()}
+                            disabled={working || downloading}
+                          >
+                            {downloading
+                              ? "Hazırlanıyor…"
+                              : kind === "pdf"
+                                ? "PDF olarak indir"
+                                : kind === "image"
+                                  ? "Görsel olarak indir"
+                                  : "Word olarak indir"}
+                          </button>
                         )}
                         <button
                           className={styles.secondary}
@@ -578,7 +740,7 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
               placeholder={
                 doc
                   ? "Nasıl çevrilmesini istersiniz? Ya da belge hakkında bir şey sorun…"
-                  : "Word (.docx) veya PDF bırakın, ya da ataç simgesine basın…"
+                  : "Word, PDF ya da görsel (JPG, PNG) bırakın, ya da ataç simgesine basın…"
               }
               onChange={(event) => { setDraft(event.target.value); grow(event.target); }}
               onKeyDown={(event) => {
@@ -592,7 +754,7 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
               <input
                 ref={fileRef}
                 type="file"
-                accept=".docx,.pdf"
+                accept={ACCEPT}
                 hidden
                 onChange={(event) => onPick(event.target.files?.[0])}
               />

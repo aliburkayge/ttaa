@@ -1,9 +1,7 @@
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import fontkit from "@pdf-lib/fontkit";
 import { degrees, PDFDocument, rgb, type PDFFont } from "pdf-lib";
+import { classifyFamily, fontsFor, type Family } from "./fonts";
 import type { Box, LayoutBlock, OcrLine } from "./ocr-layout";
-import { displayToPage, loadScanPages, type ScanPage } from "./pdf-scan";
+import { openScan, pageGeometry, type ScanPage } from "./pdf-scan";
 import { tidyTarget } from "./qa";
 
 /**
@@ -65,6 +63,8 @@ export type OverlayItem = {
   bold: boolean;
   /** Ölçülen harf gövdesi kalınlığı (punto); `bold` buna göre verilir. */
   weight: number;
+  /** Yazı tipi ailesi, belge boyunca ölçülür. Eski planlarda yoktur: serif. */
+  family?: Family;
   background: Color;
   ink: Color;
 };
@@ -84,6 +84,8 @@ export type ScanLayout = {
   /** null ise sayfa ölçülemedi; neden `overlayError`da. */
   overlay: OverlayPlan | null;
   overlayError: string | null;
+  /** OCR'ın notu; belge sonradan açıldığında da gösterilsin diye saklanır. */
+  ocr?: { warning: string | null; provider: string | null; demo: boolean };
 };
 
 // ---------- düzeltilmiş koordinat ----------
@@ -318,13 +320,27 @@ function toneOf(color: Color, textColor: Color): Tone {
   return distance < 0.2 ? 0 : distance > 0.35 ? 1 : 2;
 }
 
-/** Sayfanın yazı rengi: sayfadaki koyu piksellerin ortancası (yazı mürekkebin çoğunu oluşturur). */
+/**
+ * Sayfanın yazı rengi: ince koyu yapıların (yanı başında kağıt olan koyu
+ * piksellerin) ortancası. Harf çizgisi incedir; dolu bir logonun, renkli bir
+ * başlık bandının ya da fotoğrafın içi değildir. Bütün koyu piksellerin
+ * ortancası alınınca büyük mavi bir kutu sayfanın "yazı rengi" oluyor, siyah
+ * yazı başka renk sayılıp hiç bulunamıyordu.
+ */
 function pageInk(page: ScanPage): Color {
+  const lum = (color: Color | null) => (color ? 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2] : 255);
+  const reach = 1.5;
   const samples: Color[] = [];
   for (let v = 0; v < page.height; v += 1) {
     for (let u = 0; u < page.width; u += 1) {
       const color = page.rgb(u, v);
-      if (color && 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2] < DARK) samples.push(color);
+      if (!color || lum(color) >= DARK) continue;
+      const nearPaper =
+        lum(page.rgb(u - reach, v)) > 180 ||
+        lum(page.rgb(u + reach, v)) > 180 ||
+        lum(page.rgb(u, v - reach)) > 180 ||
+        lum(page.rgb(u, v + reach)) > 180;
+      if (nearPaper) samples.push(color);
     }
   }
   if (!samples.length) return [0, 0, 0];
@@ -739,6 +755,196 @@ function fitToLines(survey: Survey, found: Row[], expected: number, exact: boole
 }
 
 /**
+ * Dik ve dar harflerde (l, I, 1, |) dipteki ayağın gövdeden taşması, harf
+ * yüksekliğine oranla. Times ailesinde dipte yatay bir ayak (serif) vardır,
+ * gövdenin iki yanına taşar (taramada ≈ 0,13–0,16); Arial ailesinde düz bir
+ * çubuktur (≈ 0). Gövdeye değil yüksekliğe oranlanır: kalın yazıda gövde
+ * kalınlaşır ama ayak yine aynı kadar taşar. Puntodan bağımsızdır.
+ */
+function footRatios(site: Survey, row: Row): number[] {
+  const { grid, comps, glyph, labels } = site;
+  const bandPixels = (row.v1 - row.v0) / grid.step;
+  const members = row.members.filter((index) => glyph[index]);
+  if (members.length < 3) return [];
+  // Taban çizgisi: harflerin çoğunun oturduğu alt kenar. Parantez, köşeli
+  // parantez ve j gibi alta inen dikey harfler ayak ölçüsüne karışmasın.
+  const baseline = median(members.map((index) => comps[index].y1));
+  const ratios: number[] = [];
+  for (const index of members) {
+    const c = comps[index];
+    const height = c.y1 - c.y0 + 1;
+    const width = c.x1 - c.x0 + 1;
+    if (height < 12 || width > height * 0.35 || height < bandPixels * 0.55) continue;
+    if (Math.abs(c.y1 - baseline) > Math.max(1.5, height * 0.06)) continue;
+    // Bir piksel satırında harfin sol ve sağ kenarı.
+    const across = (y: number) => {
+      let left = Infinity;
+      let right = -Infinity;
+      for (let x = c.x0; x <= c.x1; x++) {
+        if (labels[y * grid.w + x] === index) {
+          left = Math.min(left, x);
+          right = Math.max(right, x);
+        }
+      }
+      return { left, right, width: right >= left ? right - left + 1 : 0 };
+    };
+    // Yalnızca düz dikey çubuklar: gövdenin %30–70'i boyunca genişlik sabit ve
+    // eksen kaymıyor. f (yatay çizgi), / (eğik) böyle elenir.
+    const levels = [0.3, 0.5, 0.7].map((f) => across(c.y0 + Math.floor(height * f)));
+    const stem = levels[1];
+    if (stem.width < 2) continue;
+    const widths = levels.map((level) => level.width);
+    if (Math.max(...widths) - Math.min(...widths) > Math.max(1, stem.width * 0.25)) continue;
+    const centers = levels.map((level) => (level.left + level.right) / 2);
+    if (Math.abs(centers[0] - centers[2]) > stem.width) continue;
+    // Ayak gövdenin İKİ yanına taşar; Arial "t" gibi yalnızca sağa kıvrılan
+    // bir dip ayak değildir. Ölçü, iki yandaki taşmanın küçük olanı.
+    let overhang = 0;
+    for (let y = c.y1 - Math.max(0, Math.round(height * 0.1) - 1); y <= c.y1; y++) {
+      const bottom = across(y);
+      if (!bottom.width) continue;
+      overhang = Math.max(overhang, Math.min(stem.left - bottom.left, bottom.right - stem.right));
+    }
+    ratios.push((2 * Math.max(0, overhang)) / height);
+  }
+  return ratios;
+}
+
+/**
+ * Her yazım öğesinin yazı tipi ailesi. Her ayak ölçüsü bir oydur: serif
+ * ayaklı harf Times'a, düz çubuk Arial'e. Önce öğenin kendi harfleri; yetmezse
+ * aynı puntodaki yakın satırlar (bir adres yığını, bir alt bilgi); o da
+ * yetmezse sayfa, sonra belge; hiçbiri yoksa `fallback`.
+ */
+function assignFamilies(
+  items: Array<{ page: number; area: Rect; fontSize: number; feet: number[] }>,
+  fallback: Family,
+): Family[] {
+  // Düşük çözünürlüklü (200 DPI, siyah-beyaz) taramada Times ayağı bir
+  // piksel taşar ve bir yanı çoğu zaman pikselleşmede kaybolur: Times
+  // harflerinin ancak üçte biri ayaklı ölçülür. Arial'de bu oran %0–3'tür
+  // (müşteri belgelerinde ölçüldü). Eşik bu yüzden yarı değil beşte bir.
+  const decide = (ratios: number[], minimum: number): Family | null => {
+    if (ratios.length < minimum) return null;
+    const serif = ratios.filter((ratio) => ratio >= SERIF_FOOT_RATIO).length;
+    return serif >= ratios.length * SERIF_VOTE_SHARE ? "serif" : "sans";
+  };
+  const all = items.flatMap((item) => item.feet);
+  return items.map((item) => {
+    const own = decide(item.feet, 5);
+    if (own) return own;
+    const near = items
+      .filter((other) => {
+        if (other.page !== item.page) return false;
+        if (Math.abs(other.fontSize - item.fontSize) > item.fontSize * 0.25) return false;
+        const gap = Math.max(other.area.v0, item.area.v0) - Math.min(other.area.v1, item.area.v1);
+        const overlap = Math.min(other.area.u1, item.area.u1) - Math.max(other.area.u0, item.area.u0);
+        return gap <= item.fontSize * 3 && overlap > 0;
+      })
+      .flatMap((other) => other.feet);
+    return (
+      decide(near, 5) ??
+      decide(items.filter((other) => other.page === item.page).flatMap((other) => other.feet), 8) ??
+      decide(all, 10) ??
+      fallback
+    );
+  });
+}
+
+/** Satırın beklenen harf parçası sayısı: boşluksuz karakterler, noktalı harflerin noktası ayrı parçadır. */
+function expectedParts(text: string): number {
+  const visible = text.replace(/\s+/g, "");
+  return visible.length + (visible.match(/[ijİ:;!?=%"÷]/g)?.length ?? 0);
+}
+
+const HANDWRITTEN = "El yazısı ya da imza gibi görünüyor; dokunulmadı, çevirisi belgeye yazılmadı.";
+
+/**
+ * El yazısı ya da el yazısı stilinde bir imza satırı mı? Bitişik yazıda
+ * harfler birbirine bağlıdır: taramadaki harf parçası sayısı metnin karakter
+ * sayısının çok altında kalır ("Sylvia Dillard for": 16 karakter, ~5 parça).
+ * Basılı yazıda her harf ayrı parçadır. Böyle bir satır silinip düz yazıyla
+ * yeniden yazılırsa imza bozulur; yerinde bırakılır ve inceleyene bildirilir.
+ */
+function looksHandwritten(site: Survey, rows: Row[], lines: OcrLine[]): boolean {
+  const wanted = lines.reduce((sum, line) => sum + expectedParts(line.text), 0);
+  if (wanted < 6) return false;
+  const parts = rows.reduce((sum, row) => sum + row.members.filter((index) => site.glyph[index]).length, 0);
+  return parts < wanted * 0.45;
+}
+
+/**
+ * Taramadaki satırları OCR satırlarına sırayla eşler: her OCR satırı bir ya da
+ * birkaç ardışık tarama satırına (paragrafta kırılan satır) düşer, hiçbir
+ * satıra ait olmayan ince kırıntılar (yazıya değen imzanın parçaları) dışarıda
+ * kalır — dışarıda kalan hiçbir şey silinmez.
+ *
+ * Ölçü, satırın harf parçası sayısının OCR metninin karakter sayısına
+ * uymasıdır (dinamik programlama). Satıra fazladan mürekkep karışması
+ * (üstünden geçen imza) ucuzdur; eksik mürekkep pahalıdır ve belli bir
+ * sınırın altında eşleme reddedilir — o zaman blok eskisi gibi tek parça
+ * yazılır.
+ */
+function alignRowsToLines(site: Survey, rows: Row[], lines: OcrLine[]): Row[][] | null {
+  if (rows.length < lines.length) return null;
+  const parts = rows.map((row) => row.members.filter((index) => site.glyph[index]).length);
+  const wanted = lines.map((line) => Math.max(1, expectedParts(line.text)));
+  const densest = Math.max(...parts);
+  const dense = rows.filter((_, i) => parts[i] >= densest * 0.25).map((row) => row.v1 - row.v0);
+  const typical = dense.length ? median(dense) : median(rows.map((row) => row.v1 - row.v0));
+  // İnce ve seyrek satır kırıntıdır; atlanması neredeyse bedava. Gerçek bir
+  // yazı satırını atlamak ise pahalı: silinmeden kalırdı.
+  const skip = rows.map((row, i) => (row.v1 - row.v0 < typical * 0.6 && parts[i] < densest * 0.25 ? 0.02 : 5));
+  const fit = (have: number, want: number) =>
+    have >= want ? 0.15 * ((have - want) / want) : 2 * ((want - have) / want);
+
+  const R = rows.length;
+  const N = lines.length;
+  const MAX_GROUP = 6;
+  const cost = Array.from({ length: R + 1 }, () => new Array<number>(N + 1).fill(Infinity));
+  const from = Array.from({ length: R + 1 }, () => new Array<[number, number, boolean]>(N + 1));
+  cost[0][0] = 0;
+  for (let i = 0; i <= R; i++) {
+    for (let j = 0; j <= N; j++) {
+      const here = cost[i][j];
+      if (!Number.isFinite(here)) continue;
+      if (i < R && here + skip[i] < cost[i + 1][j]) {
+        cost[i + 1][j] = here + skip[i];
+        from[i + 1][j] = [i, j, false];
+      }
+      if (j < N) {
+        let have = 0;
+        for (let k = i; k < Math.min(R, i + MAX_GROUP); k++) {
+          have += parts[k];
+          const next = here + fit(have, wanted[j]);
+          if (next < cost[k + 1][j + 1]) {
+            cost[k + 1][j + 1] = next;
+            from[k + 1][j + 1] = [i, j, true];
+          }
+        }
+      }
+    }
+  }
+  if (!Number.isFinite(cost[R][N])) return null;
+
+  const groups: Row[][] = new Array(N);
+  let i = R;
+  let j = N;
+  while (i > 0 || j > 0) {
+    const [pi, pj, assigned] = from[i][j];
+    if (assigned) groups[pj] = rows.slice(pi, i);
+    i = pi;
+    j = pj;
+  }
+  // Her satırda harflerin çoğu bulunmalı; yoksa eşleme yanlıştır.
+  const trusted = groups.every((group, index) => {
+    const have = group.reduce((sum, row) => sum + row.members.filter((member) => site.glyph[member]).length, 0);
+    return group.length > 0 && have >= wanted[index] * 0.65;
+  });
+  return trusted ? groups : null;
+}
+
+/**
  * Bir satırı silmenin yolu. Satırın yakınında başka bir işaret yoksa düz bir
  * kutu en temiz sonucu verir. Varsa (mühür halkası, imza, imza çizgisi —
  * hangi renkte olursa olsun) yalnızca satırın kendi harf pikselleri ve
@@ -917,6 +1123,17 @@ function grow(rect: Rect, dx: number, dy: number): Rect {
 type Measured = Omit<OverlayItem, "fontSize" | "bold"> & {
   estimate: number;
   column: string | null;
+  /** Satır sayısı ve en yüksek satırın şeridi (çıkıntıdan kuyruğa): tek satırın puntosu buradan kalibre edilir. */
+  rows: number;
+  band: number;
+  /** Taban çizgisinden büyük harf/çıkıntı çizgisine (punto); inen harflerden etkilenmez. */
+  core: number | null;
+  /** OCR'ın satır kutusunun yüksekliği; şeride imza karışırsa punto bunu aşamaz. */
+  ocrLine: number | null;
+  /** Tek satırlık öğede taramadaki mürekkebin genişliği ve kaynak metin: yazı tipi ailesi bundan okunur. */
+  sample: { text: string; width: number } | null;
+  /** Dik ve dar harflerin (l, I, 1) dip/orta genişlik oranları: serif ayak ölçüsü. */
+  feet: number[];
 };
 
 type Placement = {
@@ -929,6 +1146,8 @@ type Placement = {
    * yalnızca eski yazının genişliğine sıkıştırmak yazıyı gereksiz küçültür.
    */
   extend?: boolean;
+  /** OCR'ın bir satıra verdiği yükseklik (punto), biliniyorsa. */
+  ocrLine?: number;
 };
 
 /**
@@ -1042,7 +1261,110 @@ function itemFrom(
     estimate,
     weight: median(text.map((row) => row.stroke)),
     column: options.column,
+    rows: text.length,
+    band: Math.max(...heights),
+    core: medianOrNull(text.map((row) => rowCore(site, row)).filter((value): value is number => value !== null)),
+    ocrLine: options.ocrLine ?? null,
+    sample: text.length === 1 && lines.length === 1 ? { text: lines[0].text, width: inkRight - inkLeft } : null,
+    feet: text.flatMap((row) => footRatios(site, row)),
   };
+}
+
+/** Ayak taşması bu oranın üstündeyse harf serif ayaklıdır (Times ≈ 0,13–0,16, Arial ≈ 0). */
+const SERIF_FOOT_RATIO = 0.07;
+/** Ayaklı harflerin bu payı aşarsa yazı serif sayılır (bkz. assignFamilies). */
+const SERIF_VOTE_SHARE = 0.2;
+
+/** Kalibrasyon yapılamadığında oranlar: şerit ≈ 0,8 em, büyük harf yüksekliği ≈ 0,72 em. */
+const SINGLE_LINE_BAND_RATIO = 1 / 0.8;
+const SINGLE_LINE_CORE_RATIO = 1 / 0.72;
+/** Tek satır aralıklı yazıda satır aralığı ≈ 1,15 em (Word'ün "tek" aralığı). */
+const LEADING_EM = 1.15;
+
+function medianOrNull(values: number[]): number | null {
+  return values.length ? median(values) : null;
+}
+
+/**
+ * Satırın taban çizgisinden büyük harf/çıkıntı çizgisine yüksekliği (punto).
+ * Harflerin çoğu taban çizgisine oturur (alt kenarların ortancası); büyük
+ * harfler ve çıkıntılı küçük harfler aynı üst çizgiye uzanır (üst kenarların
+ * alttan onda biri). Şerit yüksekliğinin aksine satırda g/p/y olup olmamasına
+ * ya da satırın tamamen büyük harf olmasına bağlı değildir.
+ */
+function rowCore(site: Survey, row: Row): number | null {
+  const { grid, comps, glyph } = site;
+  const members = row.members.filter((index) => glyph[index]);
+  if (members.length < 4) return null;
+  const tops = members.map((index) => grid.q0 + comps[index].y0 * grid.step).sort((x, y) => x - y);
+  const bottoms = members.map((index) => grid.q0 + (comps[index].y1 + 1) * grid.step).sort((x, y) => x - y);
+  const core = bottoms[Math.floor(bottoms.length / 2)] - tops[Math.floor(tops.length * 0.1)];
+  return core > 0 ? core : null;
+}
+
+/**
+ * Tek satırlık yazıların puntosu (tablo hücreleri sütun ortancasıyla ayrıca
+ * hesaplanır).
+ *
+ * 1. Yığın: aynı sol kenarda, düzenli aralıkla alt alta dizilmiş tek satırlar
+ *    (adres, alt bilgi) aslında tek paragraftır; OCR onları ayrı blok verir.
+ *    Punto aralarındaki gerçek satır aralığından ölçülür — en güvenilir sinyal.
+ * 2. Tek başına satır: büyük harf yüksekliğinden, oranı aynı belgenin çok
+ *    satırlı paragraflarından (punto orada satır aralığından bilinir) ölçülür.
+ *    Yazı tipi farkı (Arial ile Times arasında %15) böyle kendiliğinden kapanır.
+ * 3. Şeride yazıya değen bir imza karışmışsa ölçü dev çıkar; OCR'ın satır
+ *    kutusu tavandır.
+ */
+function sizeSingleLines(measured: Measured[]): Array<{ size: number; leading: number | null }> {
+  const calibrated = measured
+    .filter((item) => item.rows >= 2 && item.core)
+    .map((item) => item.estimate / (item.core as number));
+  const coreRatio =
+    calibrated.length >= 2 ? Math.min(1.7, Math.max(1.2, median(calibrated))) : SINGLE_LINE_CORE_RATIO;
+  const bandCalibrated = measured.filter((item) => item.rows >= 2 && item.band > 0).map((item) => item.estimate / item.band);
+  const bandRatio =
+    bandCalibrated.length >= 2 ? Math.min(1.3, Math.max(0.95, median(bandCalibrated))) : SINGLE_LINE_BAND_RATIO;
+
+  const result = measured.map((item) => {
+    if (item.rows !== 1) return { size: item.estimate, leading: null as number | null };
+    let size = item.core ? item.core * coreRatio : item.band * bandRatio;
+    if (item.ocrLine) size = Math.min(size, item.ocrLine * 1.15);
+    return { size, leading: null as number | null };
+  });
+
+  // Yığınlar: sayfa sayfa, üstten alta.
+  const singles = measured
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => item.rows === 1 && !item.column && item.align === "left")
+    .sort((x, y) => x.item.page - y.item.page || x.item.area.v0 - y.item.area.v0);
+  const next = new Map<number, number>();
+  for (const { item, index } of singles) {
+    const height = item.core ?? item.band * 0.8;
+    const below = singles.find(({ item: other }) => {
+      if (other.page !== item.page || other.area.v0 <= item.area.v0) return false;
+      if (Math.abs(other.area.u0 - item.area.u0) > 3) return false;
+      const otherHeight = other.core ?? other.band * 0.8;
+      if (Math.max(height, otherHeight) / Math.min(height, otherHeight) > 1.35) return false;
+      const pitch = (other.area.v0 - item.area.v0) / Math.min(height, otherHeight);
+      return pitch >= 1.25 && pitch <= 2.1;
+    });
+    if (below && !next.has(index)) next.set(index, below.index);
+  }
+  const hasPrevious = new Set(next.values());
+  for (const { index } of singles) {
+    if (hasPrevious.has(index) || !next.has(index)) continue;
+    const chain = [index];
+    while (next.has(chain[chain.length - 1])) chain.push(next.get(chain[chain.length - 1]) as number);
+    const pitches = chain.slice(1).map((member, i) => measured[member].area.v0 - measured[chain[i]].area.v0);
+    const leading = median(pitches);
+    // Yığının tek puntosu: satırların büyük harf yüksekliğinden ölçülenlerin
+    // ortancası. Satır aralığı her zaman 1,15 em değildir (adres blokları
+    // çoğu zaman daha açık yazılır); yalnızca harf ölçüsü yoksa ondan çıkarılır.
+    const measuredSizes = chain.filter((member) => measured[member].core).map((member) => result[member].size);
+    const size = measuredSizes.length * 2 >= chain.length ? median(measuredSizes) : leading / LEADING_EM;
+    for (const member of chain) result[member] = { size, leading };
+  }
+  return result;
 }
 
 /** Tarama lekesi (tek nokta, çizgi kırıntısı) satır sayılmaz. */
@@ -1088,22 +1410,53 @@ function assignBold(items: Array<{ page: number; fontSize: number; weight: numbe
 const CONTEXT_MARGIN = 12;
 
 export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): Promise<OverlayPlan> {
-  const { pages } = await loadScanPages(pdfBytes);
-  const frames: Frame[] = pages.map((page) => {
-    const skew = estimateSkew(page);
-    return { page, skew, textColor: pageInk(page), ...frameFor(page, skew) };
-  });
   const measured: Measured[] = [];
   const unplaced: OverlayPlan["unplaced"] = [];
   const skip = (lines: OcrLine[], reason: string) =>
     unplaced.push(...lines.map((line) => ({ id: line.id, reason })));
 
-  blocks.forEach((block, blockIndex) => {
-    const frame = frames[block.page - 1];
-    const allLines =
-      block.kind === "table" ? block.rows.flatMap((row) => row.flatMap((cell) => cell.lines)) : block.lines;
-    if (!allLines.length) return;
-    if (!frame || !block.frame) {
+  // Sayfalar tek tek okunur ve bırakılır: 300 DPI'da bir A4 sayfası ~25 MB,
+  // hepsini birden tutmak uzun belgede sunucunun belleğini doldururdu.
+  const scan = await openScan(pdfBytes);
+  const skews = Array.from({ length: scan.pageCount }, () => 0);
+  const pageErrors: string[] = [];
+  let pagesRead = 0;
+  try {
+    for (let index = 0; index < scan.pageCount; index++) {
+      const onPage = blocks
+        .map((block, blockIndex) => ({ block, blockIndex }))
+        .filter(({ block }) => block.page === index + 1 && blockLines(block).length > 0);
+      if (!onPage.length) continue;
+
+      let page: ScanPage;
+      try {
+        page = await scan.page(index);
+      } catch (cause) {
+        // Okunamayan sayfa yalnızca kendi satırlarını düşürür; belgenin geri
+        // kalanı yine çevrilir.
+        const reason = `${index + 1}. sayfa okunamadı: ${cause instanceof Error ? cause.message : String(cause)}`;
+        pageErrors.push(reason);
+        for (const { block } of onPage) skip(blockLines(block), reason);
+        continue;
+      }
+      pagesRead++;
+      const skew = estimateSkew(page);
+      skews[index] = skew;
+      const frame: Frame = { page, skew, textColor: pageInk(page), ...frameFor(page, skew) };
+      for (const { block, blockIndex } of onPage) placeBlock(block, blockIndex, frame);
+    }
+  } finally {
+    await scan.close();
+  }
+  for (const block of blocks) {
+    if (block.page < 1 || block.page > scan.pageCount) skip(blockLines(block), "Satırın sayfadaki konumu bilinmiyor.");
+  }
+  // Hiçbir sayfa okunamadıysa bu satır satır bir sorun değil, belgenin sorunu.
+  if (pageErrors.length && pagesRead === 0) throw new Error(pageErrors[0]);
+
+  function placeBlock(block: LayoutBlock, blockIndex: number, frame: Frame) {
+    const allLines = blockLines(block);
+    if (!block.frame) {
       skip(allLines, "Satırın sayfadaki konumu bilinmiyor.");
       return;
     }
@@ -1185,15 +1538,54 @@ export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): 
         : box.u0 > width * 0.55 && box.u1 > width * 0.8
           ? "right"
           : "left";
+    // Birden çok satırda hizalama satırların kenarlarından okunur; blok
+    // geometrisi yalnızca tek satırda tahmin için kullanılır. Asılı girintili
+    // bir liste maddesi ("1) Notification … / the USA") geometriden ortalı
+    // görünüyordu.
+    const alignFor = (rows: Row[]): Placement["align"] => (rows.length >= 2 && align === "center" ? "auto" : align);
     const region = grow(box, 1.5, 1);
     const site = survey(frame, grow(box, CONTEXT_MARGIN, CONTEXT_MARGIN), box, { cluster: false });
-    const text = fitToLines(site, site.rows.filter((row) => !isSpeck(row)), block.lines.length, false);
+    const natural = site.rows.filter((row) => !isSpeck(row));
+    const ocrLine = (box.v1 - box.v0) / block.lines.length;
+
+    // Blok birden çok OCR satırıysa her satır kendi tarama satırlarına
+    // eşlenip ayrı yazılır: yalnızca çevirisi değişen satıra dokunulur. İmza
+    // bloğunda isim, unvan ve şirket tek blok gelir; unvan çevrilince üçü
+    // birden silinip üstlerinden geçen imzayla birlikte yeniden yazılıyordu.
+    const groups = block.lines.length > 1 ? alignRowsToLines(site, natural, block.lines) : null;
+    if (groups) {
+      block.lines.forEach((line, index) => {
+        const rows = groups[index];
+        if (looksHandwritten(site, rows, [line])) {
+          skip([line], HANDWRITTEN);
+          return;
+        }
+        const lineRegion = {
+          u0: region.u0,
+          v0: Math.min(...rows.map((row) => row.v0)) - 1,
+          u1: region.u1,
+          v1: Math.max(...rows.map((row) => row.v1)) + 1,
+        };
+        measured.push(
+          itemFrom(frame, block.page, site, rows, lineRegion, [line], { align: alignFor(rows), column: null, extend: true, ocrLine }),
+        );
+      });
+      return;
+    }
+
+    const text = fitToLines(site, natural, block.lines.length, false);
     if (!text.length) {
       skip(block.lines, "Taramada bu satırın yazısı bulunamadı.");
       return;
     }
-    measured.push(itemFrom(frame, block.page, site, text, region, block.lines, { align, column: null, extend: true }));
-  });
+    if (looksHandwritten(site, text, block.lines)) {
+      skip(block.lines, HANDWRITTEN);
+      return;
+    }
+    measured.push(
+      itemFrom(frame, block.page, site, text, region, block.lines, { align: alignFor(text), column: null, extend: true, ocrLine }),
+    );
+  }
 
   // Aynı tablo sütunundaki hücreler aynı puntoyla yazılmıştır; tek satırlık,
   // kuyruksuz bir hücre ("HDPE") tek başına punto tahminini düşürmesin.
@@ -1202,19 +1594,50 @@ export async function planOverlay(pdfBytes: Uint8Array, blocks: LayoutBlock[]): 
     if (item.column) byColumn.set(item.column, [...(byColumn.get(item.column) ?? []), item.estimate]);
   }
 
-  const sized = measured.map(({ estimate, column, ...item }) => ({
-    ...item,
-    fontSize: Math.round((column ? median(byColumn.get(column) ?? [estimate]) : estimate) * 4) / 4,
-  }));
+  const sizes = sizeSingleLines(measured);
+  const sized = measured.map((item, index) => {
+    const size = item.column ? median(byColumn.get(item.column) ?? [item.estimate]) : sizes[index].size;
+    return {
+      page: item.page,
+      lineIds: item.lineIds,
+      area: item.area,
+      erase: item.erase,
+      masks: item.masks,
+      caution: item.caution,
+      align: item.align,
+      leading: sizes[index].leading ?? item.leading,
+      background: item.background,
+      ink: item.ink,
+      weight: item.weight,
+      fontSize: Math.round(size * 4) / 4,
+    };
+  });
   const bold = assignBold(sized);
-  const items: OverlayItem[] = sized.map((item, index) => ({ ...item, bold: bold[index] }));
+  // Yazı tipi ailesi harf şeklinden (serif ayakları), satır satır: resmi
+  // belgelerde antet ve alt bilgi çoğu zaman Arial, gövde Times'tır (DELAN SC).
+  // Harf yoksa belge boyunca yazı genişliğinden.
+  const fallback = (
+    await classifyFamily(
+      measured.flatMap((item, index) =>
+        item.sample ? [{ ...item.sample, size: sized[index].fontSize, bold: bold[index] }] : [],
+      ),
+    )
+  ).family;
+  const families = assignFamilies(
+    measured.map((item, index) => ({ page: item.page, area: item.area, fontSize: sized[index].fontSize, feet: item.feet })),
+    fallback,
+  );
+  const items: OverlayItem[] = sized.map((item, index) => ({ ...item, bold: bold[index], family: families[index] }));
 
-  return { pages: frames.map((frame) => ({ skew: frame.skew })), items, unplaced };
+  return { pages: skews.map((skew) => ({ skew })), items, unplaced };
+}
+
+function blockLines(block: LayoutBlock): OcrLine[] {
+  return block.kind === "table" ? block.rows.flatMap((row) => row.flatMap((cell) => cell.lines)) : block.lines;
 }
 
 // ---------- çizim ----------
 
-const FONT_DIR = path.join(process.cwd(), "lib", "ceviri", "fonts");
 
 function wrap(text: string, font: PDFFont, size: number, width: number): string[] {
   const words = text.split(/\s+/).filter(Boolean);
@@ -1269,10 +1692,7 @@ export async function renderOverlay(
   texts: Map<string, { source: string; translation: string | null }>,
 ): Promise<Uint8Array> {
   const doc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
-  doc.registerFontkit(fontkit);
-  // Tam gömme: pdf-lib'in alt küme gömmesi bu yazı tipinde harfleri düşürüyordu.
-  const regular = await doc.embedFont(readFileSync(path.join(FONT_DIR, "Tinos-Regular.ttf")));
-  const bold = await doc.embedFont(readFileSync(path.join(FONT_DIR, "Tinos-Bold.ttf")));
+  const fontFor = fontsFor(doc);
   const pdfPages = doc.getPages();
 
   for (const item of plan.items) {
@@ -1284,15 +1704,10 @@ export async function renderOverlay(
     );
     if (!changed) continue;
 
-    const angle = ((page.getRotation().angle % 360) + 360) % 360;
-    const rotation = (angle === 90 || angle === 180 || angle === 270 ? angle : 0) as 0 | 90 | 180 | 270;
-    const media = page.getMediaBox();
-    const sideways = rotation === 90 || rotation === 270;
-    const display = sideways
-      ? { width: media.height, height: media.width }
-      : { width: media.width, height: media.height };
-    const toPage = displayToPage(rotation, media);
-    const straight = frameFor(display, plan.pages[item.page - 1]?.skew ?? 0);
+    // Planlamayla aynı geometri: görünür alan (CropBox ∩ MediaBox) ve /Rotate.
+    const geometry = pageGeometry(page);
+    const toPage = geometry.toPage;
+    const straight = frameFor(geometry, plan.pages[item.page - 1]?.skew ?? 0);
     const place = (p: number, q: number) => {
       const { u, v } = straight.toDisplay(p, q);
       return toPage(u, v);
@@ -1325,7 +1740,7 @@ export async function renderOverlay(
       });
     }
 
-    const font = item.bold ? bold : regular;
+    const font = await fontFor(item.family ?? "serif", item.bold);
     const width = item.area.u1 - item.area.u0;
     const height = item.area.v1 - item.area.v0;
     const content = lines.map((line) =>

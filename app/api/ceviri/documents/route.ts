@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { requireAdminSession } from "../../../../lib/auth";
 import { getCeviriSupabase, CEVIRI_DOCS_BUCKET } from "../../../../lib/ceviri/supabase";
 import { parseDocx } from "../../../../lib/ceviri/docx";
+import { IMAGE_FORMATS, imageFormat, imageToPdf } from "../../../../lib/ceviri/image-doc";
 import { activeOcrProvider, isPdf, ocrToSegments } from "../../../../lib/ceviri/ocr";
 import { layoutStats } from "../../../../lib/ceviri/ocr-layout";
 import { planOverlay, type OverlayPlan, type ScanLayout } from "../../../../lib/ceviri/pdf-overlay";
@@ -12,6 +13,56 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 
 const MAX_BYTES = 25 * 1024 * 1024;
+const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const IMAGE_EXTENSIONS = Object.values(IMAGE_FORMATS).flatMap((format) => format.extensions);
+
+type ParsedSegment = {
+  id: string;
+  text: string;
+  kind: "paragraph" | "table-cell";
+  order: number;
+  page?: number;
+  ocrWarning?: string | null;
+  /** Çeviri orijinal konumuna yazılamayacaksa nedeni. */
+  placement?: string | null;
+  /** Yazılabilir ama çıktıya bakılmalı (ör. harfe değen aynı renkte mühür). */
+  caution?: string | null;
+};
+
+/** Son belgeler: kaldığı yerden devam edebilmek için. */
+export async function GET() {
+  try {
+    await requireAdminSession();
+    const { data, error } = await getCeviriSupabase()
+      .from("ceviri_documents")
+      .select("id, filename, created_at, source_lang, target_lang, segments")
+      .order("created_at", { ascending: false })
+      .limit(20);
+    if (error) throw new Error(error.message);
+    return NextResponse.json({
+      documents: (data ?? []).map((doc) => {
+        const segments = (doc.segments ?? []) as Array<{ translation: string | null }>;
+        return {
+          id: doc.id,
+          filename: doc.filename,
+          created_at: doc.created_at,
+          source_lang: doc.source_lang,
+          target_lang: doc.target_lang,
+          total: segments.length,
+          translated: segments.filter((segment) => segment.translation !== null).length,
+        };
+      }),
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "UNAUTHORIZED") {
+      return NextResponse.json({ error: "Oturumunuz sona erdi." }, { status: 401 });
+    }
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Belgeler okunamadı." },
+      { status: 500 },
+    );
+  }
+}
 
 export async function POST(request: Request) {
   try {
@@ -29,50 +80,51 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Dosya 25 MB sınırını aşıyor." }, { status: 400 });
     }
     const name = file.name.toLowerCase();
-    if (!name.endsWith(".docx") && !name.endsWith(".pdf")) {
+    if (![".docx", ".pdf", ...IMAGE_EXTENSIONS].some((extension) => name.endsWith(extension))) {
       return NextResponse.json(
-        { error: "Yalnızca .docx ve .pdf kabul ediliyor." },
+        { error: "Yalnızca Word (.docx), PDF ve görsel (JPG, PNG, WebP, TIFF) kabul ediliyor." },
         { status: 415 },
       );
     }
 
     const bytes = new Uint8Array(await file.arrayBuffer());
     const fileHash = createHash("sha256").update(bytes).digest("hex");
+    // Biçim uzantıdan değil içerikten: uzantısı yanlış verilmiş dosya da doğru yoldan gider.
+    const image = imageFormat(bytes);
+    const scanned = isPdf(bytes) || image !== null;
 
-    let parsed: {
-      segments: Array<{
-        id: string;
-        text: string;
-        kind: "paragraph" | "table-cell";
-        order: number;
-        page?: number;
-        ocrWarning?: string | null;
-        /** Çeviri orijinal konumuna yazılamayacaksa nedeni. */
-        placement?: string | null;
-        /** Yazılabilir ama çıktıya bakılmalı (ör. harfe değen aynı renkte mühür). */
-        caution?: string | null;
-      }>;
-      stats: Record<string, number>;
-    };
+    let parsed: { segments: ParsedSegment[]; stats: Record<string, number> };
     let layout: ScanLayout | null = null;
     let ocrWarning: string | null = null;
     let ocrProvider: string | null = null;
     let ocrDemo = false;
 
-    if (isPdf(bytes)) {
+    if (scanned) {
+      // Görsel tek sayfalık PDF'e sarılır; OCR ve sayfa planı PDF ile aynı yoldan geçer.
+      let pdfBytes: Uint8Array;
+      try {
+        pdfBytes = image ? await imageToPdf(bytes) : bytes;
+      } catch (cause) {
+        return NextResponse.json(
+          { error: cause instanceof Error ? cause.message : "Görsel okunamadı." },
+          { status: 422 },
+        );
+      }
+
       // PDF yolu OCR sağlayıcısına bağlıdır. Hiçbiri yapılandırılmamışsa demo
       // sağlayıcı devreye girer ve METİN ÇIKARMAZ — yer tutucu döner, uyarı
       // arayüzde gösterilir. Uydurulmuş metin gerçek sanılmasın diye böyle.
       const provider = activeOcrProvider();
-      const result = await provider.run(bytes, { lang: sourceLang });
+      const result = await provider.run(pdfBytes, { lang: sourceLang });
 
-      // Çeviri orijinal PDF'in üstüne yazılacak; her satırın yeri şimdi ölçülür
-      // ki yerleşemeyen satır inceleme ekranında önceden görünsün.
+      // Çeviri orijinalin üstüne yazılacak; her satırın yeri şimdi ölçülür ki
+      // yerleşemeyen satır inceleme ekranında önceden görünsün. Ölçülemezse
+      // yükleme yine başarılı sayılır; indirme sırasında yeniden denenir.
       let overlay: OverlayPlan | null = null;
       let overlayError: string | null = null;
       if (!result.demo) {
         try {
-          overlay = await planOverlay(bytes, result.blocks);
+          overlay = await planOverlay(pdfBytes, result.blocks);
         } catch (cause) {
           overlayError = cause instanceof Error ? cause.message : "Sayfa düzeni ölçülemedi.";
         }
@@ -82,9 +134,8 @@ export async function POST(request: Request) {
         overlay?.items.flatMap((item) => (item.caution ? item.lineIds.map((id) => [id, item.caution]) : [])) ?? [],
       );
 
-      const segments = ocrToSegments(result);
       parsed = {
-        segments: segments.map(({ id, text, kind, order, page, ocrWarning: warning }) => ({
+        segments: ocrToSegments(result).map(({ id, text, kind, order, page, ocrWarning: warning }) => ({
           id,
           text,
           kind,
@@ -96,10 +147,16 @@ export async function POST(request: Request) {
         })),
         stats: layoutStats(result.blocks, result.pages),
       };
-      layout = { version: 2, blocks: result.blocks, overlay, overlayError };
       ocrWarning = result.warning;
       ocrProvider = provider.label;
       ocrDemo = result.demo;
+      layout = {
+        version: 2,
+        blocks: result.blocks,
+        overlay,
+        overlayError,
+        ocr: { warning: ocrWarning, provider: ocrProvider, demo: ocrDemo },
+      };
     } else {
       try {
         parsed = parseDocx(bytes);
@@ -116,15 +173,13 @@ export async function POST(request: Request) {
     }
 
     const supabase = getCeviriSupabase();
-    const storagePath = `${fileHash.slice(0, 2)}/${fileHash}${isPdf(bytes) ? ".pdf" : ".docx"}`;
+    // Orijinal dosya kendi biçimiyle saklanır; çıktı her indirmede ondan üretilir.
+    const extension = isPdf(bytes) ? ".pdf" : image ? IMAGE_FORMATS[image].extensions[0] : ".docx";
+    const contentType = isPdf(bytes) ? "application/pdf" : image ? IMAGE_FORMATS[image].mime : DOCX_MIME;
+    const storagePath = `${fileHash.slice(0, 2)}/${fileHash}${extension}`;
     const { error: uploadError } = await supabase.storage
       .from(CEVIRI_DOCS_BUCKET)
-      .upload(storagePath, bytes, {
-        contentType: isPdf(bytes)
-          ? "application/pdf"
-          : "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        upsert: true,
-      });
+      .upload(storagePath, bytes, { contentType, upsert: true });
     if (uploadError) throw new Error(`Depolama hatası: ${uploadError.message}`);
 
     const segments = parsed.segments.map((segment) => ({

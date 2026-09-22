@@ -5,8 +5,9 @@ const nextConfig: NextConfig = {
     tsconfigPath: "tsconfig.railway.json",
   },
   // PDF katmanı: pdf.js kendi çalışma dosyalarını ve WASM'ını çalışma anında
-  // node_modules'tan okur; paketlenirse yolları bozulur. sharp yerel bir paket.
-  serverExternalPackages: ["pdfjs-dist", "sharp"],
+  // node_modules'tan okur; paketlenirse yolları bozulur. sharp ve
+  // @napi-rs/canvas (pdf.js'in Node'da sayfa çizdiği tuval) yerel paketler.
+  serverExternalPackages: ["pdfjs-dist", "sharp", "@napi-rs/canvas"],
 };
 
 export default nextConfig;
