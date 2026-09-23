@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import { createVerificationPdfAccess, verifyVerificationPdfAccess } from "../lib/verification-pdf-access.ts";
-import { privateDocumentHeaders, verificationFrameAncestors } from "../lib/public-verification-pdf.ts";
+import { privateDocumentHeaders, verificationFrameAncestors, verificationPdfResponseHeaders } from "../lib/public-verification-pdf.ts";
 
 const originalSecret = process.env.AUTH_SESSION_SECRET;
 beforeEach(() => { process.env.AUTH_SESSION_SECRET = "test-secret-with-more-than-thirty-two-characters"; });
@@ -28,4 +28,13 @@ test("PDF responses block indexing, caching and unrelated framing", () => {
   assert.match(verificationFrameAncestors("ay-tercume"), /https:\/\/aytercume\.com/);
   assert.doesNotMatch(verificationFrameAncestors("ay-tercume"), /turkishtranslation/);
   assert.match(verificationFrameAncestors("ttaa"), /https:\/\/turkishtranslation\.com\.tr/);
+});
+
+test("PDF viewer permits the matching WordPress origin without browser-blocking resource policy", () => {
+  const headers = verificationPdfResponseHeaders("ay-tercume");
+  assert.equal(headers["Content-Type"], "application/pdf");
+  assert.match(headers["Content-Disposition"], /^inline;/);
+  assert.match(headers["Content-Security-Policy"], /frame-ancestors 'self' https:\/\/aytercume\.com/);
+  assert.equal("Cross-Origin-Resource-Policy" in headers, false);
+  assert.doesNotMatch(headers["Content-Security-Policy"], /default-src/);
 });

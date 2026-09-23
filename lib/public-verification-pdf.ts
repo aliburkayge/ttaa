@@ -28,3 +28,12 @@ export const privateDocumentHeaders = {
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "no-referrer",
 };
+
+export function verificationPdfResponseHeaders(brand: VerificationPdfBrand) {
+  return {
+    ...privateDocumentHeaders,
+    "Content-Type": "application/pdf",
+    "Content-Disposition": "inline; filename=verified-document.pdf",
+    "Content-Security-Policy": `frame-ancestors ${verificationFrameAncestors(brand)}`,
+  };
+}

@@ -1,5 +1,5 @@
 import { verifyVerificationPdfAccess } from "../../../../lib/verification-pdf-access";
-import { parseVerificationPdfReference, privateDocumentHeaders, publicVerificationPdfDocument, verificationFrameAncestors } from "../../../../lib/public-verification-pdf";
+import { parseVerificationPdfReference, privateDocumentHeaders, publicVerificationPdfDocument, verificationPdfResponseHeaders } from "../../../../lib/public-verification-pdf";
 import { loadVerificationPdf } from "../../../../lib/verification-pdf-storage";
 
 export const runtime = "nodejs";
@@ -20,13 +20,9 @@ export async function GET(request: Request) {
       if (!response.ok) throw new Error("Eski PDF okunamadı.");
       bytes = new Uint8Array(await response.arrayBuffer());
     } else return new Response("Belge bulunamadı.", { status: 404, headers: privateDocumentHeaders });
-    return new Response(new Blob([bytes.slice().buffer], { type: "application/pdf" }), { headers: {
-      ...privateDocumentHeaders,
-      "Content-Type": "application/pdf",
-      "Content-Disposition": "inline; filename=verified-document.pdf",
-      "Content-Security-Policy": `default-src 'none'; frame-ancestors ${verificationFrameAncestors(reference.brand)}`,
-      "Cross-Origin-Resource-Policy": "same-site",
-    } });
+    return new Response(new Blob([bytes.slice().buffer], { type: "application/pdf" }), {
+      headers: verificationPdfResponseHeaders(reference.brand),
+    });
   } catch {
     return new Response("Belge görüntüleme geçici olarak kullanılamıyor.", { status: 503, headers: privateDocumentHeaders });
   }
