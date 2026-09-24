@@ -11,6 +11,7 @@ import type { MarkKind } from "../../../../lib/ceviri/marks";
 import { escapeLike, KIND_PATTERNS, parseLibraryQuery, toLibraryItem } from "../../../../lib/ceviri/library";
 import { layoutStats } from "../../../../lib/ceviri/ocr-layout";
 import { planOverlay, type OverlayPlan, type ScanLayout } from "../../../../lib/ceviri/pdf-overlay";
+import { detectForDocument } from "../../../../lib/ceviri/client-detection-store";
 
 export const runtime = "nodejs";
 // Taranmış PDF: tüm belgenin OCR'ı, ardından her görsel için ikinci geçiş.
@@ -33,6 +34,8 @@ type ParsedSegment = {
   caution?: string | null;
   /** İmza/mühür bölgesinin içinden okunan satır: çıktıda etiketle birlikte yazılır. */
   mark?: MarkKind | null;
+  /** OCR bloğu: aynı paragrafın satırları cümle olarak birlikte çevrilir (bkz. units.ts). */
+  block?: number;
 };
 
 /**
@@ -50,10 +53,13 @@ export async function GET(request: Request) {
 
     let select = supabase
       .from("ceviri_documents")
-      .select("id, filename, created_at, source_lang, target_lang, stats, segments", { count: "exact" })
+      .select("id, filename, created_at, source_lang, target_lang, stats, segments, client_id", { count: "exact" })
       .order("created_at", { ascending: false })
       .range(query.offset, query.offset + query.limit - 1);
     if (query.q) select = select.ilike("filename", `%${escapeLike(query.q)}%`);
+    // Firma süzgeci: bir firmanın kimliği ya da "none" (firmasız belgeler).
+    const client = params.get("client");
+    if (client) select = client === "none" ? select.is("client_id", null) : select.eq("client_id", client);
     if (query.kind !== "all") {
       select = select.or(KIND_PATTERNS[query.kind].map((pattern) => `filename.ilike.${pattern.replace(/%/g, "*")}`).join(","));
     }
@@ -96,6 +102,8 @@ export async function POST(request: Request) {
     const file = form.get("file");
     const sourceLang = String(form.get("sourceLang") ?? "en-US");
     const targetLang = String(form.get("targetLang") ?? "tr-TR");
+    // Firma: "auto" (belgeden tespit edilir), "none" (genel) ya da firmanın kimliği.
+    const clientChoice = String(form.get("clientId") ?? "auto");
 
     if (!(file instanceof File)) {
       return NextResponse.json({ error: "Dosya gerekli." }, { status: 400 });
@@ -160,7 +168,7 @@ export async function POST(request: Request) {
       );
 
       parsed = {
-        segments: ocrToSegments(result).map(({ id, text, kind, order, page, ocrWarning: warning, mark }) => ({
+        segments: ocrToSegments(result).map(({ id, text, kind, order, page, ocrWarning: warning, mark, block }) => ({
           id,
           text,
           kind,
@@ -168,6 +176,7 @@ export async function POST(request: Request) {
           page,
           ocrWarning: warning,
           mark,
+          block,
           placement: unplaced.get(id) ?? overlayError,
           caution: cautions.get(id) ?? null,
         })),
@@ -230,6 +239,31 @@ export async function POST(request: Request) {
       warning: null,
     }));
 
+    // Firma: belgeden tespit edilir (spec 5.2); elle seçildiyse üretici yine belgeden bulunur.
+    let clientId: string | null = null;
+    let makerId: string | null = null;
+    let detection: Record<string, unknown> | null = null;
+    if (clientChoice !== "none") {
+      const chosen = clientChoice === "auto" ? null : clientChoice;
+      try {
+        const found = await detectForDocument(parsed.segments.map((segment) => segment.text), sourceLang, chosen);
+        clientId = found.clientId;
+        makerId = found.makerId;
+        detection = { ...found, at: new Date().toISOString() };
+      } catch (cause) {
+        // Tespit kurulamazsa yükleme bozulmaz: otomatikte firma sorulur.
+        clientId = chosen;
+        detection = {
+          decision: chosen ? "manual" : "ask",
+          clientId,
+          makerId: null,
+          candidates: [],
+          error: cause instanceof Error ? cause.message : String(cause),
+          at: new Date().toISOString(),
+        };
+      }
+    }
+
     const { data, error } = await supabase
       .from("ceviri_documents")
       .insert({
@@ -241,8 +275,11 @@ export async function POST(request: Request) {
         stats: parsed.stats,
         segments,
         layout,
+        client_id: clientId,
+        maker_id: makerId,
+        detection,
       })
-      .select("id, filename, stats, segments, source_lang, target_lang, status, instructions, chat")
+      .select("id, filename, stats, segments, source_lang, target_lang, status, instructions, chat, client_id, maker_id, detection")
       .single();
     if (error) throw new Error(error.message);
 

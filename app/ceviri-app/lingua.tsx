@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { LibraryItem } from "../../lib/ceviri/library";
 import { markLabels, markNote, type MarkKind } from "../../lib/ceviri/marks";
 import { AllDocsCard, DocCard, QuickView } from "./doc-card";
+import FirmPicker, { type ClientOption } from "./firm-picker";
 import LanguagePicker from "./language-picker";
 import cards from "./library.module.css";
 import styles from "./lingua.module.css";
@@ -48,6 +49,14 @@ const ENGINE_LABELS: Record<string, string> = { openai: "OpenAI", deepl: "DeepL"
 
 type ChatMessage = { role: "user" | "assistant"; content: string; at: string };
 
+/** Firma tespiti (spec 5.2): otomatik, tahmin, sor ya da elle seçildi. */
+type Detection = {
+  decision: "auto" | "suggest" | "ask" | "manual";
+  clientId: string | null;
+  makerId: string | null;
+  candidates?: Array<{ clientId: string; score: number; reasons: string[] }>;
+};
+
 type Doc = {
   id: string;
   filename: string;
@@ -66,6 +75,11 @@ type Doc = {
   segments: Segment[];
   instructions?: string | null;
   chat?: ChatMessage[] | null;
+  /** Müşteri: terimce ve bellek önce bu firmanınki. */
+  client_id?: string | null;
+  /** Üretici: belgede ürünü geçen firma, ikinci öncelik. */
+  maker_id?: string | null;
+  detection?: Detection | null;
 };
 
 /** Ana sayfada gösterilen son belge sayısı; hepsi kütüphanede. */
@@ -144,6 +158,8 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
   const [swapped, setSwapped] = useState(false);
   const [now, setNow] = useState(() => new Date());
   const [downloading, setDownloading] = useState(false);
+  const [clients, setClients] = useState<ClientOption[]>([]);
+  const [firm, setFirm] = useState("auto");
   const fileRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const streamRef = useRef<HTMLDivElement>(null);
@@ -211,6 +227,19 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
     };
   }, [open, loadRecent]);
 
+  // Firma listesi: yükleme seçicisi ve belge rozeti için.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await fetch("/api/ceviri/clients");
+        const payload = await res.json();
+        if (res.ok) setClients(payload.clients as ClientOption[]);
+      } catch {
+        setClients([]);
+      }
+    })();
+  }, []);
+
   function grow(element: HTMLTextAreaElement) {
     element.style.height = "auto";
     element.style.height = `${Math.min(element.scrollHeight, 168)}px`;
@@ -225,6 +254,7 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
         form.append("file", file);
         form.append("sourceLang", sourceLang);
         form.append("targetLang", targetLang);
+        form.append("clientId", firm);
         const res = await fetch("/api/ceviri/documents", { method: "POST", body: form });
         const payload = await res.json();
         if (!res.ok) throw new Error(payload.error ?? "Yükleme başarısız.");
@@ -235,7 +265,7 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
         setBusy(null);
       }
     },
-    [sourceLang, targetLang, show],
+    [sourceLang, targetLang, firm, show],
   );
 
   async function translate(current: Doc) {
@@ -256,6 +286,34 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
       setError(cause instanceof Error ? cause.message : "Çeviri başarısız.");
     } finally {
       setBusy(null);
+    }
+  }
+
+  const clientName = (id: string | null | undefined) => clients.find((client) => client.id === id)?.name ?? null;
+
+  /** Firmayı değiştirir; çevrilmiş satırlar varsa yeni firmaya göre yeniden çevirmeyi önerir. */
+  async function changeFirm(current: Doc, value: string) {
+    const clientId = value === "none" ? null : value;
+    const translatedByMachine = current.segments.some((s) => s.translation !== null && s.source !== "human");
+    const retranslate =
+      translatedByMachine &&
+      window.confirm(
+        "Firma değişti. Çevrilmiş satırlar bu firmanın terimcesi ve belleğiyle yeniden çevrilsin mi? (Düzelttikleriniz korunur.)",
+      );
+    setError(null);
+    try {
+      const res = await fetch(`/api/ceviri/documents/${current.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientId, retranslate }),
+      });
+      const payload = await res.json();
+      if (!res.ok) throw new Error(payload.error ?? "Firma değiştirilemedi.");
+      const updated = { ...current, ...(payload.document as Doc) };
+      setDoc(updated);
+      if (retranslate) await translate(updated);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Firma değiştirilemedi.");
     }
   }
 
@@ -427,6 +485,7 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
           Lingua
         </Link>
         <span className={styles.topSpacer} />
+        <Link className={styles.topLink} href="/ceviri-app/firmalar">Firmalar</Link>
         <Link className={styles.topLink} href="/ceviri-app/kutuphane">Kütüphane</Link>
         <Link className={styles.topLink} href="/ceviri-app/bellek">Bellek</Link>
         <Link className={styles.topLink} href="/">Panel</Link>
@@ -523,6 +582,50 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
                       </>
                     )}
                   </p>
+                  {doc.detection?.decision === "ask" ? (
+                    <div className={styles.firmAsk}>
+                      <b>Bu belgenin firmasını tanıyamadım.</b>
+                      <span>Çeviriden önce seçin — terimce ve bellek buna göre kullanılır.</span>
+                      <FirmPicker
+                        allowAuto={false}
+                        value="none"
+                        label="Firma"
+                        clients={clients}
+                        disabled={working}
+                        onChange={(value) => void changeFirm(doc, value)}
+                      />
+                      <button className={styles.secondary} type="button" disabled={working} onClick={() => void changeFirm(doc, "none")}>
+                        Genel ile devam
+                      </button>
+                    </div>
+                  ) : (
+                    <div className={styles.firmLine}>
+                      <span>
+                        Firma: <b>{clientName(doc.client_id) ?? "Genel"}</b>
+                        {doc.maker_id && (
+                          <>
+                            {" "}· Üretici: <b>{clientName(doc.maker_id) ?? "—"}</b>
+                          </>
+                        )}
+                      </span>
+                      {doc.detection && doc.detection.decision !== "manual" && (
+                        <span className={styles.firmWhy}>
+                          {doc.detection.decision === "auto" ? "otomatik" : "tahmin — kontrol edin"}
+                          {doc.detection.candidates?.[0]?.reasons.length
+                            ? `: ${doc.detection.candidates[0].reasons.join(" · ")}`
+                            : ""}
+                        </span>
+                      )}
+                      <FirmPicker
+                        allowAuto={false}
+                        value={doc.client_id ?? "none"}
+                        label="Değiştir"
+                        clients={clients}
+                        disabled={working}
+                        onChange={(value) => void changeFirm(doc, value)}
+                      />
+                    </div>
+                  )}
                   {ocrFlagged > 0 && (
                     <p className={styles.botMuted}>
                       <b>{ocrFlagged}</b> satırda OCR emin değildi ya da metin bir görselin içinden okundu;
@@ -578,7 +681,7 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
                             className={styles.primary}
                             type="button"
                             onClick={() => void translate(doc)}
-                            disabled={working}
+                            disabled={working || doc.detection?.decision === "ask"}
                           >
                             {busy ?? "Çeviriyi başlat"}
                           </button>
@@ -815,6 +918,7 @@ export default function Lingua({ engines }: { engines: EngineStatus[] }) {
                 </button>
                 <LanguagePicker label="Hedef dil" value={targetLang} onChange={setTargetLang} disabled={doc !== null} />
               </div>
+              <FirmPicker value={firm} onChange={setFirm} clients={clients} disabled={doc !== null} />
               <span
                 className={styles.model}
                 title="Önce çeviri belleği; bellekte olmayan cümleler açık motorlara gider, kurallara göre biri seçilir."

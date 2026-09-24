@@ -1,6 +1,7 @@
 import { getCeviriSupabase } from "./supabase";
 import { memoryLangs } from "./languages";
 import { normalizeForMatch, segmentHash } from "./normalize";
+import { adjustedScore, chainClientIds, NO_SCOPE, type ScopeChain } from "./scope";
 import type { TmxUnit } from "./tmx";
 
 export type TmRow = {
@@ -102,10 +103,15 @@ export type TmMatch = {
   id: string;
   source_text: string;
   target_text: string;
+  /** Ham benzerlik: birebir kullanım kararı bununla verilir. */
   score: number;
+  /** Kapsam paylarıyla düzeltilmiş skor: yalnızca sıralama (spec 5.1). */
+  adjusted?: number;
   origin: string;
   quality: string;
   project_names: string[];
+  client_id?: string | null;
+  sector_id?: string | null;
 };
 
 export const EXACT_THRESHOLD = 0.95;
@@ -134,17 +140,19 @@ export function memoryPairs(sourceLang: string, targetLang: string): Array<[stri
  * puana göre sıralı. Puan eşitse önceliği yüksek çift (belgenin kendi dili) önde.
  */
 export function mergeMatches(byPair: TmMatch[][], limit: number): TmMatch[] {
+  // Sıra düzeltilmiş skorla (firmanın cümlesi önde); yoksa ham skorla.
+  const rankOf = (match: TmMatch) => match.adjusted ?? match.score;
   const best = new Map<string, { match: TmMatch; rank: number }>();
   byPair.forEach((matches, rank) => {
     for (const match of matches) {
       const seen = best.get(match.id);
-      if (!seen || match.score > seen.match.score) {
+      if (!seen || rankOf(match) > rankOf(seen.match)) {
         best.set(match.id, { match, rank: seen ? Math.min(seen.rank, rank) : rank });
       }
     }
   });
   return [...best.values()]
-    .sort((a, b) => b.match.score - a.match.score || a.rank - b.rank)
+    .sort((a, b) => rankOf(b.match) - rankOf(a.match) || a.rank - b.rank)
     .slice(0, limit)
     .map((entry) => entry.match);
 }
@@ -153,26 +161,27 @@ export async function searchTm(query: {
   sourceText: string;
   sourceLang: string;
   targetLang: string;
-  clientId?: string | null;
-  sectorId?: string | null;
+  /** Belgenin kapsam zinciri; verilmezse firma payı yok. */
+  chain?: ScopeChain;
   limit?: number;
   minScore?: number;
 }): Promise<TmMatch[]> {
   const limit = query.limit ?? 10;
+  const chain = query.chain ?? NO_SCOPE;
   const byPair = await Promise.all(
     memoryPairs(query.sourceLang, query.targetLang).map(async ([sourceLang, targetLang]) => {
-      const { data, error } = await getCeviriSupabase().rpc("search_tm", {
+      const { data, error } = await getCeviriSupabase().rpc("search_tm_scoped", {
         p_source_normalized: normalizeForMatch(query.sourceText, sourceLang),
         p_source_hash: segmentHash(query.sourceText, sourceLang),
         p_source_lang: sourceLang,
         p_target_lang: targetLang,
-        p_client_id: query.clientId ?? null,
-        p_sector_id: query.sectorId ?? null,
+        p_client_ids: chainClientIds(chain),
+        p_sector_id: chain.sectorId,
         p_min_score: query.minScore ?? FUZZY_THRESHOLD,
         p_limit: limit,
       });
-      if (error) throw new Error(`search_tm failed: ${error.message}`);
-      return (data ?? []) as TmMatch[];
+      if (error) throw new Error(`search_tm_scoped failed: ${error.message}`);
+      return ((data ?? []) as TmMatch[]).map((match) => ({ ...match, adjusted: adjustedScore(match, chain) }));
     }),
   );
   return mergeMatches(byPair, limit);

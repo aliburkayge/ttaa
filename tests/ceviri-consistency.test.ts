@@ -179,3 +179,23 @@ test("review puts addresses back, unifies repeats, then harmonizes", async () =>
   assert.equal(result.segments.find((s) => s.id === "a")?.source, "rule");
   assert.equal(result.changed, 4);
 });
+
+test("lines of a sentence translated whole are locked: the review cannot rewrite one piece", async () => {
+  // "Jacquard 69727 Genay, France in" adrese benzer; adres kuralı parçayı İngilizceye çevirip cümleyi bozuyordu.
+  const unit = (id: string, text: string, translation: string) => ({ ...seg(id, text, translation), unit: "u1" });
+  const segments = [
+    unit("u1", "SC will be manufactured at the plant located at Z.I. Lyon Nord, Rue", "SC markalı ürünümüzün; Fransa, Z.I. Lyon Nord, Rue"),
+    unit("u2", "Jacquard 69727 Genay, France", "Jacquard 69727 Genay adresindeki tesiste üretileceğini"),
+    seg("x", "Jacquard 69727 Genay, France", "Jacquard 69727 Genay, Fransa"),
+  ];
+  const prompts: string[] = [];
+  const ask = async (prompt: string) => {
+    prompts.push(prompt);
+    return JSON.stringify({ changes: [{ id: "u1", translation: "başka bir çeviri, Z.I. Lyon Nord, Rue", reason: "x" }] });
+  };
+  const result = await reviewDocument(segments, { sourceLang: "en-US", targetLang: "tr-TR", ask });
+  const byId = Object.fromEntries(result.segments.map((s) => [s.id, s.translation]));
+  assert.equal(byId.u1, "SC markalı ürünümüzün; Fransa, Z.I. Lyon Nord, Rue");
+  assert.equal(byId.u2, "Jacquard 69727 Genay adresindeki tesiste üretileceğini");
+  assert.ok(prompts.every((prompt) => !/"id":"u[12]"(?![^\n]*"locked":true)/.test(prompt)));
+});

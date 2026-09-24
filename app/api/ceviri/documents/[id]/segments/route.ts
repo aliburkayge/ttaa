@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { requireAdminSession } from "../../../../../../lib/auth";
 import { getCeviriSupabase } from "../../../../../../lib/ceviri/supabase";
 import { normalizeForMatch, segmentHash } from "../../../../../../lib/ceviri/normalize";
+import { observeEdits } from "../../../../../../lib/ceviri/edit-learning";
+import { recordEdit } from "../../../../../../lib/ceviri/suggestion-store";
+import { memoryPair } from "../../../../../../lib/ceviri/units";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -14,12 +17,18 @@ type StoredSegment = {
   score: number | null;
   note: string | null;
   warning: string | null;
+  /** Çeviride zorunlu tutulan terimler (düzeltmeden öğrenme için). */
+  terms?: Array<{ sourceText: string; targetText: string }>;
+  /** Birlikte çevrildiği cümlenin ilk satırı: belleğe cümlenin tamamı yazılır. */
+  unit?: string | null;
 };
 
 /**
  * A reviewer's correction is the most authoritative translation we have, so it
  * goes into the memory as `human-approved` and outranks anything imported from
- * the CAT exports the next time the same sentence appears.
+ * the CAT exports the next time the same sentence appears. The row belongs to
+ * the document's firm, and when the reviewer replaced a required term the
+ * change is recorded as an observation for that firm (spec 5.6).
  */
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
@@ -37,7 +46,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     const supabase = getCeviriSupabase();
     const { data: doc, error } = await supabase
       .from("ceviri_documents")
-      .select("id, source_lang, target_lang, segments")
+      .select("id, source_lang, target_lang, segments, client_id")
       .eq("id", id)
       .maybeSingle();
     if (error) throw new Error(error.message);
@@ -59,27 +68,53 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       .eq("id", id);
     if (saveError) throw new Error(saveError.message);
 
+    // Satır bir cümlenin parçasıysa belleğe cümlenin tamamı gider (bkz. units.ts).
+    const pair = memoryPair(segments, segmentId, translation);
     const { error: tmError } = await supabase.rpc("upsert_tm_segments", {
       p_rows: [
         {
           source_lang: doc.source_lang,
           target_lang: doc.target_lang,
-          source_text: target.text,
-          target_text: translation,
-          source_hash: segmentHash(target.text, doc.source_lang),
-          target_hash: segmentHash(translation, doc.target_lang),
-          source_normalized: normalizeForMatch(target.text, doc.source_lang),
+          source_text: pair.source,
+          target_text: pair.target,
+          source_hash: segmentHash(pair.source, doc.source_lang),
+          target_hash: segmentHash(pair.target, doc.target_lang),
+          source_normalized: normalizeForMatch(pair.source, doc.source_lang),
           project_names: ["lingua-düzeltme"],
           origin: "human-approved",
           context_pre: null,
           context_post: null,
           import_id: null,
-          client_id: null,
+          client_id: (doc as { client_id?: string | null }).client_id ?? null,
           sector_id: null,
         },
       ],
     });
     if (tmError) throw new Error(`Belleğe yazılamadı: ${tmError.message}`);
+
+    // Düzeltmeden öğrenme: zorunlu terimin karşılığı değiştirildiyse firmaya gözlem.
+    // Öğrenme yan iştir; hatası kaydı bozmaz.
+    const clientId = (doc as { client_id?: string | null }).client_id ?? null;
+    if (clientId && target.translation && target.terms?.length) {
+      const observations = observeEdits({
+        source: target.text,
+        before: target.translation,
+        after: translation,
+        terms: target.terms,
+        lang: doc.target_lang,
+      });
+      for (const observation of observations) {
+        await recordEdit({
+          clientId,
+          sourceLang: doc.source_lang,
+          targetLang: doc.target_lang,
+          observation,
+          source: target.text,
+          after: translation,
+          documentId: id,
+        }).catch((cause) => console.warn("Düzeltme gözlemi kaydedilemedi:", cause));
+      }
+    }
 
     return NextResponse.json({ saved: true });
   } catch (error) {

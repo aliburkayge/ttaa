@@ -26,6 +26,8 @@ export type EngineContext = {
   terms: TermHit[];
   forbidden: TermHit[];
   similar: Array<{ source_text: string; target_text: string; score: number }>;
+  /** Segmentin çevresindeki metin: motor anlamak için kullanır, çevirmez. */
+  context?: string;
 };
 
 export type Engine = {
@@ -84,6 +86,23 @@ export function deeplEndpoint(key: string): string {
 
 type DeeplBody = { translations?: Array<{ text?: string }>; message?: string };
 
+/**
+ * DeepL isteğinin gövdesi. `context` DeepL'in kendi alanıdır: çevrilmez,
+ * ücretlendirilmez, yalnızca segmentin anlamını belirler.
+ */
+export function deeplRequest(text: string, context: EngineContext): Record<string, unknown> {
+  return {
+    text: [text],
+    source_lang: deeplLang(context.sourceLang, "source"),
+    target_lang: deeplLang(context.targetLang, "target"),
+    // Resmi evrak: cümle bölme DeepL'e bırakılmaz, segment bizim
+    // ayırdığımız gibi gider ve gelir.
+    split_sentences: "0",
+    preserve_formatting: true,
+    ...(context.context ? { context: context.context } : {}),
+  };
+}
+
 async function deeplTranslate(text: string, context: EngineContext): Promise<string> {
   const key = process.env.DEEPL_API_KEY?.trim();
   if (!key) throw new Error("DEEPL_API_KEY sunucu ortamında tanımlı değil.");
@@ -93,15 +112,7 @@ async function deeplTranslate(text: string, context: EngineContext): Promise<str
     {
       method: "POST",
       headers: { Authorization: `DeepL-Auth-Key ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text: [text],
-        source_lang: deeplLang(context.sourceLang, "source"),
-        target_lang: deeplLang(context.targetLang, "target"),
-        // Resmi evrak: cümle bölme DeepL'e bırakılmaz, segment bizim
-        // ayırdığımız gibi gider ve gelir.
-        split_sentences: "0",
-        preserve_formatting: true,
-      }),
+      body: JSON.stringify(deeplRequest(text, context)),
       cache: "no-store",
     },
     {

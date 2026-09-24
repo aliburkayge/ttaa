@@ -1,6 +1,7 @@
 import { getCeviriSupabase } from "./supabase";
 import { normalizeForMatch } from "./normalize";
 import { memoryPairs } from "./tm-store";
+import { chainClientIds, NO_SCOPE, pickScoped, type ScopeChain, type ScopedTerms } from "./scope";
 import type { TermRow } from "./termbase";
 
 export type ConceptScope = { scopeType: "global" | "sector" | "client"; scopeId: string | null };
@@ -63,6 +64,8 @@ export async function importTermRows(
 export type TermHit = {
   conceptId: string;
   scopeType: string;
+  /** Firma ya da sektör kapsamında hangi firma/sektör; genelde null. */
+  scopeId?: string | null;
   sourceText: string;
   targetText: string;
   isForbidden: boolean;
@@ -98,21 +101,22 @@ export async function lookupTerms(query: {
   sourceText: string;
   sourceLang: string;
   targetLang: string;
-  clientId?: string | null;
-  sectorId?: string | null;
-}): Promise<{ preferred: TermHit[]; forbidden: TermHit[] }> {
+  /** Belgenin kapsam zinciri; verilmezse yalnızca genel terimce. */
+  chain?: ScopeChain;
+}): Promise<ScopedTerms> {
+  const chain = query.chain ?? NO_SCOPE;
   // İngilizce varyantlar terminolojiyi de paylaşır; eşit kapsamda belgenin
   // kendi varyantının terimi kazanır (çiftler önceliğe göre sıralı).
   const byPair = await Promise.all(
     memoryPairs(query.sourceLang, query.targetLang).map(async ([sourceLang, targetLang]) => {
-      const { data, error } = await getCeviriSupabase().rpc("lookup_terms", {
+      const { data, error } = await getCeviriSupabase().rpc("lookup_terms_scoped", {
         p_text: normalizeForMatch(query.sourceText, sourceLang),
         p_source_lang: sourceLang,
         p_target_lang: targetLang,
-        p_client_id: query.clientId ?? null,
-        p_sector_id: query.sectorId ?? null,
+        p_client_ids: chainClientIds(chain),
+        p_sector_id: chain.sectorId,
       });
-      if (error) throw new Error(`lookup_terms failed: ${error.message}`);
+      if (error) throw new Error(`lookup_terms_scoped failed: ${error.message}`);
       return (data ?? []) as Array<Record<string, unknown>>;
     }),
   );
@@ -120,11 +124,12 @@ export async function lookupTerms(query: {
   const hits: TermHit[] = byPair.flat().map((row) => ({
     conceptId: row.concept_id as string,
     scopeType: row.scope_type as string,
+    scopeId: (row.scope_id as string | null) ?? null,
     sourceText: row.source_text as string,
     targetText: row.target_text as string,
     isForbidden: row.is_forbidden as boolean,
     notes: (row.notes as string | null) ?? null,
   }));
 
-  return pickWinners(hits);
+  return pickScoped(hits, chain);
 }

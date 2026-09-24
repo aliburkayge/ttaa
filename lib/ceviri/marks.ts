@@ -13,6 +13,14 @@ export function isMark(kind: ImageKind | null | undefined): kind is MarkKind {
   return kind === "signature" || kind === "stamp" || kind === "signature_stamp";
 }
 
+/**
+ * İki işaret aynı etiketin altına girer mi? İmza+mühür bölgesi imzayı da
+ * mührü de kapsar; mühür bölgesinin yanındaki imza ise ayrı bir [İMZA] alır.
+ */
+export function sameMark(a: MarkKind, b: MarkKind): boolean {
+  return a === b || a === "signature_stamp" || b === "signature_stamp";
+}
+
 const LABELS: Record<string, { signature: string; stamp: string }> = {
   tr: { signature: "İMZA", stamp: "MÜHÜR" },
   en: { signature: "SIGNATURE", stamp: "SEAL" },

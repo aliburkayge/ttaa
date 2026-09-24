@@ -2,6 +2,7 @@ import { fetchWithRetry, integerEnv } from "../upstream";
 import { isAddressLine, localizeCountries } from "./address";
 import { searchTm, matchTier } from "./tm-store";
 import { lookupTerms, type TermHit } from "./term-store";
+import type { ScopeChain, ScopedTerms } from "./scope";
 import { keepUntranslated, missingProtected, tidyTarget, protectedSpans, suspiciousTarget, violatedTerms } from "./qa";
 import { arbitrate, configuredEngines, type EngineCandidate } from "./engines";
 import { languagePrompt } from "./languages";
@@ -56,6 +57,21 @@ export type SegmentSource = "tm-exact" | "tm-fuzzy" | "engine" | "rule" | "untou
 
 export const ADDRESS_NOTE = "Adres: çevrilmez, yalnızca ülke adı çevrilir (müşteri kuralı).";
 
+/**
+ * Segmentin belgedeki yeri: belge adı ve çevresindeki metin. Motor yalnızca
+ * anlamak için görür, çevirmez. Tek başına belirsiz satırlar ("Pure",
+ * "Powder", "Colour") tablonun ve cümlenin içinde doğru anlaşılır.
+ */
+export type TranslationContext = { document?: string | null; before?: string[]; after?: string[] };
+
+/** OCR'ın metin yerine bıraktığı görsel başvurusu ("![img-7.jpeg](img-7.jpeg)"): yazı değildir. */
+const IMAGE_REFERENCE = /^!\[[^\]]*\]\([^)]*\)$/;
+
+function contextText(context: TranslationContext | null | undefined): string | undefined {
+  const text = [...(context?.before ?? []), ...(context?.after ?? [])].map((line) => line.trim()).filter(Boolean).join("\n");
+  return text || undefined;
+}
+
 export type TranslatedSegment = {
   id: string;
   text: string;
@@ -74,14 +90,19 @@ export type TranslatedSegment = {
   warning: string | null;
 };
 
-function buildPrompt(input: {
+export function buildPrompt(input: {
   text: string;
   sourceLang: string;
   targetLang: string;
   terms: TermHit[];
   forbidden: TermHit[];
+  /** Firmanın başka karşılık seçtiği genel terimler: "X değil" diye yazılır. */
+  replaced: ScopedTerms["replaced"];
   similar: Array<{ source_text: string; target_text: string; score: number }>;
   instructions: string | null;
+  /** Firma talimatları; belge talimatından önce gelir. */
+  firmInstructions: string | null;
+  context?: TranslationContext | null;
 }): string {
   const lines: string[] = [];
   lines.push(
@@ -98,7 +119,11 @@ function buildPrompt(input: {
 
   if (input.terms.length) {
     lines.push("", "Required terminology:");
-    for (const term of input.terms) lines.push(`- "${term.sourceText}" must become "${term.targetText}"`);
+    for (const term of input.terms) {
+      const losers = input.replaced.filter((entry) => entry.by === term).map((entry) => `"${entry.term.targetText}"`);
+      const note = losers.length ? ` (company term — do NOT use ${losers.join(" or ")})` : "";
+      lines.push(`- "${term.sourceText}" must become "${term.targetText}"${note}`);
+    }
   }
 
   if (input.forbidden.length) {
@@ -113,12 +138,32 @@ function buildPrompt(input: {
     }
   }
 
+  if (input.firmInstructions?.trim()) {
+    lines.push(
+      "",
+      "Company rules for this client (always follow them, except where they contradict the required terminology above):",
+      input.firmInstructions.trim(),
+    );
+  }
+
   if (input.instructions?.trim()) {
     lines.push(
       "",
       "Standing instructions the customer gave for this document. Follow them, except where they contradict the required terminology above:",
       input.instructions.trim(),
     );
+  }
+
+  const before = input.context?.before?.filter((line) => line.trim()) ?? [];
+  const after = input.context?.after?.filter((line) => line.trim()) ?? [];
+  if (input.context?.document?.trim() || before.length || after.length) {
+    lines.push(
+      "",
+      "Context from the same document, only to help you understand the segment (do NOT translate it and do NOT include it in your answer):",
+    );
+    if (input.context?.document?.trim()) lines.push(`Document: ${input.context.document.trim()}`);
+    if (before.length) lines.push("Before the segment:", ...before);
+    if (after.length) lines.push("After the segment:", ...after);
   }
 
   lines.push("", "Segment:", input.text);
@@ -143,8 +188,28 @@ export async function translateSegment(
      * reply says so explicitly rather than letting the user assume otherwise.
      */
     instructions?: string | null;
+    /** Belgenin kapsam zinciri: firmanın terimi ve belleği önce gelir. */
+    scope?: ScopeChain;
+    /** Firma talimatları (clients.instructions); belge talimatından önce gelir. */
+    firmInstructions?: string | null;
+    /** Belge adı ve segmentin çevresindeki metin (bkz. TranslationContext). */
+    context?: TranslationContext | null;
   },
 ): Promise<TranslatedSegment> {
+  if (IMAGE_REFERENCE.test(segment.text.trim())) {
+    return {
+      id: segment.id,
+      text: segment.text,
+      translation: segment.text,
+      source: "rule",
+      score: null,
+      terms: [],
+      forbidden: [],
+      note: "Görsel başvurusu: yazı değil, çevrilmez.",
+      warning: null,
+    };
+  }
+
   // Müşteri kuralı: adres çevrilmez, yalnızca ülke adı. Bellekteki eski bir
   // çeviri ("100 Park Caddesi") de kullanılmaz.
   if (isAddressLine(segment.text)) {
@@ -165,6 +230,7 @@ export async function translateSegment(
     sourceText: segment.text,
     sourceLang: options.sourceLang,
     targetLang: options.targetLang,
+    chain: options.scope,
   };
 
   const [matches, termHits] = await Promise.all([
@@ -197,8 +263,11 @@ export async function translateSegment(
     targetLang: options.targetLang,
     terms: termHits.preferred,
     forbidden: termHits.forbidden,
+    replaced: termHits.replaced,
     similar: matches.slice(0, 3),
     instructions: options.instructions ?? null,
+    firmInstructions: options.firmInstructions ?? null,
+    context: options.context ?? null,
   });
 
   const engineContext = {
@@ -207,6 +276,7 @@ export async function translateSegment(
     terms: termHits.preferred,
     forbidden: termHits.forbidden,
     similar: matches.slice(0, 3),
+    context: contextText(options.context),
   };
 
   // OpenAI başta: bellek eşleşmelerini, terim listesini ve kullanıcı

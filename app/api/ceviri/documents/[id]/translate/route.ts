@@ -2,7 +2,9 @@ import { NextResponse } from "next/server";
 import { requireAdminSession } from "../../../../../../lib/auth";
 import { getCeviriSupabase } from "../../../../../../lib/ceviri/supabase";
 import { reviewStored } from "../../../../../../lib/ceviri/review";
+import { scopeFor } from "../../../../../../lib/ceviri/clients";
 import { translateSegment, type TranslatedSegment } from "../../../../../../lib/ceviri/translate";
+import { translatePending } from "../../../../../../lib/ceviri/translate-document";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -19,6 +21,14 @@ type StoredSegment = {
   warning: string | null;
   engine?: string | null;
   alternatives?: Array<{ engine: string; text: string }>;
+  /** Çeviride zorunlu tutulan terimler: düzeltmeden öğrenme bunlara bakar. */
+  terms?: Array<{ sourceText: string; targetText: string }>;
+  page?: number;
+  /** OCR bloğu (taranmış belge): aynı paragrafın satırları cümle olarak çevrilir. */
+  block?: number;
+  mark?: unknown;
+  /** Birlikte çevrildiği cümlenin ilk satırı (bkz. units.ts). */
+  unit?: string | null;
 };
 
 /** How many segments one request translates before returning, so the UI keeps moving. */
@@ -32,7 +42,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
     const { data: doc, error } = await supabase
       .from("ceviri_documents")
-      .select("id, source_lang, target_lang, segments, status, instructions, stats")
+      .select("id, filename, source_lang, target_lang, segments, status, instructions, stats, client_id, maker_id")
       .eq("id", id)
       .maybeSingle();
     if (error) throw new Error(error.message);
@@ -46,15 +56,20 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     }
 
     const model = process.env.OPENAI_MODEL?.trim() || "gpt-5.5-2026-04-23";
-    const batch = pending.slice(0, CHUNK);
-    const results = await Promise.all(
-      batch.map((segment) =>
-        translateSegment(segment, {
-          sourceLang: doc.source_lang,
-          targetLang: doc.target_lang,
-          model,
-          instructions: (doc as { instructions?: string | null }).instructions ?? null,
-        }).catch((cause): TranslatedSegment => ({
+    // Firmanın terimcesi ve belleği önce: müşteri → üretici → sektör → genel.
+    const { chain, firmInstructions } = await scopeFor(doc as { client_id?: string | null; maker_id?: string | null });
+    // Cümleler bütün olarak, çevresindeki metinle çevrilir (bkz. translate-document.ts).
+    const results = await translatePending(segments, {
+      sourceLang: doc.source_lang,
+      targetLang: doc.target_lang,
+      model,
+      instructions: (doc as { instructions?: string | null }).instructions ?? null,
+      scope: chain,
+      firmInstructions,
+      document: (doc as { filename?: string | null }).filename ?? null,
+      limit: CHUNK,
+      translate: (segment, options) =>
+        translateSegment(segment, options).catch((cause): TranslatedSegment => ({
           id: segment.id,
           text: segment.text,
           translation: segment.text,
@@ -65,8 +80,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           note: null,
           warning: cause instanceof Error ? `Çeviri başarısız: ${cause.message}` : "Çeviri başarısız.",
         })),
-      ),
-    );
+    });
 
     const byId = new Map(results.map((result) => [result.id, result]));
     const merged = segments.map((segment) => {
@@ -81,6 +95,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         alternatives: result.alternatives ?? [],
         note: result.note,
         warning: result.warning,
+        terms: result.terms.map(({ sourceText, targetText }) => ({ sourceText, targetText })),
+        unit: result.unit,
       };
     });
 

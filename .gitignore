@@ -42,3 +42,9 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+
+# Müşteri belgelerinden türetilmiş yerel çalışma dosyaları (kişisel veri içerir)
+.claude/firma-tarama/
+.claude/debug-imza/
+.claude/pdf-audit/
+.claude/context-eval/

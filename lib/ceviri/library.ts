@@ -20,6 +20,8 @@ export type LibraryItem = {
   pages: number | null;
   /** Word belgesinde önizlemede gösterilecek ilk satırlar (görüntüsü çizilemiyor). */
   preview: string[];
+  /** Belgenin çevrildiği firma (müşteri); firmasızsa null. */
+  clientId: string | null;
 };
 
 export const PAGE_SIZE = 30;
@@ -66,6 +68,7 @@ type StoredRow = {
   target_lang: string;
   stats?: { pages?: number } | null;
   segments?: Array<{ text?: string; translation: string | null }> | null;
+  client_id?: string | null;
 };
 
 export function toLibraryItem(row: StoredRow): LibraryItem {
@@ -89,6 +92,7 @@ export function toLibraryItem(row: StoredRow): LibraryItem {
             .slice(0, 3)
             .map((text) => text.slice(0, 160))
         : [],
+    clientId: row.client_id ?? null,
   };
 }
 

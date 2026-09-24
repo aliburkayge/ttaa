@@ -1,11 +1,12 @@
 import { degrees, PDFDocument, rgb, type PDFFont } from "pdf-lib";
 import { classifyFamily, fontsFor, type Family } from "./fonts";
-import { reconstructPaper } from "./inpaint";
-import { findInkRegions, inkShare, markMask, signatureShare, type InkMap, type InkRegion } from "./ink-marks";
-import { isMark, markText, type MarkKind } from "./marks";
+import { fillErased, growFaint, reconstructPaper } from "./inpaint";
+import { findInkRegions, inkShare, markMask, signatureShare, speckledPaper, sweepResidue, tinted, type InkMap, type InkRegion } from "./ink-marks";
+import { isMark, markText, sameMark, type MarkKind } from "./marks";
 import { LOW_CONFIDENCE, type Box, type ImageKind, type LayoutBlock, type OcrLine } from "./ocr-layout";
 import { openScan, pageGeometry, type ScanPage } from "./pdf-scan";
 import { tidyTarget } from "./qa";
+import { findRules, type RuleLine } from "./rules";
 
 /**
  * Çeviriyi taranmış PDF'in üstüne, İngilizce yazının tam yerine yazar.
@@ -98,15 +99,35 @@ export type OverlayPlan = {
    * OCR gerekmeden yansır.
    */
   version?: number;
-  /** Sayfa başına tarama eğikliği (radyan); düzeltilmiş koordinatların dönüşü. */
-  pages: Array<{ skew: number }>;
+  /**
+   * Sayfa başına tarama eğikliği (radyan; düzeltilmiş koordinatların dönüşü)
+   * ve sayfadaki düz çizgiler (silmenin kestiği yerde yeniden çizilir).
+   */
+  pages: Array<{ skew: number; rules?: PlanRule[] }>;
   items: OverlayItem[];
   /** Orijinal konumuna yazılamayacak satırlar ve nedeni. */
   unplaced: Array<{ id: string; reason: string }>;
 };
 
+/**
+ * Sayfadaki düz çizgi (düzeltilmiş koordinat, punto): imza çizgisi, tablo
+ * kenarı. İmza ya da satır silinirken üstünden geçtiği kısım da gider;
+ * indirmede bu modelden (doğru, kalınlık, renk) yeniden çizilir.
+ */
+export type PlanRule = {
+  orientation: "h" | "v";
+  /** Yatayda v = a + b·u; dikeyde u = a + b·v. */
+  a: number;
+  b: number;
+  /** Ana eksendeki uçlar: yatayda u, dikeyde v. */
+  start: number;
+  end: number;
+  thickness: number;
+  color: Color;
+};
+
 /** Planlama algoritmasının sürümü; planlamayı değiştiren her iyileştirmede artırılır. */
-export const PLAN_VERSION = 6;
+export const PLAN_VERSION = 8;
 
 /** Taranmış PDF için veritabanında saklanan düzen (`ceviri_documents.layout`). */
 export type ScanLayout = {
@@ -134,7 +155,8 @@ type Frame = {
   fromDisplay(u: number, v: number): { p: number; q: number };
 };
 
-function frameFor(page: { width: number; height: number }, skew: number) {
+/** Düzeltilmiş koordinat (plan) ↔ görüntü düzlemi, sayfanın eğikliğine göre. */
+export function frameFor(page: { width: number; height: number }, skew: number) {
   const cx = page.width / 2;
   const cy = page.height / 2;
   const cos = Math.cos(skew);
@@ -394,6 +416,11 @@ type Survey = {
   textColor: Color;
   paper: Color;
   rows: Row[];
+  /**
+   * Bu bölgede işaret sayılan ton: yazı sayfanın renginde ise renkli (1);
+   * yazı renkliyse (mavi köprü, renkli başlık) renksiz (0).
+   */
+  foreign: 0 | 1;
 };
 
 /**
@@ -575,7 +602,34 @@ function survey(frame: Frame, context: Rect, rowRegion: Rect): Survey {
   // parçalardan. Çevredeki imza ve mühür kırıntıları ortancayı küçültüp
   // kelime boşluğu eşiğini düşürüyor, satırı ortadan bölüyordu (DELAN SC).
   const plausible = (c: Component) => heightPt(c) >= 1.5 && heightPt(c) <= MAX_TEXT_BAND_PT && widthPt(c) <= 40;
-  const textPool = comps.filter((c) => plausible(c) && c.tone === 0 && inRegion(c));
+  // Satırın yazısı renkli mi (mavi köprü, renkli başlık): bölgedeki harf
+  // boyundaki parçalar neredeyse hep sayfanın yazı renginden belirgin şekilde
+  // farklıysa bölgenin yazı tonu odur, siyah parçalar işarettir. Yoksa yalnız
+  // mavi bir köprü satırı hiç bulunamıyordu. Karışık satır ("Email:" siyah,
+  // adres mavi) sayfanın tonunda kalır; renkli devamını eraseRow toplar.
+  // Sayım kutunun 4 punto altını ve üstünü de kapsar: OCR'ın kutusu üstteki
+  // imzayı sarıp ismin kendisini alttan kesebiliyor (Priaxor 4. sayfa).
+  const nearRegion = (c: Component) => {
+    const cx = (c.x0 + c.x1 + 1) / 2;
+    const cy = (c.y0 + c.y1 + 1) / 2;
+    return cx >= toX(rowRegion.u0) && cx <= toX(rowRegion.u1) && cy >= toY(rowRegion.v0 - 4) && cy <= toY(rowRegion.v1 + 4);
+  };
+  const plausibleIn = comps.filter((c) => plausible(c) && nearRegion(c));
+  const neutralCount = plausibleIn.filter((c) => c.tone === 0).length;
+  const colouredIn = plausibleIn.filter((c) => c.tone === 1);
+  const colouredCount = colouredIn.length;
+  // Aynı hizada dizilmiş siyah harfler varsa (en az beş) satırın yazısı
+  // siyahtır; renkli olan işaret ya da satırın renkli devamıdır. OCR'ın isim
+  // kutusu üstündeki imzayı da sarınca imzanın kırıntıları siyah harflerden
+  // çok çıkıyor, bölge "renkli yazı", siyah isim işaret sayılıyordu (Priaxor 4. sayfa).
+  const neutralIn = plausibleIn.filter((c) => c.tone === 0);
+  const centreOf = (c: Component) => ((c.y0 + c.y1 + 1) / 2) * step;
+  const neutralBand = median(neutralIn.map(centreOf));
+  const neutralHeight = median(neutralIn.map(heightPt));
+  const neutralRow = neutralIn.filter((c) => Math.abs(centreOf(c) - neutralBand) <= neutralHeight * 0.6).length >= 5;
+  const textTone: 0 | 1 = colouredCount >= 3 && !neutralRow && neutralCount <= Math.max(1, 0.15 * colouredCount) ? 1 : 0;
+  const foreign: 0 | 1 = textTone === 1 ? 0 : 1;
+  const textPool = comps.filter((c) => plausible(c) && c.tone === textTone && inRegion(c));
   const pool = textPool.length >= 3 ? textPool : comps.filter(plausible);
   const typical = median(pool.map(heightPt)) || 6;
   const maxGlyph = Math.min(MAX_TEXT_BAND_PT, Math.max(2.6 * typical, typical + 4));
@@ -589,10 +643,10 @@ function survey(frame: Frame, context: Rect, rowRegion: Rect): Survey {
   // Harf: yazı boyunda ve yazı renginde (ya da iki rengin değdiği kenar).
   // Harf boyunda ama belirgin şekilde başka renkteki parça (mavi mührün
   // halkasındaki harfler, kırmızı paraf) işarettir.
-  const glyph = comps.map((c, i) => sized[i] && c.tone !== 1);
+  const glyph = comps.map((c, i) => sized[i] && c.tone !== foreign);
   // Yazının çizim rengi: bu bölgedeki harflerin gerçek rengi.
   const textColor = weightedMedianColor(
-    comps.filter((c, i) => glyph[i] && c.tone === 0).map((c) => ({ color: c.color, weight: c.count })),
+    comps.filter((c, i) => glyph[i] && c.tone === textTone).map((c) => ({ color: c.color, weight: c.count })),
   );
 
   // Kağıt: açık ve renksiz pikseller (mührün açık mavisi kağıt değildir).
@@ -629,7 +683,7 @@ function survey(frame: Frame, context: Rect, rowRegion: Rect): Survey {
     for (const line of splitLines(members, band, typical)) rows.push(makeRow(grid, labels, comps, line));
   }
 
-  return { grid, labels, comps, glyph, textColor, paper, rows: rows.sort((a, b) => a.v0 - b.v0) };
+  return { grid, labels, comps, glyph, textColor, paper, rows: rows.sort((a, b) => a.v0 - b.v0), foreign };
 
   /**
    * Tek satır aralıklı metinde bir satırın kuyrukları (g, p, y) sonrakinin
@@ -985,6 +1039,81 @@ function alignRowsToLines(site: Survey, rows: Row[], lines: OcrLine[]): Row[][] 
  * ortada kalıp göze batarlar (telefonla çekilmiş sayfada her satırda vardı).
  * Renkli parçalar (mühür, imza) bunlardan sayılmaz.
  */
+/**
+ * Satır bandına hizalı, harf boyunda, öbür tondaki parçalar (karışık satırın
+ * renkli devamı) ve hemen altlarındaki ince yatay parça (köprünün alt
+ * çizgisi); OCR kutusunun içinde.
+ */
+function alignedColored(survey: Survey, row: Row, limit: Rect): number[] {
+  const { grid, comps } = survey;
+  const band = row.v1 - row.v0;
+  const members = new Set(row.members);
+  const within = (c: Component) => {
+    const u0 = grid.p0 + c.x0 * grid.step;
+    const u1 = grid.p0 + (c.x1 + 1) * grid.step;
+    return u0 >= limit.u0 - 1 && u1 <= limit.u1 + 1;
+  };
+  const letters = comps
+    .map((_, index) => index)
+    .filter((index) => {
+      const c = comps[index];
+      if (members.has(index) || c.tone !== survey.foreign || !within(c)) return false;
+      const height = (c.y1 - c.y0 + 1) * grid.step;
+      const width = (c.x1 - c.x0 + 1) * grid.step;
+      const top = grid.q0 + c.y0 * grid.step;
+      const bottom = grid.q0 + (c.y1 + 1) * grid.step;
+      const v = (top + bottom) / 2;
+      if (height >= band * 0.3 && height <= band * 1.6 && width <= Math.max(band * 3, 12) && v >= row.v0 - band * 0.2 && v <= row.v1 + band * 0.2) return true;
+      // Alt çizgisine değen harfler tek geniş parça olur ("@basf.com"nin
+      // alt uzantıları çizgiye değer): satırın bandında kalıyorsa yazıdır.
+      return width > band * 3 && height >= band * 0.5 && height <= band * 1.8 && top >= row.v0 - band * 0.3 && bottom <= row.v1 + band * 0.9;
+    });
+  // Açık, bulanık bağlantının harfleri mürekkep eşiğini ancak en koyu
+  // noktalarında geçer; harf yerine 4-40 piksellik kırıntılar olur (NJ 3.
+  // sayfa). Satırın kutusunda, satırın yüksekliğinde kalan kırıntılar da
+  // yazıdır: korunurlarsa ".com"un sağında mavi noktalar kalıyordu.
+  // İmzanın büyük darbesinin yanındaki kırıntı imzanındır (JPEG izi): imza
+  // basılı ismin kutusundan geçtiğinde ismin yazısı sanılıyordu (Priaxor 4.
+  // sayfa: "Thomas Ficht"in "Fi"si imzayla birlikte gitti).
+  const reach = Math.round(1 / grid.step);
+  const strokes = comps.filter(
+    (c, index) =>
+      c.tone === survey.foreign &&
+      !letters.includes(index) &&
+      ((c.y1 - c.y0 + 1) * grid.step > band * 1.6 || (c.x1 - c.x0 + 1) * grid.step > band * 3),
+  );
+  const besideStroke = (c: Component) =>
+    strokes.some((s) => c.x1 + reach >= s.x0 && c.x0 - reach <= s.x1 && c.y1 + reach >= s.y0 && c.y0 - reach <= s.y1);
+  const crumbs = comps
+    .map((_, index) => index)
+    .filter((index) => {
+      const c = comps[index];
+      if (members.has(index) || c.tone !== survey.foreign || letters.includes(index) || !within(c)) return false;
+      const top = grid.q0 + c.y0 * grid.step;
+      const bottom = grid.q0 + (c.y1 + 1) * grid.step;
+      return bottom - top <= band && top >= row.v0 - band * 0.3 && bottom <= Math.max(row.v1 + band * 0.9, limit.v1 + 1) && !besideStroke(c);
+    });
+  const spread = (list: number[]) =>
+    list.length ? (Math.max(...list.map((i) => comps[i].x1)) - Math.min(...list.map((i) => comps[i].x0)) + 1) * grid.step : 0;
+  const letterWidth = letters.reduce((sum, i) => sum + (comps[i].x1 - comps[i].x0 + 1) * grid.step, 0);
+  const lettered = letters.length >= 2 || letterWidth >= band * 3;
+  // Kırıntılar tek başına ancak satır boyu yayılmışsa yazıdır (birkaç nokta bir imzanın ucu olabilir).
+  if (!lettered && !(crumbs.length >= 6 && spread(crumbs) >= band * 3)) return [];
+  if (!lettered) return crumbs;
+  const lu0 = Math.min(...letters.map((i) => comps[i].x0));
+  const lu1 = Math.max(...letters.map((i) => comps[i].x1));
+  const lines = comps
+    .map((_, index) => index)
+    .filter((index) => {
+      const c = comps[index];
+      if (members.has(index) || c.tone !== survey.foreign || letters.includes(index) || !within(c)) return false;
+      const height = (c.y1 - c.y0 + 1) * grid.step;
+      const top = grid.q0 + c.y0 * grid.step;
+      return height <= 3 && c.x1 >= lu0 && c.x0 <= lu1 && top >= row.v0 + band * 0.5 && top <= row.v1 + band * 0.6;
+    });
+  return [...new Set([...letters, ...lines, ...crumbs])];
+}
+
 function strays(survey: Survey, row: Row): number[] {
   const { grid, comps } = survey;
   const band = row.v1 - row.v0;
@@ -992,7 +1121,7 @@ function strays(survey: Survey, row: Row): number[] {
   const members = new Set(row.members);
   const colorful = colorMatters(survey);
   comps.forEach((c, index) => {
-    if (members.has(index) || (colorful && c.tone === 1)) return;
+    if (members.has(index) || (colorful && c.tone === survey.foreign)) return;
     const height = (c.y1 - c.y0 + 1) * grid.step;
     const width = (c.x1 - c.x0 + 1) * grid.step;
     if (height > band * 0.45 || width > Math.max(2.5, band * 0.3)) return;
@@ -1012,7 +1141,7 @@ function strays(survey: Survey, row: Row): number[] {
  */
 function colorMatters(survey: Survey): boolean {
   const { grid, comps } = survey;
-  return comps.some((c) => c.tone === 1 && ((c.y1 - c.y0 + 1) * grid.step > 6 || (c.x1 - c.x0 + 1) * grid.step > 12));
+  return comps.some((c) => c.tone === survey.foreign && ((c.y1 - c.y0 + 1) * grid.step > 6 || (c.x1 - c.x0 + 1) * grid.step > 12));
 }
 
 type Underline = { comp: number; u0: number; u1: number; v1: number; center: number; thickness: number };
@@ -1031,7 +1160,7 @@ function underlineOf(survey: Survey, row: Row): Underline | null {
   const members = new Set(row.members);
   for (let index = 0; index < comps.length; index++) {
     const c = comps[index];
-    if (members.has(index) || glyph[index] || c.tone === 1) continue;
+    if (members.has(index) || glyph[index] || c.tone === survey.foreign) continue;
     const u0 = grid.p0 + c.x0 * grid.step;
     const u1 = grid.p0 + (c.x1 + 1) * grid.step;
     const overlap = Math.min(u1, row.u1) - Math.max(u0, row.u0);
@@ -1076,11 +1205,38 @@ function eraseRow(
   const { grid, labels, comps, glyph } = survey;
   // Harfin çevresindeki soluk iz de silinecek alana girsin (~2 punto).
   const pad = 2.2;
+  // Karışık satırın renkli devamı ("Email:" siyah, adres mavi köprü): satır
+  // bandına hizalı, harf boyundaki öbür tondaki parçalar ve hemen altlarındaki
+  // ince renkli alt çizgi satırın yazısıdır. Satırın ölçülen genişliği yalnız
+  // siyah kısmı kapsıyor, silme köprüye hiç ulaşmıyordu (NJ 3. sayfa). OCR
+  // kutusunun (limit) dışına çıkmaz; imza darbesi harf boyunda değildir.
+  const colored = alignedColored(survey, row, limit);
+  const coloredText = survey.foreign === 0 || colored.length > 0;
+  // Renkli yazının ince alt çizgisi (köprü) bulanık ve açıktır, çoğu zaman
+  // bileşen bile olmaz: alan onu da kapsasın diye 2 punto aşağı uzatılır.
+  const coloredSpan = !coloredText
+    ? null
+    : survey.foreign === 0
+      ? { u0: row.u0, u1: row.u1 }
+      : {
+          u0: Math.min(...colored.map((i) => grid.p0 + comps[i].x0 * grid.step)),
+          u1: Math.max(...colored.map((i) => grid.p0 + (comps[i].x1 + 1) * grid.step)),
+        };
   // Alt çizgi yazının parçası sayılır: satırla birlikte silinir.
-  const span = underline
+  const base = underline
     ? { u0: Math.min(row.u0, underline.u0), v0: row.v0, u1: Math.max(row.u1, underline.u1), v1: Math.max(row.v1, underline.v1) }
     : row;
-  const bounds = underline ? { ...limit, v1: Math.max(limit.v1, underline.v1 + 1) } : limit;
+  const span = colored.length
+    ? {
+        u0: Math.min(base.u0, ...colored.map((i) => grid.p0 + comps[i].x0 * grid.step)),
+        v0: base.v0,
+        u1: Math.max(base.u1, ...colored.map((i) => grid.p0 + (comps[i].x1 + 1) * grid.step)),
+        v1: Math.max(base.v1, ...colored.map((i) => grid.q0 + (comps[i].y1 + 1) * grid.step)) + 2,
+      }
+    : coloredText
+      ? { ...base, v1: base.v1 + 2 }
+      : base;
+  const bounds = { ...limit, v1: Math.max(limit.v1, span.v1 + 1) };
   const rect: Rect = {
     u0: Math.max(bounds.u0, span.u0 - pad),
     v0: Math.max(bounds.v0, span.v0 - pad),
@@ -1095,7 +1251,7 @@ function eraseRow(
   const h = y1 - y0 + 1;
   if (w <= 0 || h <= 0) return { rect: null, mask: null, caution: null };
 
-  const members = new Set([...row.members, ...(underline ? [underline.comp] : []), ...strays(survey, row)]);
+  const members = new Set([...row.members, ...(underline ? [underline.comp] : []), ...strays(survey, row), ...colored]);
   // own: satırın harf pikseli; other: başka bir parçanın (işaret ya da başka
   // satır) pikseli.
   const own = new Uint8Array(w * h);
@@ -1140,7 +1296,8 @@ function eraseRow(
       }
     }
   }
-  const lightInk = lightPixels >= 20;
+  const lightInk = lightPixels >= 20 || coloredText;
+  const paperLum = 0.299 * survey.paper[0] + 0.587 * survey.paper[1] + 0.114 * survey.paper[2];
   // Yazıyla aynı tonda bir işaret (siyah mühür, siyah imza, siyah çizgi)
   // yazının şeridine girip satıra 1,5 puntodan fazla yaklaşıyorsa harfle
   // kaynaşmış olabilir; kaynaşan ikisi tek parçadır ve kesin ayrılamaz.
@@ -1155,7 +1312,7 @@ function eraseRow(
   search: for (let y = bandY0; y <= bandY1; y++) {
     for (let x = bandX0; x <= bandX1; x++) {
       const label = labels[y * grid.w + x];
-      if (label >= 0 && !members.has(label) && !glyph[label] && comps[label].tone !== 1) {
+      if (label >= 0 && !members.has(label) && !glyph[label] && comps[label].tone !== survey.foreign) {
         caution =
           "Bu satır aynı renkte bir mühür, imza ya da çizgiyle kesişiyor; işaret korundu, kesişen harfler tam silinmemiş olabilir. Çıktıyı kontrol edin.";
         break search;
@@ -1188,9 +1345,22 @@ function eraseRow(
       //    Sınır saf kağıda düşmeli.
       // Renkli pikseller (mührün açık mavisi) ve başka bir işaretin hemen
       // yanındakiler (onun kendi kenarı) korunur.
+      // Renkli yazı bölgesinde renkli mürekkep, koyuluğuna bakılmadan satırındır
+      // (köprünün soluk alt çizgisi, harfin açık mavi kenarı).
+      if (!erase && coloredSpan && label < 0) {
+        const u = grid.p0 + (x0 + x + 0.5) * grid.step;
+        // Kırıntılar harfin ve alt çizginin ucuna kadar varmaz: yarım satır pay.
+        const slack = Math.max(1, (row.v1 - row.v0) / 2);
+        if (u >= coloredSpan.u0 - slack && u <= coloredSpan.u1 + slack) {
+          const [r, g, b] = pixelColor(grid, index);
+          if (Math.max(r, g, b) - Math.min(r, g, b) >= 40 && grid.lum[index] < paperLum - 25) erase = true;
+        }
+      }
       if (!erase && label < 0 && near(x, y, haloRadius) && !within(other, x, y, 1)) {
         const [r, g, b] = pixelColor(grid, index);
-        if (!colorful || Math.max(r, g, b) - Math.min(r, g, b) < 40) erase = true;
+        // Yabancı tondaki piksel (öbür işaretin kenarı) kalır; yazının kendi tonu silinir.
+        const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+        if (!colorful || (survey.foreign === 1 ? chroma < 40 : chroma >= 40)) erase = true;
       }
       if (erase) {
         const bit = y * w + x;
@@ -1514,7 +1684,11 @@ function medianOrNull(values: number[]): number | null {
  */
 function rowCore(site: Survey, row: Row): number | null {
   const { grid, comps, glyph } = site;
-  const members = row.members.filter((index) => glyph[index]);
+  // Yalnız harf boyundaki parçalar: i noktası, iki nokta ve bulanık bir
+  // bağlantının renksiz görünen minik kırıntıları tabanı yukarı çekiyordu
+  // (NJ 3. sayfa: e-posta satırı 11 yerine 7,5 punto).
+  const band = row.v1 - row.v0;
+  const members = row.members.filter((index) => glyph[index] && (comps[index].y1 - comps[index].y0 + 1) * grid.step >= band * 0.35);
   if (members.length < 4) return null;
   const tops = members.map((index) => grid.q0 + comps[index].y0 * grid.step).sort((x, y) => x - y);
   const bottoms = members.map((index) => grid.q0 + (comps[index].y1 + 1) * grid.step).sort((x, y) => x - y);
@@ -1664,14 +1838,23 @@ const SIGNATURE_SHARE = 0.6;
 const SIGNATURE_INSIDE = 0.75;
 /** Siyah imzada: satırın mürekkebinin en az bu kadarı harften büyük imza çizgisi olmalı. */
 const SIGNATURE_STROKES = 0.35;
+/**
+ * İşaret maskesi bir satırın en az bu kadar siyah hücresini ve siyahının bu
+ * payını aldıysa satır yeniden yazılır (ölçüm: mührün kestiği satır %3,6;
+ * mavi imzanın geçtiği satırda JPEG kırıntısı %0,5).
+ */
+const BITTEN_CELLS = 6;
+const BITTEN_SHARE = 0.02;
 
 export type PlanOptions = {
   /**
    * Görsel sınıflandırıcı. Verilirse OCR'ın ayrı bölge olarak vermediği imza
    * ve mühürler taramanın kendisinden aranır (bkz. ink-marks.ts); her aday
    * kırpılıp buna sorulur. Verilmezse yalnızca OCR'ın ayırdığı bölgeler işlenir.
+   * `where`: kırpılan yerin sayfası ve dikdörtgeni (düzeltilmiş koordinat);
+   * kalite ölçer kayıtlı planın o yerdeki kararını buradan bulur.
    */
-  classify?: (dataUrl: string) => Promise<ImageKind>;
+  classify?: (dataUrl: string, where?: { page: number; rect: Rect }) => Promise<ImageKind>;
 };
 
 function packBits(bits: Uint8Array): string {
@@ -1733,6 +1916,272 @@ function regionRect(region: InkRegion): Rect {
   return { u0: region.x0 * INK_STEP, v0: region.y0 * INK_STEP, u1: (region.x1 + 1) * INK_STEP, v1: (region.y1 + 1) * INK_STEP };
 }
 
+// ---------- düz çizgiler ----------
+
+/**
+ * Çizgi aramasının rasteri: hücre 0,3 punto, hücrenin ortası (en koyu değil).
+ * Mürekkep rasteri (0,6 punto, en koyu) harfleri şişirir; orada birbirine
+ * değen harfler uzun düz koşu olup çizgi sanılıyor, çevirinin üstüne çizgi
+ * çekiliyordu (Mfg mektubu, Priaxor 1. sayfa). Bu çözünürlükte harf araları
+ * açık kalır, yalnızca gerçek düz çizgi uzun koşu verir.
+ */
+const RULE_STEP = 0.3;
+
+function ruleRaster(frame: Frame): { w: number; h: number; rgb: Uint8Array } {
+  const w = Math.max(1, Math.ceil(frame.page.width / RULE_STEP));
+  const h = Math.max(1, Math.ceil(frame.page.height / RULE_STEP));
+  const rgb = new Uint8Array(w * h * 3).fill(255);
+  // Hücre başına köşegendeki iki örneğin en koyusu: 300 DPI'daki bir piksellik ince çizgi
+  // (JBIG2) tek örnekle yer yer kaçıyor, çizgi parçalanıyordu.
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let best: Color | null = null;
+      let bestLum = Infinity;
+      for (const [sx, sy] of [[0.25, 0.25], [0.75, 0.75]]) {
+        const { u, v } = frame.toDisplay((x + sx) * RULE_STEP, (y + sy) * RULE_STEP);
+        const color = frame.page.rgb(u, v);
+        if (color && lumOf(color) < bestLum) {
+          bestLum = lumOf(color);
+          best = color;
+        }
+      }
+      if (best) rgb.set(best, (y * w + x) * 3);
+    }
+  }
+  return { w, h, rgb };
+}
+
+/** Çizgi rasterindeki çizgi (piksel) → plan çizgisi (düzeltilmiş koordinat, punto). */
+function planRule(rule: RuleLine): PlanRule {
+  return {
+    orientation: rule.orientation,
+    a: (rule.a + 0.5) * RULE_STEP,
+    b: rule.b,
+    start: rule.start * RULE_STEP,
+    end: (rule.end + 1) * RULE_STEP,
+    thickness: Math.max(0.3, rule.thickness * RULE_STEP),
+    color: rule.color,
+  };
+}
+
+const lumOf = (color: Color) => 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2];
+
+/**
+ * Çizginin konumu, kalınlığı ve rengi taramanın kendi çözünürlüğünde:
+ * mürekkep rasteri 0,6 puntoluk hücrelerle çalışır, 0,5 puntoluk bir çizgi
+ * orada 1–2 hücredir. Çizgi boyunca dokuz yerde dik kesit alınır; yarı
+ * koyuluğun altındaki genişlik kalınlık, oradaki renk çizginin rengidir.
+ * İmzanın geçtiği bir kesit ortancayı değiştirmez.
+ */
+function refineRule(frame: Frame, rule: PlanRule): PlanRule {
+  const step = 0.08;
+  const reach = Math.max(1.5, rule.thickness * 2);
+  const widths: number[] = [];
+  const offsets: number[] = [];
+  const colors: Color[] = [];
+  for (let k = 1; k <= 9; k++) {
+    const along = rule.start + ((rule.end - rule.start) * k) / 10;
+    const center = rule.a + rule.b * along;
+    const profile: Array<{ d: number; lum: number; color: Color }> = [];
+    for (let d = -reach; d <= reach + 1e-9; d += step) {
+      const [p, q] = rule.orientation === "h" ? [along, center + d] : [center + d, along];
+      const { u, v } = frame.toDisplay(p, q);
+      const color = frame.page.rgb(u, v);
+      if (color) profile.push({ d, lum: lumOf(color), color });
+    }
+    if (profile.length < 5) continue;
+    const paper = [...profile.map((point) => point.lum)].sort((x, y) => x - y)[Math.floor(profile.length * 0.9)];
+    const darkest = Math.min(...profile.map((point) => point.lum));
+    if (darkest > paper - 40) continue;
+    const below = profile.filter((point) => point.lum < (paper + darkest) / 2);
+    widths.push(below.length * step);
+    offsets.push(below.reduce((sum, point) => sum + point.d, 0) / below.length);
+    colors.push([0, 1, 2].map((channel) => median(below.map((point) => point.color[channel]))) as Color);
+  }
+  if (widths.length < 3) return rule;
+  const refined: PlanRule = {
+    ...rule,
+    a: rule.a + median(offsets),
+    thickness: Math.max(0.3, median(widths)),
+    color: [0, 1, 2].map((channel) => median(colors.map((color) => color[channel]))) as Color,
+  };
+  // Uçlar mürekkep bitene kadar uzatılır (0,6 puntoya kadar kopukluk atlanır):
+  // imzanın çizgiye bindiği uçta kaba raster çizgiyi erken bitiriyor, silinen
+  // kısmın ucu yeniden çizilmiyordu (NJ 1. sayfa, sağ imza çizgisi).
+  const paperLum = median(colors.map(lumOf)) + 120;
+  const inkAt = (along: number) => {
+    const center = refined.a + refined.b * along;
+    for (let d = -refined.thickness / 2 - 0.3; d <= refined.thickness / 2 + 0.3; d += 0.15) {
+      const [p, q] = refined.orientation === "h" ? [along, center + d] : [center + d, along];
+      const { u, v } = frame.toDisplay(p, q);
+      const color = frame.page.rgb(u, v);
+      if (color && lumOf(color) < Math.min(170, paperLum - 50)) return true;
+    }
+    return false;
+  };
+  const extend = (from: number, direction: number) => {
+    let end = from;
+    let gap = 0;
+    for (let along = from + direction * 0.3; Math.abs(along - from) <= 30; along += direction * 0.3) {
+      if (inkAt(along)) {
+        end = along;
+        gap = 0;
+      } else if ((gap += 0.3) > 0.6) break;
+    }
+    return end;
+  };
+  refined.start = extend(refined.start, -1);
+  refined.end = extend(refined.end, 1);
+  return refined;
+}
+
+/**
+ * Bölgeyi boydan boya geçen (bölgenin dışına da uzanan) plan çizgilerinin
+ * mürekkep rasterindeki pikseli: işaretle birlikte silinir, indirmede modelden
+ * yeniden çizilir. Bölgenin içinde kalan düz parça (imzanın kuyruğu,
+ * `insideMark`) sayılmaz; plan da onu yazmaz.
+ */
+function passingThrough(rules: PlanRule[], region: InkRegion): (x: number, y: number) => boolean {
+  const rect = regionRect(region);
+  const passing = rules.filter((rule) => {
+    const [r0, r1, c0, c1] = rule.orientation === "h" ? [rect.u0, rect.u1, rect.v0, rect.v1] : [rect.v0, rect.v1, rect.u0, rect.u1];
+    const from = Math.max(rule.start, r0);
+    const to = Math.min(rule.end, r1);
+    if (to <= from) return false;
+    const cross = rule.a + rule.b * ((from + to) / 2);
+    return cross >= c0 - 1 && cross <= c1 + 1 && !insideMark(rule, rect, region.colored);
+  });
+  return (x, y) => {
+    const u = (x + 0.5) * INK_STEP;
+    const v = (y + 0.5) * INK_STEP;
+    return passing.some((rule) => {
+      const [along, cross] = rule.orientation === "h" ? [u, v] : [v, u];
+      return (
+        along >= rule.start - INK_STEP &&
+        along <= rule.end + INK_STEP &&
+        Math.abs(cross - (rule.a + rule.b * along)) <= rule.thickness / 2 + 1.5 * INK_STEP
+      );
+    });
+  };
+}
+
+/**
+ * Silinen alanın dışında çizginin en az bu kadarı (punto) ve bu payı kalmalı:
+ * yoksa imzanın kendi kuyruğudur. İmza çizgisi imzanın ancak biraz dışına
+ * taşar (NJ: 120 puntoluk çizginin 24 puntosu).
+ */
+const RULE_OUTSIDE = 6;
+const RULE_OUTSIDE_SHARE = 0.1;
+
+/**
+ * Bölgedeki mürekkebin çoğu renkli mi (mavi imza, renkli mühür). Düz, ince
+ * çizgiler sayılmaz: imzanın altındaki siyah çizgi imzanın rengini değiştirmez.
+ */
+function tintedInk(site: Survey, region: Rect): boolean {
+  const { grid, comps } = site;
+  let coloured = 0;
+  let neutral = 0;
+  for (const c of comps) {
+    const u = grid.p0 + ((c.x0 + c.x1 + 1) / 2) * grid.step;
+    const v = grid.q0 + ((c.y0 + c.y1 + 1) / 2) * grid.step;
+    if (u < region.u0 || u > region.u1 || v < region.v0 || v > region.v1) continue;
+    const width = (c.x1 - c.x0 + 1) * grid.step;
+    const height = (c.y1 - c.y0 + 1) * grid.step;
+    if (Math.min(width, height) <= 3 && Math.max(width, height) >= 30) continue;
+    if (c.tone === 1) coloured += c.count;
+    else neutral += c.count;
+  }
+  return coloured > 0 && coloured > 2 * neutral;
+}
+
+/**
+ * Çizgi işaretin kendi düz kuyruğu mu: işaretin bölgesini kesiyor ve dışına
+ * ancak çok az taşıyor. Böyle çizgi plana yazılmaz, yeniden çizilmez; basılı
+ * çizgi (imza çizgisi, tablo kenarı) işaretin dışına da uzanır. Renkli
+ * işaretin içindeki renksiz çizgi hiçbir zaman onun kuyruğu değildir: uzun
+ * mavi imza çizgisinin iki ucundan da taşar, çizgi imzanın içinde kalır
+ * (NJ 1. sayfa, sağ imza).
+ */
+export function insideMark(rule: PlanRule, region: Rect, colored = false): boolean {
+  const tintedRule = tinted(Math.max(...rule.color) - Math.min(...rule.color), lumOf(rule.color));
+  if (colored && !tintedRule) return false;
+  // Renkli işaretin bölgesini kesen renkli "çizgi" işaretin kendisidir (mührün
+  // başlığı kesen yayı): yeniden çizilince başlığın ortasından yeşil bir çizgi
+  // geçiyordu (Priaxor 2. sayfa).
+  if (colored && tintedRule) {
+    const [r0, r1, c0, c1] =
+      rule.orientation === "h" ? [region.u0, region.u1, region.v0, region.v1] : [region.v0, region.v1, region.u0, region.u1];
+    const from = Math.max(rule.start, r0);
+    const to = Math.min(rule.end, r1);
+    const cross = rule.a + rule.b * ((from + to) / 2);
+    if (to > from && cross >= c0 - 1 && cross <= c1 + 1) return true;
+  }
+  const [r0, r1, c0, c1] =
+    rule.orientation === "h" ? [region.u0, region.u1, region.v0, region.v1] : [region.v0, region.v1, region.u0, region.u1];
+  const from = Math.max(rule.start, r0);
+  const to = Math.min(rule.end, r1);
+  if (to <= from) return false;
+  const cross = rule.a + rule.b * ((from + to) / 2);
+  if (cross < c0 - 1 || cross > c1 + 1) return false;
+  const outside = Math.max(0, Math.min(rule.end, r0) - rule.start) + Math.max(0, rule.end - Math.max(rule.start, r1));
+  return outside < Math.max(RULE_OUTSIDE, RULE_OUTSIDE_SHARE * (rule.end - rule.start));
+}
+
+/**
+ * Çizginin indirmede yeniden çizilecek aralıkları. İşaretin (imza, mühür)
+ * kestiği yer hep; metin yamasının kestiği yer yalnızca yamanın kenar
+ * bandındaysa (tablo kenarı; satırın ortasından geçen çizgi üstü çizili yazı olurdu).
+ */
+export function rulePatchCuts(rule: PlanRule, cuts: Array<{ rect: Rect; mark: boolean }>): Array<[number, number]> {
+  const rects = cuts.filter((cut) => cut.mark || (nearEdge(rule, cut.rect) && !ownUnderline(rule, cut.rect))).map((cut) => cut.rect);
+  return ruleCuts(rule, rects);
+}
+
+/**
+ * Yatay çizgi bütünüyle yamanın genişliğinde kalıyorsa satırın kendi alt
+ * çizgisidir (e-posta bağlantısı): satır yeniden yazılınca geri gelmez. Tablo
+ * kenarı hücrenin yamasından taşar. NJ 3. sayfa: bağlantının alt çizgisi yeni
+ * yazının altına yeniden çiziliyor, mavi kesik çizgi olarak kalıyordu.
+ */
+function ownUnderline(rule: PlanRule, rect: Rect): boolean {
+  return rule.orientation === "h" && rule.start >= rect.u0 - 2 && rule.end <= rect.u1 + 2;
+}
+
+/** Çizgi yamanın kenar bandında mı (yüksekliğin dörtte biri): tablo kenarı, satırın ortası değil. */
+export function nearEdge(rule: PlanRule, rect: Rect): boolean {
+  const [a0, a1, c0, c1] = rule.orientation === "h" ? [rect.u0, rect.u1, rect.v0, rect.v1] : [rect.v0, rect.v1, rect.u0, rect.u1];
+  const cross = rule.a + rule.b * ((Math.max(rule.start, a0) + Math.min(rule.end, a1)) / 2);
+  const band = (c1 - c0) / 4;
+  return cross <= c0 + band || cross >= c1 - band;
+}
+
+/**
+ * Çizginin yamaların kestiği aralıkları (ana eksende, punto): indirmede
+ * buralarda yeniden çizilir. Aralığın uçları var olan çizginin üstüne biraz
+ * taşar, dikiş görünmez.
+ */
+export function ruleCuts(rule: PlanRule, rects: Rect[]): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  for (const rect of rects) {
+    const [a0, a1, c0, c1] = rule.orientation === "h" ? [rect.u0, rect.u1, rect.v0, rect.v1] : [rect.v0, rect.v1, rect.u0, rect.u1];
+    const from = Math.max(rule.start, a0);
+    const to = Math.min(rule.end, a1);
+    if (to <= from) continue;
+    const cross = rule.a + rule.b * ((from + to) / 2);
+    if (cross < c0 - rule.thickness / 2 || cross > c1 + rule.thickness / 2) continue;
+    spans.push([from, to]);
+  }
+  spans.sort((p, q) => p[0] - q[0]);
+  const merged: Array<[number, number]> = [];
+  for (const span of spans) {
+    const last = merged[merged.length - 1];
+    if (last && span[0] <= last[1]) last[1] = Math.max(last[1], span[1]);
+    else merged.push([span[0], span[1]]);
+  }
+  const overlap = Math.max(0.3, rule.thickness);
+  return merged.map(([from, to]) => [Math.max(rule.start, from - overlap), Math.min(rule.end, to + overlap)]);
+}
+
 function rasterRect(rect: Rect) {
   return { x0: rect.u0 / INK_STEP, y0: rect.v0 / INK_STEP, x1: rect.u1 / INK_STEP - 1, y1: rect.v1 / INK_STEP - 1 };
 }
@@ -1789,6 +2238,12 @@ type PendingMark = {
   pixels: { rect: Rect; w: number; h: number; data: Uint8Array } | null;
   /** Renkli (mavi) imza: maske siyah pikselleri hiç almaz, basılı yazı yeniden yazılmaz. */
   colored: boolean;
+  /**
+   * Mürekkebi renkli mi (yalnızca çizgi kararı için). OCR'ın ayırdığı bölge
+   * bütünüyle silinir, `colored` orada hep false; ama mavi imzanın kutusundaki
+   * siyah çizgi imzanın kuyruğu değil basılı çizgidir, yeniden çizilir.
+   */
+  tinted?: boolean;
   caution: string | null;
 };
 
@@ -1798,6 +2253,8 @@ export async function planOverlay(
   options: PlanOptions = {},
 ): Promise<OverlayPlan> {
   const measured: Measured[] = [];
+  /** İşaret maskesinin siyah harflerini de aldığı satırlar: yeniden yazılır. */
+  const bitten = new Set<Measured>();
   const marks: PendingMark[] = [];
   /** El yazısı gibi görünüp yerine yazılmayan satırlar: imza olabilirler. */
   const handwritten: Array<{ page: number; rect: Rect; lineIds: string[] }> = [];
@@ -1809,6 +2266,7 @@ export async function planOverlay(
   // hepsini birden tutmak uzun belgede sunucunun belleğini doldururdu.
   const scan = await openScan(pdfBytes);
   const skews = Array.from({ length: scan.pageCount }, () => 0);
+  const rulesByPage: PlanRule[][] = [];
   const pageErrors: string[] = [];
   let pagesRead = 0;
   try {
@@ -1833,8 +2291,11 @@ export async function planOverlay(
       const skew = estimateSkew(page);
       skews[index] = skew;
       const frame: Frame = { page, skew, textColor: pageInk(page), ...frameFor(page, skew) };
+      const raster = pageRaster(frame);
+      const rules = findRules(ruleRaster(frame), 1 / RULE_STEP).map((rule) => refineRule(frame, planRule(rule)));
+      rulesByPage[index] = rules;
       for (const { block, blockIndex } of onPage) placeBlock(block, blockIndex, frame);
-      if (options.classify) await findLooseMarks(frame, index + 1, options.classify);
+      if (options.classify) await findLooseMarks(frame, index + 1, options.classify, raster, rules);
       settleMarks(index + 1, frame);
     }
   } finally {
@@ -1881,6 +2342,7 @@ export async function planOverlay(
         masks: [],
         pixels: null,
         colored: false,
+        tinted: tintedInk(site, region),
         caution: null,
       });
       return;
@@ -2002,9 +2464,15 @@ export async function planOverlay(
   // aşan ya da renkli mürekkep kümeleri ve el yazısı gibi görünen satırlar.
   // Her aday kırpılıp sınıflandırıcıya sorulur; yalnızca imza/mühür denirse
   // işaret olur. Silme maskeyle yapılır: imzanın çevresindeki basılı yazı kalır.
-  async function findLooseMarks(frame: Frame, pageNo: number, classify: NonNullable<PlanOptions["classify"]>) {
-    const raster = pageRaster(frame);
+  async function findLooseMarks(
+    frame: Frame,
+    pageNo: number,
+    classify: NonNullable<PlanOptions["classify"]>,
+    raster: { w: number; h: number; rgb: Uint8Array },
+    rules: PlanRule[],
+  ) {
     const map: InkMap = findInkRegions(raster, 1 / INK_STEP);
+    const speckled = speckledPaper(map);
     const confidence = new Map(
       blocks
         .filter((block) => block.page === pageNo)
@@ -2014,11 +2482,106 @@ export async function planOverlay(
       for (const entry of unplaced) if (ids.includes(entry.id)) entry.reason = SIGNATURE_READ;
     };
 
+    // Bölgedeki bütün imza mürekkebi silinir; yerinde kalan basılı satırlar
+    // korunur. Korunan satırın içinde yalnızca imzanın kendi çizgisi silinir
+    // (bkz. markMask); o satır ardından yeniden yazılır.
+    const maskFor = (region: InkRegion) => {
+      const protect = measured
+        .filter((item) => item.page === pageNo)
+        .map((item) => rasterRect(grow(textRect(item), INK_STEP * 1.5, INK_STEP * 1.5)));
+      const margin = 4;
+      const masked = markMask(
+        raster,
+        map,
+        { x0: region.x0 - margin, y0: region.y0 - margin, x1: region.x1 + margin, y1: region.y1 + margin },
+        {
+          colored: region.colored,
+          protect: region.colored ? [] : protect,
+          shortRule: Math.round(60 / INK_STEP),
+          modeled: passingThrough(rules, region),
+          speckled,
+        },
+      );
+      // Silmeden sonra çevrede kalan kırıntılar da alınır: kopuk nokta, darbe
+      // ucu, fotoğraf lekesi (bkz. sweepResidue). Basılı satırlara dokunulmaz.
+      const { box, bits } = sweepResidue(raster, map, masked, {
+        reach: Math.round(3 / INK_STEP),
+        protect,
+        maxPiece: Math.round(1.5 / (INK_STEP * INK_STEP)),
+        colored: region.colored,
+        inner: { x0: region.x0 - margin, y0: region.y0 - margin, x1: region.x1 + margin, y1: region.y1 + margin },
+        speckled,
+      });
+      const maskRect = { u0: box.x0 * INK_STEP, v0: box.y0 * INK_STEP, u1: (box.x1 + 1) * INK_STEP, v1: (box.y1 + 1) * INK_STEP };
+      const w = box.x1 - box.x0 + 1;
+      const h = box.y1 - box.y0 + 1;
+      // Maske basılı bir satırın siyah piksellerini de aldıysa (renkli mührün
+      // ya da imzanın harfle karıştığı yer) o satır yeniden yazılır; yoksa
+      // harfler yarım kalıyordu ("Deutschland", "Affairs"). Mavi çizginin
+      // kenarındaki birkaç JPEG kırıntısı sayılmaz: satırın siyahının ancak
+      // belirgin bir payı gittiyse harf zedelenmiştir.
+      const dark = (index: number) => {
+        const [r, g, b] = [raster.rgb[index * 3], raster.rgb[index * 3 + 1], raster.rgb[index * 3 + 2]];
+        return 0.299 * r + 0.587 * g + 0.114 * b < 120 && Math.max(r, g, b) - Math.min(r, g, b) < 45;
+      };
+      for (const item of measured) {
+        if (item.page !== pageNo || bitten.has(item)) continue;
+        const text = rasterRect(textRect(item));
+        let taken = 0;
+        let letters = 0;
+        for (let y = Math.max(0, Math.ceil(text.y0)); y <= Math.min(map.h - 1, Math.floor(text.y1)); y++) {
+          for (let x = Math.max(0, Math.ceil(text.x0)); x <= Math.min(map.w - 1, Math.floor(text.x1)); x++) {
+            if (!dark(y * map.w + x)) continue;
+            letters++;
+            if (x >= box.x0 && x <= box.x1 && y >= box.y0 && y <= box.y1 && bits[(y - box.y0) * w + (x - box.x0)]) taken++;
+          }
+        }
+        if (taken >= BITTEN_CELLS && taken >= letters * BITTEN_SHARE) bitten.add(item);
+      }
+      // Yeniden yazılacak satırın işaretle kaynaşmış harfleri satırın kendi
+      // silmesine girmez (başka bir parçanın pikselleri sayılır); maske onları
+      // da alır, yoksa eski harfin kırıntıları yeni yazının yanında kalıyordu.
+      // OCR'ın ayırdığı (renksiz sayılan) işaretin bölgesine değen satır da
+      // yeniden yazılır (bkz. underMark).
+      const rewritten = (item: Measured) =>
+        bitten.has(item) ||
+        marks.some((mark) => mark.page === pageNo && !mark.colored && !mark.pixels && intersects(textRect(item), mark.region));
+      for (const item of measured) {
+        if (item.page !== pageNo || !rewritten(item)) continue;
+        const text = rasterRect(textRect(item));
+        for (let y = Math.max(box.y0, Math.ceil(text.y0)); y <= Math.min(box.y1, Math.floor(text.y1)); y++) {
+          for (let x = Math.max(box.x0, Math.ceil(text.x0)); x <= Math.min(box.x1, Math.floor(text.x1)); x++) {
+            if (map.ink[y * map.w + x] && !map.rule[y * map.w + x]) bits[(y - box.y0) * w + (x - box.x0)] = 1;
+          }
+        }
+      }
+      return {
+        mask: { rect: maskRect, w, h, bits: packBits(bits), paper: region.paper },
+        pixels: { rect: maskRect, w, h, data: bits },
+      };
+    };
+
     for (const region of map.regions) {
       const rect = regionRect(region);
-      if (marks.some((mark) => mark.page === pageNo && intersects(mark.region, rect))) continue;
-      const kind = await classify(await cropDataUrl(frame, grow(rect, 4, 4)));
+      // Taramadan daha önce bulunmuş bir işaretle aynı yer: tekrar sorulmaz.
+      if (marks.some((mark) => mark.page === pageNo && mark.pixels && intersects(mark.region, rect))) continue;
+      // OCR'ın ayırdığı işarete değen bölge atlanmaz: OCR kutusu mührü sıkı
+      // sarmayabilir (Priaxor 2. sayfa: mührün üst yayı kutunun dışında,
+      // başlığın üstünde kaldı), ya da bölge yanındaki başka bir işarettir.
+      const ocrMarks = marks.filter((mark) => mark.page === pageNo && !mark.pixels && intersects(mark.region, rect));
+      // Mürekkebin neredeyse tamamı OCR'ın işaret kutusundaysa o işarettir; OCR
+      // görselin tamamını görüp sınıflandırdı. Sınıflandırıcı mavi mührün
+      // mürekkebine "imza" deyince mührün ortasına ikinci etiket yazılıyordu
+      // (DELAN SC garanti mektubu 6. sayfa).
+      const holder = ocrMarks.find((mark) => overlapArea(mark.region, rect) >= area(rect) * 0.8);
+      const kind = await classify(await cropDataUrl(frame, grow(rect, 4, 4)), { page: pageNo, rect });
       if (!isMark(kind)) continue;
+      const ocrMark = holder ?? ocrMarks.find((mark) => sameMark(mark.kind, kind));
+      if (ocrMark) {
+        // Aynı işaret: kutunun dışına taşan mürekkebi de silinir, ikinci etiket yazılmaz.
+        ocrMark.masks.push(maskFor(region).mask);
+        continue;
+      }
 
       // OCR imzayı yazı sanıp okuduysa ("Jill Hollman") o satır çeviriye
       // girmez: mürekkebinin çoğu imzanın mürekkebidir. İmzanın üstünden
@@ -2062,20 +2625,7 @@ export async function planOverlay(
         if (overlap >= (box.u1 - box.u0) * (box.v1 - box.v0) * SIGNATURE_SHARE) absorb(block.lines.map((line) => line.id));
       }
 
-      // Bölgedeki bütün imza mürekkebi silinir; yerinde kalan basılı satırlar korunur.
-      const protect = measured
-        .filter((item) => item.page === pageNo)
-        .map((item) => rasterRect(grow(textRect(item), INK_STEP * 1.5, INK_STEP * 1.5)));
-      const margin = 4;
-      const { box, bits } = markMask(
-        raster,
-        map,
-        { x0: region.x0 - margin, y0: region.y0 - margin, x1: region.x1 + margin, y1: region.y1 + margin },
-        { colored: region.colored, protect: region.colored ? [] : protect, shortRule: Math.round(60 / INK_STEP) },
-      );
-      const maskRect = { u0: box.x0 * INK_STEP, v0: box.y0 * INK_STEP, u1: (box.x1 + 1) * INK_STEP, v1: (box.y1 + 1) * INK_STEP };
-      const w = box.x1 - box.x0 + 1;
-      const h = box.y1 - box.y0 + 1;
+      const { mask, pixels } = maskFor(region);
       marks.push({
         page: pageNo,
         kind,
@@ -2084,8 +2634,8 @@ export async function planOverlay(
         background: region.paper,
         ink: frame.textColor,
         erase: [],
-        masks: [{ rect: maskRect, w, h, bits: packBits(bits), paper: region.paper }],
-        pixels: { rect: maskRect, w, h, data: bits },
+        masks: [mask],
+        pixels,
         colored: region.colored,
         caution: null,
       });
@@ -2096,7 +2646,7 @@ export async function planOverlay(
     for (const hand of handwritten) {
       if (hand.page !== pageNo) continue;
       if (marks.some((mark) => mark.page === pageNo && intersects(mark.region, hand.rect))) continue;
-      const kind = await classify(await cropDataUrl(frame, grow(hand.rect, 3, 3)));
+      const kind = await classify(await cropDataUrl(frame, grow(hand.rect, 3, 3)), { page: pageNo, rect: hand.rect });
       if (!isMark(kind)) continue;
       absorb(hand.lineIds);
       marks.push({
@@ -2230,17 +2780,41 @@ export async function planOverlay(
   });
   const underMark = (item: OverlayItem) =>
     marks.some((mark) => {
-      if (mark.page !== item.page || mark.colored) return false;
+      if (mark.page !== item.page) return false;
       const rects = [...item.erase, ...item.masks.map((mask) => mask.rect)];
       const pixels = mark.pixels;
+      // Renkli işaret satırın siyahını almaz ama harfin üstünden geçtiği yeri
+      // açar: çevrilmeyen satır indirmede orijinal mürekkebiyle geri konur.
+      if (mark.colored) return pixels ? rects.some((rect) => maskTouches(pixels, rect)) : false;
       return pixels ? rects.some((rect) => maskTouches(pixels, rect)) : rects.some((rect) => intersects(rect, mark.region));
     });
 
   return {
     version: PLAN_VERSION,
-    pages: skews.map((skew) => ({ skew })),
+    // İşaretin kendi düz kuyruğu plana yazılmaz: yeniden çizilirse imzanın bir parçası geri gelirdi.
+    pages: skews.map((skew, index) => ({
+      skew,
+      // Tam çözünürlükte 3 puntodan kalın ölçülen bant çizgi değildir (koyu başlık şeridi, yazı).
+      rules: (rulesByPage[index] ?? []).filter(
+        (rule) =>
+          rule.thickness <= 3 &&
+          !marks.some(
+            (mark) =>
+              mark.page === index + 1 &&
+              (insideMark(rule, mark.region, mark.tinted ?? mark.colored) ||
+                // Renkli çizgi işaretin maskesini kesiyorsa işaretin kendisidir:
+                // OCR'ın ayırdığı mührün kutusu yalnız ortasını sarar, başlığı
+                // kesen yay kutunun dışında ama maskenin içindedir (Priaxor 2. sayfa).
+                (tinted(Math.max(...rule.color) - Math.min(...rule.color), lumOf(rule.color)) &&
+                  mark.masks.some((mask) => ruleCuts(rule, [mask.rect]).length > 0))),
+          ),
+      ),
+    })),
     // İşaretler önce çizilir; sildikleri alana değen satırlar sonra yeniden yazılır.
-    items: [...markItems, ...items.map((item) => (underMark(item) ? { ...item, redraw: true } : item))],
+    items: [
+      ...markItems,
+      ...items.map((item, index) => (underMark(item) || bitten.has(measured[index]) ? { ...item, redraw: true } : item)),
+    ],
     unplaced,
   };
 }
@@ -2296,6 +2870,43 @@ async function maskImage(mask: Mask, paper: Color): Promise<Uint8Array> {
  * çevresindeki gerçek pikselleri kullanılarak yeniden kurulur (bkz.
  * inpaint.ts). `bits` verilirse yalnızca işaretli pikseller opaktır.
  */
+/**
+ * Çizgilerin bandı (düzeltilmiş koordinat): modellenmiş çizgi ve uçlarından
+ * 30 puntoya kadar uzantısı — taramada soluklaşan uç model dışında kalabilir.
+ */
+function onLine(rules: PlanRule[]): (u: number, v: number) => boolean {
+  return (u, v) =>
+    rules.some((rule) => {
+      const [along, cross] = rule.orientation === "h" ? [u, v] : [v, u];
+      return along >= rule.start - 30 && along <= rule.end + 30 && Math.abs(cross - (rule.a + rule.b * along)) <= rule.thickness / 2 + 0.6;
+    });
+}
+
+/** Maskeyi `scale` piksel/punto çözünürlüğe en yakın komşuyla büyütür (bit başına bir piksel, paketli). */
+function upsampleMask(mask: Mask, scale: number): { w: number; h: number; bits: Buffer } {
+  const w = Math.max(1, Math.round((mask.rect.u1 - mask.rect.u0) * scale));
+  const h = Math.max(1, Math.round((mask.rect.v1 - mask.rect.v0) * scale));
+  const coarse = Buffer.from(mask.bits, "base64");
+  const bits = Buffer.alloc(Math.ceil((w * h) / 8));
+  for (let y = 0; y < h; y++) {
+    const cy = Math.min(mask.h - 1, Math.floor((y * mask.h) / h));
+    for (let x = 0; x < w; x++) {
+      const cx = Math.min(mask.w - 1, Math.floor((x * mask.w) / w));
+      const c = cy * mask.w + cx;
+      if (!((coarse[c >> 3] >> (c & 7)) & 1)) continue;
+      const i = y * w + x;
+      bits[i >> 3] |= 1 << (i & 7);
+    }
+  }
+  return { w, h, bits };
+}
+
+/**
+ * Silinen işaretin çevresindeki bu şerit (punto) dolgunun tonuna ve bağışçısına
+ * karışmaz: imzanın maskeye girmeyen soluk halesi oradadır (bkz. fillErased).
+ */
+const FILL_HALO = 1.2;
+
 async function paperPatch(
   scan: ScanPage,
   skew: number,
@@ -2305,28 +2916,195 @@ async function paperPatch(
   fallback: Color,
   bits: Buffer | null,
   seed: number,
+  /** Çizgi bandı (düzeltilmiş koordinat): soluk kenar büyütmesi oraya girmez. */
+  line: (u: number, v: number) => boolean = () => false,
 ): Promise<Uint8Array> {
   const straight = frameFor(scan, skew);
   const du = (rect.u1 - rect.u0) / width;
   const dv = (rect.v1 - rect.v0) / height;
-  const rgbPatch = reconstructPaper(
-    (x, y) => {
-      const { u, v } = straight.toDisplay(rect.u0 + (x + 0.5) * du, rect.v0 + (y + 0.5) * dv);
-      return scan.rgb(u, v);
-    },
-    width,
-    height,
-    { margin: 2 / Math.max(du, dv), window: 3, seed, fallback },
-  );
+  const sample = (x: number, y: number) => {
+    const { u, v } = straight.toDisplay(rect.u0 + (x + 0.5) * du, rect.v0 + (y + 0.5) * dv);
+    return scan.rgb(u, v);
+  };
+  // Maske tarama çözünürlüğünde soluk kenarına doğru 1 punto büyütülür (bkz. growFaint).
+  const unpacked = new Uint8Array(width * height);
+  if (bits) for (let i = 0; i < width * height; i++) unpacked[i] = (bits[i >> 3] >> (i & 7)) & 1;
+  const grown = bits
+    ? growFaint(unpacked, width, height, sample, fallback, Math.max(1, Math.round(1 / Math.min(du, dv))), (x, y) =>
+        line(rect.u0 + (x + 0.5) * du, rect.v0 + (y + 0.5) * dv),
+      )
+    : null;
+  // Maskeli yamada silinen pikseller çevrenin gerçek kağıdından (noktacıklı
+  // kağıtta noktacıkları dahil) doldurulur; imzanın soluk halesinden değil.
+  const pixel = 1 / Math.min(du, dv);
+  const rgbPatch = grown
+    ? fillErased(sample, width, height, grown, {
+        margin: 2 / Math.max(du, dv),
+        seed,
+        paper: fallback,
+        radius: Math.round(4 * pixel),
+        halo: Math.round(FILL_HALO * pixel),
+      })
+    : reconstructPaper(sample, width, height, { margin: 2 / Math.max(du, dv), window: 3, seed, fallback });
   const raw = Buffer.alloc(width * height * 4);
   for (let i = 0; i < width * height; i++) {
     raw[i * 4] = rgbPatch[i * 3];
     raw[i * 4 + 1] = rgbPatch[i * 3 + 1];
     raw[i * 4 + 2] = rgbPatch[i * 3 + 2];
-    raw[i * 4 + 3] = bits ? ((bits[i >> 3] >> (i & 7)) & 1 ? 255 : 0) : 255;
+    raw[i * 4 + 3] = grown ? (grown[i] ? 255 : 0) : 255;
   }
   const { default: sharp } = await import("sharp");
   return new Uint8Array(await sharp(raw, { raw: { width, height, channels: 4 } }).png().toBuffer());
+}
+
+/**
+ * Çevrilmeyen satırın orijinal basılı mürekkebi (renksiz koyu pikseller ve
+ * yumuşak kenarları) saydam bir yamada: işaretin silme yaması satırın
+ * üstünden geçtiyse harfler olduğu gibi geri gelir. Renkli bir darbenin harfi
+ * kestiği yer — üstünde ve altında (ya da çok yakın iki yanında) basılı
+ * mürekkep olan renkli piksel — metnin rengiyle, satırda kalan öbür renkli
+ * pikseller kağıt rengiyle kapatılır.
+ *
+ * Yama görüntü düzleminde, eksenlere hizalı ve taramanın iki katı
+ * çözünürlüktedir: tarama en yakın komşuyla okunduğundan her orijinal piksel
+ * birebir kopyalanır. Eğik (düzeltilmiş) ızgarayla örneklenen yamada harf
+ * kenarları bir piksel inceliyordu. Mürekkep yoksa null.
+ */
+export async function inkPatch(
+  scan: ScanPage,
+  skew: number,
+  rect: Rect,
+): Promise<{ png: Uint8Array; box: { u0: number; v0: number; u1: number; v1: number } } | null> {
+  const straight = frameFor(scan, skew);
+  const corners = [
+    straight.toDisplay(rect.u0, rect.v0),
+    straight.toDisplay(rect.u1, rect.v0),
+    straight.toDisplay(rect.u0, rect.v1),
+    straight.toDisplay(rect.u1, rect.v1),
+  ];
+  const scale = Math.min(2 * scan.pixelsPerPoint, 600 / 72);
+  const box = {
+    u0: Math.floor(Math.min(...corners.map((c) => c.u)) * scale) / scale,
+    v0: Math.floor(Math.min(...corners.map((c) => c.v)) * scale) / scale,
+    u1: Math.ceil(Math.max(...corners.map((c) => c.u)) * scale) / scale,
+    v1: Math.ceil(Math.max(...corners.map((c) => c.v)) * scale) / scale,
+  };
+  const width = Math.max(1, Math.round((box.u1 - box.u0) * scale));
+  const height = Math.max(1, Math.round((box.v1 - box.v0) * scale));
+  const n = width * height;
+  const colors: Array<Color | null> = new Array(n).fill(null);
+  const lums = new Float32Array(n).fill(255);
+  const within = new Uint8Array(n);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const u = box.u0 + (x + 0.5) / scale;
+      const v = box.v0 + (y + 0.5) / scale;
+      const { p, q } = straight.fromDisplay(u, v);
+      if (p < rect.u0 || p > rect.u1 || q < rect.v0 || q > rect.v1) continue;
+      const color = scan.rgb(u, v);
+      if (!color) continue;
+      const i = y * width + x;
+      within[i] = 1;
+      colors[i] = color;
+      lums[i] = lumOf(color);
+    }
+  }
+  const inside = [...lums].filter((_, i) => within[i]).sort((a, b) => a - b);
+  if (!inside.length) return null;
+  const paper = inside[Math.floor(inside.length * 0.8)];
+  const ink = new Uint8Array(n);
+  const tint = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const color = colors[i];
+    if (!color) continue;
+    const chroma = Math.max(...color) - Math.min(...color);
+    if (lums[i] < paper - 60 && chroma < 30) ink[i] = 1;
+    else if (tinted(chroma, lums[i]) && lums[i] < paper - 20) tint[i] = 1;
+  }
+  // Belirgin renkli mürekkebin yarım punto yakınındaki koyu piksel basılı yazı
+  // değil, renkli darbenin parçasıdır: mavi imzanın ortası neredeyse renksiz
+  // koyu görünür, JPEG'in renk blokları da darbenin kenarını renksizleştirir.
+  // Satırın alanı imzanın kıvrımını da aldığında bunlar isimle birlikte geri
+  // konuyor, silinen imzanın yerinde noktalar ve kısa çizgiler kalıyordu (NJ).
+  // Darbenin harfi kestiği yer aşağıdaki boşluk kuralıyla harfin rengine döner.
+  const reach = Math.max(1, Math.round(0.5 * scale));
+  const strong = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const color = colors[i];
+    if (color && Math.max(...color) - Math.min(...color) >= 60 && lums[i] < paper - 20) strong[i] = 1;
+  }
+  const nearStrong = new Uint8Array(n);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (!strong[y * width + x]) continue;
+      for (let yy = Math.max(0, y - reach); yy <= Math.min(height - 1, y + reach); yy++) {
+        for (let xx = Math.max(0, x - reach); xx <= Math.min(width - 1, x + reach); xx++) nearStrong[yy * width + xx] = 1;
+      }
+    }
+  }
+  for (let i = 0; i < n; i++) {
+    if (!ink[i] || !nearStrong[i]) continue;
+    ink[i] = 0;
+    tint[i] = 1;
+  }
+  const inkColors = colors.filter((color, i) => ink[i] && color) as Color[];
+  if (!inkColors.length) return null;
+  const inkColor = [0, 1, 2].map((channel) => median(inkColors.map((color) => color[channel]))) as Color;
+  // Satırda kalan renkli işaret pikseli (maskenin kaba hücresine girmeyen harf
+  // kenarı) kağıt rengiyle kapatılır.
+  const paperColors = colors.filter((color, i) => color && lums[i] >= paper - 10) as Color[];
+  const paperColor = paperColors.length
+    ? ([0, 1, 2].map((channel) => median(paperColors.map((color) => color[channel]))) as Color)
+    : null;
+
+  // Harfin darbe altında kalan yeri: dikeyde en çok 1,4, yatayda 0,8 puntoluk
+  // boşluğun iki yanında basılı mürekkep. Yatay pay kısa: harf arası da renkli
+  // darbeyle dolu olabilir, iki harf birleşmesin.
+  const gap = (dx: number, dy: number, limit: number, x: number, y: number) => {
+    const max = Math.ceil(limit * scale);
+    const reach = (sign: number) => {
+      for (let k = 1; k <= max; k++) {
+        const xx = x + sign * dx * k;
+        const yy = y + sign * dy * k;
+        if (xx < 0 || yy < 0 || xx >= width || yy >= height) return -1;
+        if (ink[yy * width + xx]) return k;
+      }
+      return -1;
+    };
+    const near = reach(-1);
+    const far = reach(1);
+    return near > 0 && far > 0 && (near + far) / scale <= limit;
+  };
+  const raw = Buffer.alloc(n * 4);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      let color: Color | null = null;
+      if (ink[i]) color = colors[i];
+      else if (tint[i] && (gap(0, 1, 1.4, x, y) || gap(1, 0, 0.8, x, y))) color = inkColor;
+      else if (tint[i]) color = paperColor;
+      else {
+        // Harfin yumuşak kenarı: basılı mürekkebe değen, renksiz, kağıttan koyu piksel.
+        const own = colors[i];
+        if (own && lums[i] < paper - 15 && Math.max(...own) - Math.min(...own) < 30) {
+          for (let dy = -2; dy <= 2 && !color; dy++) {
+            for (let dx = -2; dx <= 2 && !color; dx++) {
+              const xx = x + dx;
+              const yy = y + dy;
+              if (xx >= 0 && yy >= 0 && xx < width && yy < height && ink[yy * width + xx]) color = own;
+            }
+          }
+        }
+      }
+      if (!color) continue;
+      raw[i * 4] = color[0];
+      raw[i * 4 + 1] = color[1];
+      raw[i * 4 + 2] = color[2];
+      raw[i * 4 + 3] = 255;
+    }
+  }
+  const { default: sharp } = await import("sharp");
+  return { png: new Uint8Array(await sharp(raw, { raw: { width, height, channels: 4 } }).png().toBuffer()), box };
 }
 
 function toColor([r, g, b]: Color) {
@@ -2383,34 +3161,82 @@ export async function renderOverlay(
   // boş kağıda taşan bir önceki satırın harflerini kesmesin (BASF 6. sayfa:
   // harflerin alt yarısı yamanın altında kalıyor, yazı dalgalı görünüyordu).
   const writers: Array<() => Promise<void>> = [];
-  // İşaretler önce: bölgeyi silerler, üstüne değen satırlar ardından yazılır.
-  const ordered = [...plan.items].sort((a, b) => Number(Boolean(b.mark)) - Number(Boolean(a.mark)));
-  for (const item of ordered) {
-    const page = pdfPages[item.page - 1];
-    if (!page) continue;
-    const lines = item.lineIds.map((id) => texts.get(id));
-    const changed = lines.some(
-      (line) => line?.translation && tidyTarget(line.source, line.translation).trim() !== line.source.trim(),
-    );
-    if (!item.mark && !changed && !item.redraw) continue;
-
-    // Planlamayla aynı geometri: görünür alan (CropBox ∩ MediaBox) ve /Rotate.
+  /** Yamaların kestiği yerler: modellenmiş çizgiler buralarda yeniden çizilir. */
+  const cuts: Array<{ page: number; rect: Rect; mark: boolean }> = [];
+  /** İşaretin dokunduğu çevrilmeyen satırlar: orijinal basılı mürekkebi geri konur. */
+  const restores: OverlayItem[] = [];
+  // Planlamayla aynı geometri: görünür alan (CropBox ∩ MediaBox) ve /Rotate.
+  const context = (pageNumber: number) => {
+    const page = pdfPages[pageNumber - 1];
     const geometry = pageGeometry(page);
-    const toPage = geometry.toPage;
-    const straight = frameFor(geometry, plan.pages[item.page - 1]?.skew ?? 0);
+    const skew = plan.pages[pageNumber - 1]?.skew ?? 0;
+    const straight = frameFor(geometry, skew);
     const place = (p: number, q: number) => {
       const { u, v } = straight.toDisplay(p, q);
-      return toPage(u, v);
+      return geometry.toPage(u, v);
     };
     // Yazı yönü: düzeltilmiş koordinatta +p, sayfada hangi açıya denk geliyorsa.
     const origin = place(0, 0);
     const ahead = place(1, 0);
     const rotate = degrees((Math.atan2(ahead.y - origin.y, ahead.x - origin.x) * 180) / Math.PI);
+    // Görüntü düzleminin (eğiklik düzeltilmeden) sayfadaki yönü.
+    const flat = geometry.toPage(0, 0);
+    const right = geometry.toPage(1, 0);
+    const upright = degrees((Math.atan2(right.y - flat.y, right.x - flat.x) * 180) / Math.PI);
+    return { page, place, rotate, skew, toPage: geometry.toPage, upright };
+  };
+  // İşaretler önce: bölgeyi silerler, üstüne değen satırlar ardından yazılır.
+  const ordered = [...plan.items].sort((a, b) => Number(Boolean(b.mark)) - Number(Boolean(a.mark)));
+  for (const item of ordered) {
+    if (!pdfPages[item.page - 1]) continue;
+    const lines = item.lineIds.map((id) => texts.get(id));
+    const action = itemAction(item, lines);
+    if (action === "skip") continue;
+    if (action === "restore") {
+      restores.push(item);
+      continue;
+    }
+    const { page, place, rotate, skew } = context(item.page);
+    // Alt çizgisi çeviriyle birlikte yeniden çizilen satırın eski çizgisi geri gelmez.
+    if (item.mark || !item.underline) {
+      for (const rect of [...item.erase, ...item.masks.map((mask) => mask.rect)]) cuts.push({ page: item.page, rect, mark: Boolean(item.mark) });
+    }
 
     const source = item.erase.length || item.masks.length ? await scanPage(item.page - 1) : null;
-    const skew = plan.pages[item.page - 1]?.skew ?? 0;
     const seedOf = (rect: Rect) => Math.round(rect.u0 * 131 + rect.v0 * 7919 + item.page * 104729);
 
+    // Önce maskeler, sonra bütünüyle silinen alanlar: maskenin yaması taramanın
+    // çevresinden örnek alır; silinen alanın üstüne çizilince oradaki işaretin
+    // soluk halesini geri getiriyordu (DELAN SC garanti mektubu, mühür).
+    for (const mask of item.masks) {
+      const corner = place(mask.rect.u0, mask.rect.v1);
+      // Yama taramanın çözünürlüğünde kurulur (maske ızgarası 0,6 puntoya kadar
+      // kabadır; büyütülen yama lekeli ve bulanık görünüyordu), maske en yakın
+      // komşuyla büyütülür.
+      const scale = source ? Math.min(source.pixelsPerPoint, 300 / 72) : 1;
+      const fine = source ? upsampleMask(mask, scale) : null;
+      const png = source && fine
+        ? await paperPatch(
+            source,
+            skew,
+            mask.rect,
+            fine.w,
+            fine.h,
+            mask.paper ?? item.background,
+            fine.bits,
+            seedOf(mask.rect),
+            // Satırın kendi alt çizgisi korunmaz: soluk kenarı da silinir.
+            onLine((plan.pages[item.page - 1]?.rules ?? []).filter((rule) => item.mark || !ownUnderline(rule, mask.rect))),
+          )
+        : await maskImage(mask, mask.paper ?? item.background);
+      page.drawImage(await doc.embedPng(png), {
+        x: corner.x,
+        y: corner.y,
+        width: mask.rect.u1 - mask.rect.u0,
+        height: mask.rect.v1 - mask.rect.v0,
+        rotate,
+      });
+    }
     for (const rect of item.erase) {
       const corner = place(rect.u0, rect.v1);
       const size = { width: rect.u1 - rect.u0, height: rect.v1 - rect.v0 };
@@ -2424,98 +3250,202 @@ export async function renderOverlay(
         page.drawRectangle({ x: corner.x, y: corner.y, ...size, rotate, color: toColor(item.background), borderWidth: 0 });
       }
     }
-    for (const mask of item.masks) {
-      const corner = place(mask.rect.u0, mask.rect.v1);
-      const png = source
-        ? await paperPatch(
-            source,
-            skew,
-            mask.rect,
-            mask.w,
-            mask.h,
-            mask.paper ?? item.background,
-            Buffer.from(mask.bits, "base64"),
-            seedOf(mask.rect),
-          )
-        : await maskImage(mask, mask.paper ?? item.background);
-      page.drawImage(await doc.embedPng(png), {
-        x: corner.x,
-        y: corner.y,
-        width: mask.rect.u1 - mask.rect.u0,
-        height: mask.rect.v1 - mask.rect.v0,
-        rotate,
-      });
-    }
 
     writers.push(async () => {
-    const font = await fontFor(item.family ?? "serif", item.bold);
-    const width = item.area.u1 - item.area.u0;
-    const height = item.area.v1 - item.area.v0;
-    const texted = lines.map((line) =>
-      line?.translation?.trim() ? tidyTarget(line.source, line.translation.trim()) : line?.source || "",
-    );
-    const content = item.mark ? markText(item.mark, options.targetLang ?? "en", texted) : texted;
-
-    // Punto orijinaldeki gibi kalır (müşteri): uzun çeviri önce aynı puntoyla
-    // alttaki boş kağıda taşar. Küçültme yalnızca son çaredir; önce en çok %10.
-    const fitWithin = (limit: number, floor: number) => {
-      for (let trial = item.fontSize; trial >= floor - 1e-6; trial -= 0.25) {
-        const trialLeading = item.leading * (trial / item.fontSize);
-        const lines = content.flatMap((text) => wrap(text, font, trial, width));
-        const fits =
-          lines.every((line) => font.widthOfTextAtSize(line, trial) <= width + 0.5) &&
-          (lines.length - 1) * trialLeading + trial * 0.9 <= limit + 1;
-        if (fits) return { size: trial, leading: trialLeading, wrapped: lines };
-      }
-      return null;
-    };
-    // Alttaki boşluğa taşan yazı bir sonraki satıra yapışmaz: arada satır
-    // aralığının en az beşte biri kalır (BASF 2. sayfa: uzayan ek başlığının
-    // son satırı alttaki maddelere değiyordu). Pay, sığma ölçüsünün
-    // yuvarlamasını da karşılar: yazının dibi ≈ 0,94 punto, ölçü 0,9 sayar.
-    const room = Math.max(0, (item.room ?? 0) - (item.leading * 0.2 + item.fontSize * 0.04 - 0.5));
-    const fitted =
-      fitWithin(height, item.fontSize) ??
-      fitWithin(height + room, item.fontSize) ??
-      fitWithin(height + room, item.fontSize * 0.9) ??
-      fitWithin(height + room, 4.5) ?? {
-        size: 4.5,
-        leading: item.leading * (4.5 / item.fontSize),
-        wrapped: content.flatMap((text) => wrap(text, font, 4.5, width)),
-      };
-    const { size, leading, wrapped } = fitted;
-    // Etiket bölgenin ortasına oturur; çeviri satırı orijinal şeridin üstüne.
-    const block = (wrapped.length - 1) * leading + size * 0.9;
-    const top = item.mark ? item.area.v0 + Math.max(0, (height - block) / 2) : item.area.v0;
-
-    wrapped.forEach((line, index) => {
-      const lineWidth = font.widthOfTextAtSize(line, size);
-      const p =
-        item.align === "center"
-          ? item.area.u0 + (width - lineWidth) / 2
-          : item.align === "right"
-            ? item.area.u1 - lineWidth
-            : item.area.u0;
-      // Yazının üst kenarı orijinal şeridin üstüne oturur; Times'ta çıkıntı ≈ 0,72 em.
-      const baseline = top + size * 0.72 + index * leading;
-      const at = place(p, baseline);
-      page.drawText(line, { x: at.x, y: at.y, size, font, color: toColor(item.ink), rotate });
-      if (item.underline && line.trim()) {
-        const y = baseline + item.underline.offset * (size / item.fontSize);
-        page.drawLine({
-          start: place(p, y),
-          end: place(p + lineWidth, y),
-          thickness: Math.max(0.3, item.underline.thickness),
-          color: toColor(item.ink),
-        });
+      const font = await fontFor(item.family ?? "serif", item.bold);
+      const content = itemContent(item, lines, options.targetLang ?? "en");
+      const { size, lines: laid } = layoutItemText(item, content, font, item.mark ? markObstacles(plan, item) : []);
+      for (const line of laid) {
+        const at = place(line.p, line.baseline);
+        page.drawText(line.text, { x: at.x, y: at.y, size, font, color: toColor(item.ink), rotate });
+        if (item.underline && line.text.trim()) {
+          const y = line.baseline + item.underline.offset * (size / item.fontSize);
+          page.drawLine({
+            start: place(line.p, y),
+            end: place(line.p + line.width, y),
+            thickness: Math.max(0.3, item.underline.thickness),
+            color: toColor(item.ink),
+          });
+        }
       }
     });
-    });
+  }
+
+  // İşaretin dokunduğu çevrilmeyen satır OCR'ın okuduğu metinle yeniden
+  // yazılmaz ("Jill Holihan" → "Jill Hollman"): orijinal basılı mürekkebi
+  // taramadan geri konur, renkli darbenin harfte açtığı yer kapatılır.
+  for (const item of restores) {
+    const source = await scanPage(item.page - 1);
+    if (!source) continue;
+    const { page, skew, toPage, upright } = context(item.page);
+    const patch = await inkPatch(source, skew, grow(item.area, 0.6, 0.6));
+    if (!patch) continue;
+    const { box } = patch;
+    const corner = toPage(box.u0, box.v1);
+    page.drawImage(await doc.embedPng(patch.png), { x: corner.x, y: corner.y, width: box.u1 - box.u0, height: box.v1 - box.v0, rotate: upright });
+  }
+
+  // Silmenin kestiği çizgiler modelden yeniden çizilir: imzanın geçtiği yerde
+  // imza çizgisi, satırın silindiği yerde tablo kenarı kesik kalmaz. Geri
+  // konan mürekkepten sonra: geri koyma darbenin yanını kağıt rengiyle
+  // kapatır, çizgi onun altında kalıp kesiliyordu (NJ 1. sayfa).
+  for (const [index, info] of plan.pages.entries()) {
+    const onPage = cuts.filter((cut) => cut.page === index + 1);
+    if (!onPage.length || !info.rules?.length || !pdfPages[index]) continue;
+    const { page, place } = context(index + 1);
+    for (const rule of info.rules) {
+      const at = (along: number) =>
+        rule.orientation === "h" ? place(along, rule.a + rule.b * along) : place(rule.a + rule.b * along, along);
+      for (const [from, to] of rulePatchCuts(rule, onPage)) {
+        page.drawLine({ start: at(from), end: at(to), thickness: rule.thickness, color: toColor(rule.color) });
+      }
+    }
   }
   for (const write of writers) await write();
 
   await (scan as Awaited<ReturnType<typeof openScan>> | null)?.close();
   return doc.save();
+}
+
+type ItemLine = { source: string; translation: string | null } | undefined;
+
+/** Satırlardan biri çeviriyle değişiyor mu. */
+export function itemChanged(lines: ItemLine[]): boolean {
+  return lines.some((line) => line?.translation && tidyTarget(line.source, line.translation).trim() !== line.source.trim());
+}
+
+/**
+ * İndirmede öğeye ne yapılır: işaret ve çevirisi değişen satır yeniden
+ * yazılır; işaretin dokunduğu çevrilmeyen satırın orijinal mürekkebi geri
+ * konur (OCR'ın okuduğu metin yazılmaz); öbürlerine dokunulmaz.
+ */
+export function itemAction(item: OverlayItem, lines: ItemLine[]): "skip" | "restore" | "rewrite" {
+  if (item.mark || itemChanged(lines)) return "rewrite";
+  return item.redraw ? "restore" : "skip";
+}
+
+/** Öğenin yazılacak metni: çeviri, yoksa kaynak; işarette hedef dilde etiket. */
+export function itemContent(item: OverlayItem, lines: ItemLine[], targetLang: string): string[] {
+  const texted = lines.map((line) =>
+    line?.translation?.trim() ? tidyTarget(line.source, line.translation.trim()) : line?.source || "",
+  );
+  return item.mark ? markText(item.mark, targetLang, texted) : texted;
+}
+
+export type LaidLine = { text: string; p: number; baseline: number; width: number };
+
+/**
+ * Öğenin yazısının yerleşimi (düzeltilmiş koordinat, punto): punto, satır
+ * aralığı ve her satırın başlangıcı, taban çizgisi, genişliği. İndirme bunu
+ * çizer, kalite ölçer etiketin kutusunu buradan bilir.
+ */
+export function layoutItemText(
+  item: OverlayItem,
+  content: string[],
+  font: PDFFont,
+  /** İşaret etiketinin değmemesi gereken yerler (bkz. markObstacles). */
+  avoid: Rect[] = [],
+): { size: number; leading: number; lines: LaidLine[] } {
+  const width = item.area.u1 - item.area.u0;
+  const height = item.area.v1 - item.area.v0;
+  // Punto orijinaldeki gibi kalır (müşteri): uzun çeviri önce aynı puntoyla
+  // alttaki boş kağıda taşar. Küçültme yalnızca son çaredir; önce en çok %10.
+  const fitWithin = (limit: number, floor: number) => {
+    for (let trial = item.fontSize; trial >= floor - 1e-6; trial -= 0.25) {
+      const trialLeading = item.leading * (trial / item.fontSize);
+      const lines = content.flatMap((text) => wrap(text, font, trial, width));
+      const fits =
+        lines.every((line) => font.widthOfTextAtSize(line, trial) <= width + 0.5) &&
+        (lines.length - 1) * trialLeading + trial * 0.9 <= limit + 1;
+      if (fits) return { size: trial, leading: trialLeading, wrapped: lines };
+    }
+    return null;
+  };
+  // Alttaki boşluğa taşan yazı bir sonraki satıra yapışmaz: arada satır
+  // aralığının en az beşte biri kalır (BASF 2. sayfa: uzayan ek başlığının
+  // son satırı alttaki maddelere değiyordu). Pay, sığma ölçüsünün
+  // yuvarlamasını da karşılar: yazının dibi ≈ 0,94 punto, ölçü 0,9 sayar.
+  const room = Math.max(0, (item.room ?? 0) - (item.leading * 0.2 + item.fontSize * 0.04 - 0.5));
+  const fitted =
+    fitWithin(height, item.fontSize) ??
+    fitWithin(height + room, item.fontSize) ??
+    fitWithin(height + room, item.fontSize * 0.9) ??
+    fitWithin(height + room, 4.5) ?? {
+      size: 4.5,
+      leading: item.leading * (4.5 / item.fontSize),
+      wrapped: content.flatMap((text) => wrap(text, font, 4.5, width)),
+    };
+  const { size, leading, wrapped } = fitted;
+  // Etiket bölgenin ortasına oturur; çeviri satırı orijinal şeridin üstüne.
+  const block = (wrapped.length - 1) * leading + size * 0.9;
+  const placed = wrapped.map((text) => {
+    const lineWidth = font.widthOfTextAtSize(text, size);
+    const p =
+      item.align === "center"
+        ? item.area.u0 + (width - lineWidth) / 2
+        : item.align === "right"
+          ? item.area.u1 - lineWidth
+          : item.area.u0;
+    return { text, p, width: lineWidth };
+  });
+  let top = item.mark ? item.area.v0 + Math.max(0, (height - block) / 2) : item.area.v0;
+  if (item.mark && avoid.length) top = freeTop(item.area, placed, block, top, avoid);
+  return {
+    size,
+    leading,
+    // Yazının üst kenarı orijinal şeridin üstüne oturur; Times'ta çıkıntı ≈ 0,72 em.
+    lines: placed.map((line, index) => ({ ...line, baseline: top + size * 0.72 + index * leading })),
+  };
+}
+
+/**
+ * Etiketin çizgiye, kalan yazıya değmediği yükseklik: önce bölgenin ortasından
+ * aşağı-yukarı yarım puntoluk adımlarla bölgenin içinde, sonra bölgenin hemen
+ * üstünde. İmza bölgesinin ortası çoğu zaman imza çizgisidir; etiket oraya
+ * oturunca üstü çizili görünüyordu (NJ, Mfg mektupları). Yer yoksa orta.
+ */
+function freeTop(area: Rect, lines: Array<{ p: number; width: number }>, block: number, center: number, avoid: Rect[]): number {
+  const u0 = Math.min(...lines.map((line) => line.p));
+  const u1 = Math.max(...lines.map((line) => line.p + line.width));
+  const free = (top: number) =>
+    !avoid.some((rect) => rect.u0 < u1 && rect.u1 > u0 && rect.v0 < top + block + 1 && rect.v1 > top - 1);
+  const low = area.v0;
+  const high = Math.max(low, area.v1 - block);
+  for (let step = 0; step <= (high - low) / 0.5 + 1; step++) {
+    for (const sign of [1, -1]) {
+      const top = center + sign * step * 0.5;
+      if (top >= low - 1e-6 && top <= high + 1e-6 && free(top)) return top;
+    }
+  }
+  for (let top = area.v0 - block - 0.5; top >= area.v0 - block - 2 * block; top -= 0.5) if (free(top)) return top;
+  return center;
+}
+
+/**
+ * İşaret etiketinin değmemesi gereken yerler: sayfanın düz çizgileri (bant)
+ * ve öbür satırların yazısı. İndirme de kalite ölçer de etiketi buna göre koyar.
+ */
+export function markObstacles(plan: OverlayPlan, item: OverlayItem): Rect[] {
+  const out: Rect[] = [];
+  for (const rule of plan.pages[item.page - 1]?.rules ?? []) {
+    const half = rule.thickness / 2 + 0.8;
+    const [a0, a1] = rule.orientation === "h" ? [item.area.u0, item.area.u1] : [item.area.v0, item.area.v1];
+    const from = Math.max(rule.start, a0 - 2);
+    const to = Math.min(rule.end, a1 + 2);
+    if (to <= from) continue;
+    const c0 = rule.a + rule.b * from;
+    const c1 = rule.a + rule.b * to;
+    out.push(
+      rule.orientation === "h"
+        ? { u0: from, u1: to, v0: Math.min(c0, c1) - half, v1: Math.max(c0, c1) + half }
+        : { u0: Math.min(c0, c1) - half, u1: Math.max(c0, c1) + half, v0: from, v1: to },
+    );
+  }
+  for (const other of plan.items) {
+    if (other === item || other.page !== item.page || other.mark) continue;
+    out.push(textRect(other));
+  }
+  return out;
 }
 
 

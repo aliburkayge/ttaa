@@ -35,6 +35,15 @@ type Options = { sourceLang: string; targetLang: string; ask: (prompt: string) =
 const LOCKED = new Set(["human", "rule"]);
 const RANK: Record<string, number> = { human: 0, rule: 1, "tm-exact": 2, "tm-fuzzy": 3 };
 
+/**
+ * Değiştirilemeyen satır: elle düzeltilmiş, kuralla yazılmış ya da bir
+ * cümlenin parçası (bkz. units.ts). Parça satır tek başına bir çeviri
+ * değildir; incelemenin onu yeniden yazması cümleyi bozar.
+ */
+function isLocked(segment: ReviewSegment): boolean {
+  return LOCKED.has(segment.source ?? "") || Boolean(segment.unit);
+}
+
 /** Büyük/küçük harfe duyarlı: "BASF AGRICULTURAL…" başka yerdeki "BASF Agricultural…" ile birleşmez. */
 function key(text: string): string {
   return text.replace(/\s+/g, " ").trim();
@@ -43,7 +52,7 @@ function key(text: string): string {
 export function unifyRepeats(segments: ReviewSegment[]): Change[] {
   const groups = new Map<string, ReviewSegment[]>();
   for (const segment of segments) {
-    if (!segment.translation?.trim()) continue;
+    if (!segment.translation?.trim() || segment.unit) continue;
     const group = groups.get(key(segment.text));
     if (group) group.push(segment);
     else groups.set(key(segment.text), [segment]);
@@ -172,7 +181,7 @@ export function sharedPhrases(segments: ReviewSegment[]): PhraseGroup[] {
     // cümlelerde üç sözcüklük ortaklık tesadüftür.
     const short = run.length < PHRASE_WORDS;
     const members = unique.filter((_, i) => contains(tokens[i], run) && (!short || tokens[i].length <= SHORT_LINE_WORDS));
-    if (members.length < 2 || members.every((segment) => LOCKED.has(segment.source ?? ""))) continue;
+    if (members.length < 2 || members.every(isLocked)) continue;
     // Ortak ifade çeviride de aynen duruyorsa (özel ad, kod) tutarsızlık yoktur.
     if (members.every((segment) => contains(words(segment.translation as string), run))) continue;
     groups.push({ phrase, ids: members.map((segment) => segment.id), score: run.length * members.length });
@@ -202,7 +211,7 @@ function segmentLine(segment: ReviewSegment, locked: Set<string>): string {
     id: segment.id,
     source: segment.text,
     translation: segment.translation,
-    locked: LOCKED.has(segment.source ?? "") || locked.has(segment.id),
+    locked: isLocked(segment) || locked.has(segment.id),
   });
 }
 
@@ -233,7 +242,7 @@ function parseChanges(reply: string): Proposal[] | null {
 /** Önerilen düzeltme denetimden geçerse yeni çeviri, geçmezse null. */
 function checked(segment: ReviewSegment, proposal: Proposal, locked: Set<string>): string | null {
   const translation = typeof proposal.translation === "string" ? proposal.translation.trim() : "";
-  if (!translation || LOCKED.has(segment.source ?? "") || locked.has(segment.id)) return null;
+  if (!translation || isLocked(segment) || locked.has(segment.id)) return null;
   const before = (segment.translation as string).trim();
   if (translation === before) return null;
   // Yeniden yazım değil, düzeltme: uzunluk yakın kalmalı.
@@ -293,7 +302,7 @@ export async function alignPhrases(segments: ReviewSegment[], options: Options):
       const segment = current.get(id) as ReviewSegment;
       // Birebir aynı satırlar (gruba girmeyen kopyalar) da aynı çeviriyi alır.
       for (const copy of current.values()) {
-        if (key(copy.text) !== key(segment.text) || LOCKED.has(copy.source ?? "")) continue;
+        if (key(copy.text) !== key(segment.text) || isLocked(copy)) continue;
         current.set(copy.id, { ...copy, translation: change.translation });
         changes.push({ id: copy.id, ...change });
       }
@@ -357,7 +366,7 @@ export async function reviewDocument<T extends ReviewSegment>(
 ): Promise<{ segments: T[]; changed: number }> {
   let changed = 0;
   let current = segments.map((segment) => {
-    if (segment.source === "human" || !isAddressLine(segment.text)) return segment;
+    if (segment.source === "human" || segment.unit || !isAddressLine(segment.text)) return segment;
     const translation = localizeCountries(segment.text, options.targetLang);
     if (translation !== segment.translation) changed++;
     return { ...segment, translation, source: "rule", note: ADDRESS_NOTE, warning: null };

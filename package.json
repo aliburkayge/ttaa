@@ -20,7 +20,11 @@
     "test": "npm run build && node --test tests/rendered-html.test.mjs && npm run test:wordpress && npm run test:quality && npm run test:qr",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
-    "ceviri:import-tmx": "tsx scripts/ceviri-import-tmx.ts"
+    "ceviri:import-tmx": "tsx scripts/ceviri-import-tmx.ts",
+    "ceviri:backfill-clients": "tsx scripts/ceviri-backfill-clients.ts",
+    "ceviri:eval-detection": "tsx scripts/ceviri-eval-detection.ts",
+    "ceviri:pdf-audit": "tsx scripts/ceviri-pdf-audit.ts",
+    "ceviri:eval-context": "tsx scripts/ceviri-eval-context.ts"
   },
   "dependencies": {
     "@napi-rs/canvas": "^0.1.100",

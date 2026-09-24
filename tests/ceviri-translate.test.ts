@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildPrompt,
   keepUntranslated,
   tidyTarget,
   missingProtected,
   protectedSpans,
   suspiciousTarget,
+  translateSegment,
   violatedTerms,
 } from "../lib/ceviri/translate.ts";
 import type { TermHit } from "../lib/ceviri/term-store.ts";
+import { mergeMatches, type TmMatch } from "../lib/ceviri/tm-store.ts";
 
 function hit(targetText: string): TermHit {
   return {
@@ -131,4 +134,76 @@ test("tidyTarget drops punctuation shifted in from a split memory row", () => {
   assert.equal(tidyTarget("Suspension concentrate (SC)", ": Süspansiyon Konsantresi (SC)"), "Süspansiyon Konsantresi (SC)");
   assert.equal(tidyTarget("BASF", "BASF."), "BASF");
   assert.equal(tidyTarget(": note", ": not"), ": not");
+});
+
+test("the prompt names the company term and the general word it replaces", () => {
+  const firm: TermHit = { conceptId: "f", scopeType: "client", scopeId: "basf", sourceText: "registration", targetText: "ruhsat", isForbidden: false, notes: null };
+  const general: TermHit = { ...firm, conceptId: "g", scopeType: "global", scopeId: null, targetText: "tescil" };
+  const prompt = buildPrompt({
+    text: "The registration expires.",
+    sourceLang: "en-US",
+    targetLang: "tr-TR",
+    terms: [firm],
+    forbidden: [],
+    replaced: [{ term: general, by: firm }],
+    similar: [],
+    instructions: null,
+    firmInstructions: "Adresler çevrilmez.",
+  });
+  assert.match(prompt, /"registration" must become "ruhsat" \(company term — do NOT use "tescil"\)/);
+  assert.match(prompt, /Company rules for this client[\s\S]*Adresler çevrilmez\./);
+  assert.ok(prompt.indexOf("Company rules") < prompt.indexOf("Segment:"));
+});
+
+test("the prompt shows the surrounding text as context, marked not to be translated", () => {
+  const prompt = buildPrompt({
+    text: "Dithianon Pure",
+    sourceLang: "en-US",
+    targetLang: "tr-TR",
+    terms: [],
+    forbidden: [],
+    replaced: [],
+    similar: [],
+    instructions: null,
+    firmInstructions: null,
+    context: { document: "DELAN SC GIZLI RECETE.pdf", before: ["No", "Chemical Name"], after: ["3347-22-6", "active ingredient"] },
+  });
+  const context = prompt.indexOf("do NOT translate");
+  assert.ok(context > 0, prompt);
+  assert.ok(context < prompt.indexOf("Segment:"));
+  assert.match(prompt, /Document: DELAN SC GIZLI RECETE\.pdf/);
+  assert.match(prompt, /Before the segment:\nNo\nChemical Name/);
+  assert.match(prompt, /After the segment:\n3347-22-6\nactive ingredient/);
+  assert.equal(prompt.trim().split("\n").at(-1), "Dithianon Pure");
+});
+
+test("without context the prompt has no context section", () => {
+  const prompt = buildPrompt({
+    text: "Colour",
+    sourceLang: "en-US",
+    targetLang: "tr-TR",
+    terms: [],
+    forbidden: [],
+    replaced: [],
+    similar: [],
+    instructions: null,
+    firmInstructions: null,
+  });
+  assert.doesNotMatch(prompt, /Before the segment|After the segment|Document:/);
+});
+
+test("an OCR image reference is not text: kept as is, no engine asked", async () => {
+  // Motor sorulsaydı "Görüntüye erişemiyorum…" gibi bir cevap çeviri yerine yazılıyordu.
+  const result = await translateSegment(
+    { id: "s1", text: "![img-7.jpeg](img-7.jpeg)" },
+    { sourceLang: "en-US", targetLang: "tr-TR", model: "unused" },
+  );
+  assert.equal(result.translation, "![img-7.jpeg](img-7.jpeg)");
+  assert.equal(result.source, "rule");
+});
+
+test("memory matches merge by adjusted score, falling back to the raw score", () => {
+  const row = (id: string, score: number, adjusted?: number): TmMatch => ({ id, source_text: id, target_text: id, score, adjusted, origin: "tmx-import", quality: "draft", project_names: [] });
+  const merged = mergeMatches([[row("stranger", 1, 1)], [row("own", 0.95, 1.01)], [row("plain", 0.97)]], 3);
+  assert.deepEqual(merged.map((m) => m.id), ["own", "stranger", "plain"]);
 });

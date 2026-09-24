@@ -77,6 +77,8 @@ export type LayoutSegment = {
   ocrWarning: string | null;
   /** Satır bir imza/mühür bölgesinin içinden okunduysa: çıktıda etiketle birlikte yazılır. */
   mark: MarkKind | null;
+  /** OCR bloğunun sırası: aynı paragrafın satırları cümle olarak birlikte çevrilir (bkz. units.ts). */
+  block: number;
 };
 
 // ---------- Mistral yanıt tipleri (yalnızca kullandığımız alanlar) ----------
@@ -338,7 +340,7 @@ export function layoutFromMistral(
 /** Düzenden, okunma sırasıyla çevrilecek segmentler. */
 export function layoutSegments(blocks: LayoutBlock[]): LayoutSegment[] {
   const segments: LayoutSegment[] = [];
-  const push = (line: OcrLine, kind: LayoutSegment["kind"], page: number, mark: MarkKind | null = null) =>
+  const push = (line: OcrLine, kind: LayoutSegment["kind"], page: number, block: number, mark: MarkKind | null = null) =>
     segments.push({
       id: line.id,
       text: line.text,
@@ -348,16 +350,17 @@ export function layoutSegments(blocks: LayoutBlock[]): LayoutSegment[] {
       confidence: line.confidence,
       ocrWarning: line.ocrWarning,
       mark,
+      block,
     });
 
-  for (const block of blocks) {
+  blocks.forEach((block, index) => {
     if (block.kind === "table") {
-      for (const row of block.rows) for (const cell of row) for (const line of cell.lines) push(line, "table-cell", block.page);
+      for (const row of block.rows) for (const cell of row) for (const line of cell.lines) push(line, "table-cell", block.page, index);
     } else {
       const mark = block.kind === "image" && isMark(block.image) ? block.image : null;
-      for (const line of block.lines) push(line, "paragraph", block.page, mark);
+      for (const line of block.lines) push(line, "paragraph", block.page, index, mark);
     }
-  }
+  });
   return segments;
 }
 

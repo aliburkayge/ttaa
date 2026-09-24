@@ -148,6 +148,20 @@ test("recovers printed text hidden inside a stamp image", () => {
   assert.ok(segments.some((segment) => segment.text === "Head of Supply"));
 });
 
+test("every line knows its block: lines of one paragraph share it, other blocks do not", () => {
+  const line = (id: string) => ({ id, text: id, confidence: null, ocrWarning: null });
+  const segments = layoutSegments([
+    { kind: "paragraph", role: "title", page: 1, lines: [line("t")] },
+    { kind: "paragraph", role: "text", page: 1, lines: [line("a"), line("b"), line("c")] },
+    { kind: "table", page: 1, rows: [[{ colspan: 1, lines: [line("x"), line("y")] }]] },
+    { kind: "paragraph", role: "text", page: 2, lines: [line("d")] },
+  ]);
+  assert.deepEqual(
+    segments.map((segment) => [segment.id, segment.block]),
+    [["t", 0], ["a", 1], ["b", 1], ["c", 1], ["x", 2], ["y", 2], ["d", 3]],
+  );
+});
+
 test("never turns a signature scribble into a name", () => {
   const segments = layoutSegments(layoutFromMistral(RESPONSE, INSIGHTS));
   assert.equal(segments.some((segment) => segment.text === "Schulz"), false);

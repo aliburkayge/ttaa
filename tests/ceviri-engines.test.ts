@@ -5,6 +5,7 @@ import {
   configuredEngines,
   DEEPL_ENGINE,
   deeplEndpoint,
+  deeplRequest,
   deeplLang,
   engineStatus,
   GEMINI_ENGINE,
@@ -248,4 +249,18 @@ test("records why the winner won, for the audit trail", () => {
   );
   assert.match(verdict.reason, /korunan ifade doğrulandı/);
   assert.match(verdict.reason, /1 aday elendi/);
+});
+
+test("DeepL gets the surrounding text as context, which it neither translates nor bills", () => {
+  const body = deeplRequest("Dithianon Pure", {
+    sourceLang: "en-US",
+    targetLang: "tr-TR",
+    terms: [],
+    forbidden: [],
+    similar: [],
+    context: "Chemical Name\n3347-22-6",
+  });
+  assert.equal(body.context, "Chemical Name\n3347-22-6");
+  assert.deepEqual(body.text, ["Dithianon Pure"]);
+  assert.equal("context" in deeplRequest("x", { sourceLang: "en", targetLang: "tr", terms: [], forbidden: [], similar: [] }), false);
 });
